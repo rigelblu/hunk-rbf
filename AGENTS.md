@@ -222,3 +222,6 @@ ReviewIntent + caller facts -> planReviewIntent -> ReviewAction[] -> reducer -> 
 
 - Local review artifacts are ignored on purpose. Leave them alone unless the user explicitly wants them updated, and do not commit them.
 - Before committing or preparing a PR, follow `CONTRIBUTING.md`.
+
+# 🔵⋯ Read hunk-rbf
+Read and use @rbf/AGENTS.md

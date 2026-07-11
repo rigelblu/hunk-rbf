@@ -1,0 +1,10 @@
+[repo]
+product = "@hunk-rbf"
+owner = "@tom-rigelblu"
+workblock_prefixes = ['NW', 'HK']
+
+[project]
+type = "product"
+product_id = ["hk"]
+project_type = "new features"
+rb_drive_store = "hunk-rbf-drive"
