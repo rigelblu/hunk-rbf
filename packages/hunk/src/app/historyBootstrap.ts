@@ -5,6 +5,7 @@ import {
   type UserKeyBinding,
 } from "../core/run/config";
 import { collectSessionCustomThemes } from "../core/theme/customThemes";
+import { isThemePairPreference, resolveThemePreference } from "../core/themePreference";
 import {
   createInteractiveSessionInitialization,
   type InteractiveSessionInitialization,
@@ -151,10 +152,16 @@ export async function loadHistoryBootstrap({
     throw error;
   }
 
-  const resolvedTheme = resolved.configured.input.options.theme;
-  const initialViewPreferences = persistedViewPreferencesFromOptions(
-    resolved.configured.input.options,
-  );
+  // History startup never queries terminal appearance, so a light/dark pair falls back to its
+  // dark member; scalar themes pass through, so `auto` and `system` still follow the renderer.
+  const configuredOptions = resolved.configured.input.options;
+  const resolvedTheme = isThemePairPreference(configuredOptions.theme)
+    ? resolveThemePreference(configuredOptions.theme, null)
+    : configuredOptions.theme;
+  const initialViewPreferences = persistedViewPreferencesFromOptions({
+    ...configuredOptions,
+    theme: resolvedTheme,
+  });
   let closed = false;
   return {
     input: resolvedTheme ? { ...input, theme: resolvedTheme } : input,
@@ -167,7 +174,7 @@ export async function loadHistoryBootstrap({
     customThemes: sessionThemes.themes,
     initialization: createInteractiveSessionInitialization({
       theme: {
-        initialTheme: resolved.configured.input.options.theme,
+        initialTheme: resolvedTheme,
         customThemes: sessionThemes.themes,
       },
       viewPreferences: initialViewPreferences,

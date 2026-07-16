@@ -15,6 +15,7 @@ import {
 import { loadAppBootstrap } from "../core/changeset/loaders";
 import type { CliInput } from "../core/run/commandInputs";
 import type { AppBootstrap } from "./types";
+import { resolveConfiguredThemeInput } from "../core/themePreference";
 import {
   applyExtensionChangesetTransforms,
   applyExtensionRegistrations,
@@ -76,7 +77,7 @@ export async function loadConfiguredSessionBootstrap({
     );
     const applied = applyExtensionRegistrations(extensions, baseVcsCatalog);
     const sessionVcs = resolveSessionVcsId(configured.input.options.vcs, cwd, applied.vcsCatalog);
-    let input = configured.input;
+    let input = resolveConfiguredThemeInput(configured.input, initialThemeMode);
 
     if (sessionVcs.vcsId !== input.options.vcs) {
       input = { ...input, options: { ...input.options, vcs: sessionVcs.vcsId } };

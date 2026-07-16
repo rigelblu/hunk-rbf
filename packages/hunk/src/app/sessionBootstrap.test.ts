@@ -19,6 +19,7 @@ function createTestConfig(input: CliInput): HunkConfigResolution {
     customThemes: [],
     extensions: { enabled: false, paths: [], repoPaths: [], extensionConfigs: {} },
     keybindings: { "hunk.review.nextHunk": "]" },
+    explicitVcsId: "git",
     viewPreferencesConfigPath: "/tmp/hunk-config.toml",
   };
 }

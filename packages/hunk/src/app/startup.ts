@@ -8,6 +8,10 @@ import { looksLikePatchInput } from "../core/process/pager";
 import { sanitizeTerminalText } from "../lib/terminalText";
 import { detectTerminalThemeModeFromBackground } from "../core/theme/detection";
 import {
+  resolveConfiguredThemeInput,
+  themePreferenceFollowsAppearance,
+} from "../core/themePreference";
+import {
   openControllingTerminal,
   resolveRuntimeCliInput,
   usesPipedPatchInput,
@@ -473,7 +477,7 @@ export async function prepareStartupPlan(
       const staticPlan = {
         kind: "static-diff-pager" as const,
         text: stdinText,
-        options: configuredStatic.input.options,
+        options: resolveConfiguredThemeInput(configuredStatic.input, null).options,
       };
 
       // Extensions never load on the static pager path, so config themes are the whole set here.
@@ -535,6 +539,7 @@ export async function prepareStartupPlan(
   const runtimeCliInput = await whileStartupOwnsExtensions(() =>
     resolveRuntimeCliInputImpl(parsedCliInput),
   );
+  const cliThemeOverride = runtimeCliInput.options.theme;
   // Past this point the plan always builds a changeset, so the catalog and the loading pipeline
   // are needed for certain; resolve them together rather than at each use.
   const baseVcsCatalog = await loadBaseVcsCatalog();
@@ -546,7 +551,7 @@ export async function prepareStartupPlan(
     }),
   );
   // Reassigned once below if an extension VCS backend claims this checkout.
-  let cliInput = configured.input;
+  let cliInput = resolveConfiguredThemeInput(configured.input, null);
 
   if (cliInput.options.watch) {
     await whileStartupOwnsExtensions(() => {
@@ -577,7 +582,11 @@ export async function prepareStartupPlan(
   // Embedded reviews inherit their owner's detected mode so bootstrap never queries a terminal
   // whose input and renderer are already exclusively owned.
   let initialThemeMode: AppBootstrap["initialThemeMode"] = deps.terminalThemeMode;
-  if (!initialThemeMode && cliInput.options.theme === "auto" && stdoutIsTTY) {
+  if (
+    !initialThemeMode &&
+    themePreferenceFollowsAppearance(configured.input.options.theme) &&
+    stdoutIsTTY
+  ) {
     const themeInput = controllingTerminal?.stdin ?? (stdinIsTTY ? process.stdin : null);
     if (themeInput) {
       initialThemeMode =
@@ -623,7 +632,7 @@ export async function prepareStartupPlan(
     { resolveConfiguredCliInputImpl, loadStartupExtensionsImpl },
   );
   configured = resolvedExtensions.configured;
-  cliInput = configured.input;
+  cliInput = resolveConfiguredThemeInput(configured.input, initialThemeMode);
   const extensionResult = resolvedExtensions.extensions;
   preloadedExtensions = extensionResult;
   if (deps.signal?.aborted) {
@@ -656,6 +665,7 @@ export async function prepareStartupPlan(
     initialization,
   } = preparedSession;
   cliInput = resolvedInput;
+  bootstrap.cliThemeOverride = cliThemeOverride;
   if (delegatedReview) {
     bootstrap.review = delegatedReview;
     bootstrap.reviewSource = "caller";
