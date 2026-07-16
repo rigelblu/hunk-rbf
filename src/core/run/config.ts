@@ -35,6 +35,11 @@ import type {
   SidebarVisibility,
   VcsMode,
 } from "./commandInputs";
+import {
+  normalizeThemePreference,
+  type ConfiguredCliInput,
+  type ConfiguredCommonOptions,
+} from "../themePreference";
 
 /** Resolved `[extensions]` and `[extension.<id>]` configuration for one invocation. */
 export interface ExtensionsConfig {
@@ -119,7 +124,7 @@ const CONFIG_FALLBACK_VCS_ID = "git";
 const EMPTY_CONFIG_VCS_CATALOG = createVcsCatalog([], CONFIG_FALLBACK_VCS_ID, []);
 
 export interface HunkConfigResolution {
-  input: CliInput;
+  input: ConfiguredCliInput;
   /** Config-defined custom themes in declaration order, user layer before repo layer. */
   customThemes: NamedCustomThemeConfig[];
   extensions: ExtensionsConfig;
@@ -891,7 +896,7 @@ function normalizeConfigReferenceValue(property: keyof CommonOptions, value: unk
     case "vcs":
       return normalizeVcsMode(value);
     case "theme":
-      return normalizeString(value);
+      return normalizeThemePreference(value);
     case "tabWidth":
       return normalizeTabWidth(value);
     case "sidebar":
@@ -902,8 +907,8 @@ function normalizeConfigReferenceValue(property: keyof CommonOptions, value: unk
 }
 
 /** Read the view preferences stored at one TOML object level. */
-function readConfigPreferences(source: Record<string, unknown>): CommonOptions {
-  const preferences: CommonOptions = {};
+function readConfigPreferences(source: Record<string, unknown>): ConfiguredCommonOptions {
+  const preferences: ConfiguredCommonOptions = {};
   const mutable = preferences as Record<string, unknown>;
 
   for (const option of CONFIG_REFERENCE_OPTIONS) {
@@ -925,8 +930,8 @@ function readConfigPreferences(source: Record<string, unknown>): CommonOptions {
 }
 
 /** Build concrete preference defaults from the same catalog rendered by generated docs. */
-function buildDefaultConfigPreferences(cwd: string, vcsCatalog: VcsCatalog): CommonOptions {
-  const defaults: CommonOptions = { vcs: detectRepoVcsMode(cwd, vcsCatalog) };
+function buildDefaultConfigPreferences(cwd: string, vcsCatalog: VcsCatalog): ConfiguredCommonOptions {
+  const defaults: ConfiguredCommonOptions = { vcs: detectRepoVcsMode(cwd, vcsCatalog) };
   const mutable = defaults as Record<string, unknown>;
   for (const option of CONFIG_REFERENCE_OPTIONS) {
     if (option.runtimeDefault !== undefined) {
@@ -937,7 +942,10 @@ function buildDefaultConfigPreferences(cwd: string, vcsCatalog: VcsCatalog): Com
 }
 
 /** Merge partial preference layers with right-hand overrides taking precedence. */
-function mergeOptions(base: CommonOptions, overrides: CommonOptions): CommonOptions {
+function mergeOptions(
+  base: ConfiguredCommonOptions,
+  overrides: ConfiguredCommonOptions,
+): ConfiguredCommonOptions {
   return {
     ...base,
     mode: overrides.mode ?? base.mode,
@@ -968,7 +976,10 @@ function mergeOptions(base: CommonOptions, overrides: CommonOptions): CommonOpti
 }
 
 /** Apply one parsed config object, including command/pager sections, to the current invocation. */
-function resolveConfigLayer(source: Record<string, unknown>, input: CliInput): CommonOptions {
+function resolveConfigLayer(
+  source: Record<string, unknown>,
+  input: CliInput,
+): ConfiguredCommonOptions {
   let resolved = readConfigPreferences(source);
 
   const commandSection = CONFIG_COMMAND_SECTIONS[input.kind] ? source[input.kind] : undefined;
@@ -1119,7 +1130,7 @@ export function resolveConfiguredCliInput(
   // Keybindings are read from the user layer only; see `HunkConfigResolution`.
   let keybindingsLayer: KeybindingsLayer = { bindings: {}, unusableIds: [] };
 
-  let resolvedOptions: CommonOptions = {
+  let resolvedOptions: ConfiguredCommonOptions = {
     ...buildDefaultConfigPreferences(cwd, vcsCatalog),
     agentContext: input.options.agentContext,
     pager: input.options.pager ?? false,
@@ -1219,7 +1230,7 @@ export function resolveConfiguredCliInput(
     input: {
       ...input,
       options: resolvedOptions,
-    },
+    } as ConfiguredCliInput,
     customThemes: resolvedCustomThemes,
     extensions,
     keybindings: keybindingsLayer.bindings,

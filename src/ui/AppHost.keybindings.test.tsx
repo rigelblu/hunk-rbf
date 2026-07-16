@@ -9,6 +9,7 @@ import { removeTestDirectory } from "../../test/helpers/filesystem";
 import { resolveConfiguredCliInput } from "../core/run/config";
 import { getBundledVcsCatalog } from "../app/vcsCatalog";
 import { loadAppBootstrap } from "../core/changeset/loaders";
+import { resolveConfiguredThemeInput } from "../core/themePreference";
 import type { AppBootstrap } from "../core/bootstrap";
 import { createEmptyExtensionLoadResult } from "../extensions/types";
 import { AppHost } from "./AppHost";
@@ -79,7 +80,10 @@ async function launchWithConfig(repo: string, configToml: string): Promise<AppBo
   };
   const vcsCatalog = getBundledVcsCatalog();
   const configured = resolveConfiguredCliInput(input, { cwd: repo, vcsCatalog });
-  const bootstrap = await loadAppBootstrap(configured.input, { cwd: repo, vcsCatalog });
+  const bootstrap = await loadAppBootstrap(resolveConfiguredThemeInput(configured.input, null), {
+    cwd: repo,
+    vcsCatalog,
+  });
   bootstrap.keybindings = configured.keybindings;
   return bootstrap;
 }

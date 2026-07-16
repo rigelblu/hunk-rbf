@@ -7,6 +7,10 @@ import type { loadAppBootstrap } from "../core/changeset/loaders";
 import { looksLikePatchInput } from "../core/process/pager";
 import { detectTerminalThemeModeFromBackground } from "../core/theme/detection";
 import {
+  resolveConfiguredThemeInput,
+  themePreferenceFollowsAppearance,
+} from "../core/themePreference";
+import {
   openControllingTerminal,
   resolveRuntimeCliInput,
   usesPipedPatchInput,
@@ -221,7 +225,7 @@ export async function prepareStartupPlan(
       const staticPlan = {
         kind: "static-diff-pager" as const,
         text: stdinText,
-        options: configuredStatic.input.options,
+        options: resolveConfiguredThemeInput(configuredStatic.input, null).options,
       };
 
       // Extensions never load on the static pager path, so config themes are the whole set here.
@@ -281,6 +285,7 @@ export async function prepareStartupPlan(
   }
 
   const runtimeCliInput = resolveRuntimeCliInputImpl(parsedCliInput);
+  const cliThemeOverride = runtimeCliInput.options.theme;
   const startupCwd = process.cwd();
   // Past this point the plan always builds a changeset, so the catalog and the loading pipeline
   // are needed for certain; resolve them together rather than at each use.
@@ -291,7 +296,7 @@ export async function prepareStartupPlan(
     vcsCatalog: baseVcsCatalog,
   });
   // Reassigned once below if an extension VCS backend claims this checkout.
-  let cliInput = configured.input;
+  let cliInput = resolveConfiguredThemeInput(configured.input, null);
 
   // Any app session launched with piped stdin still needs a real terminal input stream for
   // keyboard, mouse, and terminal query responses. Auto-theme happened to open this path during
@@ -301,7 +306,7 @@ export async function prepareStartupPlan(
   }
 
   let initialThemeMode: AppBootstrap["initialThemeMode"];
-  if (cliInput.options.theme === "auto" && stdoutIsTTY) {
+  if (themePreferenceFollowsAppearance(configured.input.options.theme) && stdoutIsTTY) {
     const themeInput = controllingTerminal?.stdin ?? (stdinIsTTY ? process.stdin : null);
     if (themeInput) {
       initialThemeMode =
@@ -309,6 +314,8 @@ export async function prepareStartupPlan(
         undefined;
     }
   }
+
+  cliInput = resolveConfiguredThemeInput(configured.input, initialThemeMode);
 
   if (cliInput.options.watch && !canReloadInput(cliInput)) {
     throw new HunkUserError(
@@ -345,7 +352,7 @@ export async function prepareStartupPlan(
     { resolveConfiguredCliInputImpl, loadStartupExtensionsImpl },
   );
   configured = resolvedExtensions.configured;
-  cliInput = configured.input;
+  cliInput = resolveConfiguredThemeInput(configured.input, initialThemeMode);
   const extensionResult = resolvedExtensions.extensions;
 
   let preparedSession: SessionBootstrapResult;
@@ -364,6 +371,7 @@ export async function prepareStartupPlan(
   }
   const { applied, bootstrap, input: resolvedInput, sessionThemes, sessionVcs } = preparedSession;
   cliInput = resolvedInput;
+  bootstrap.cliThemeOverride = cliThemeOverride;
 
   // Built after adapter resolution so the notice names the backend the session really loads with.
   const unknownVcsNotices =

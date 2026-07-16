@@ -11,6 +11,7 @@ import {
   saveViewPreferencesPromptPreference,
 } from "./config";
 import { loadAppBootstrap } from "../changeset/loaders";
+import { resolveConfiguredThemeInput } from "../themePreference";
 import {
   LEGACY_CUSTOM_SYNTAX_NOTICE,
   LEGACY_CUSTOM_SYNTAX_NOTICES,
@@ -779,6 +780,63 @@ describe("config resolution", () => {
     expect(resolved.input.options.theme).toBe("github-dark-default");
   });
 
+  test("replaces complete paired theme preferences atomically across config and CLI layers", () => {
+    const home = createTempDir("hunk-config-home-");
+    const repo = createTempDir("hunk-config-repo-");
+    createRepo(repo);
+    mkdirSync(join(home, ".config", "hunk"), { recursive: true });
+    mkdirSync(join(repo, ".hunk"), { recursive: true });
+    writeFileSync(
+      join(home, ".config", "hunk", "config.toml"),
+      'theme = { light = "catppuccin-latte", dark = "nord" }\n',
+    );
+
+    expect(
+      resolveConfiguredCliInput(createPatchPagerInput(), {
+        cwd: repo,
+        env: { HOME: home },
+      }).input.options.theme,
+    ).toEqual({ light: "catppuccin-latte", dark: "nord" });
+
+    writeFileSync(join(repo, ".hunk", "config.toml"), 'theme = "dracula"\n');
+    expect(
+      resolveConfiguredCliInput(createPatchPagerInput(), {
+        cwd: repo,
+        env: { HOME: home },
+      }).input.options.theme,
+    ).toBe("dracula");
+
+    writeFileSync(
+      join(repo, ".hunk", "config.toml"),
+      'theme = { light = "github-light-default", dark = "dark-plus" }\n',
+    );
+    expect(
+      resolveConfiguredCliInput(createPatchPagerInput({ theme: "everforest-dark" }), {
+        cwd: repo,
+        env: { HOME: home },
+      }).input.options.theme,
+    ).toBe("everforest-dark");
+  });
+
+  test.each([
+    ['theme = { dark = "nord" }', "theme.light"],
+    ['theme = { light = "catppuccin-latte" }', "theme.dark"],
+    ['theme = { light = "future-theme", dark = "nord" }', "theme.light"],
+    ['theme = { light = "paper", dark = "nord" }', "theme.light"],
+    ['theme = { mode = "system", light = "catppuccin-latte", dark = "nord" }', "theme.mode"],
+  ])("rejects invalid paired theme input: %s", (config, expectedKey) => {
+    const home = createTempDir("hunk-config-home-");
+    mkdirSync(join(home, ".config", "hunk"), { recursive: true });
+    writeFileSync(join(home, ".config", "hunk", "config.toml"), `${config}\n`);
+
+    expect(() =>
+      resolveConfiguredCliInput(createPatchPagerInput(), {
+        cwd: createTempDir("hunk-config-cwd-"),
+        env: { HOME: home },
+      }),
+    ).toThrow(expectedKey);
+  });
+
   test("command-specific config sections also apply to show mode", () => {
     const home = createTempDir("hunk-config-home-");
     mkdirSync(join(home, ".config", "hunk"), { recursive: true });
@@ -1060,7 +1118,7 @@ describe("config resolution", () => {
       },
       { cwd: repo, env: { HOME: home } },
     );
-    const bootstrap = await loadAppBootstrap(resolved.input);
+    const bootstrap = await loadAppBootstrap(resolveConfiguredThemeInput(resolved.input, null));
 
     expect(bootstrap.initialMode).toBe("auto");
     expect(bootstrap.initialTheme).toBe("github-light-default");
@@ -1108,7 +1166,7 @@ describe("config resolution", () => {
       },
       { cwd: repo, env: { HOME: home } },
     );
-    const bootstrap = await loadAppBootstrap(resolved.input, {
+    const bootstrap = await loadAppBootstrap(resolveConfiguredThemeInput(resolved.input, null), {
       customThemes: resolved.customThemes,
     });
 
@@ -1144,7 +1202,7 @@ describe("config resolution", () => {
       },
       { cwd: repo, env: { HOME: home } },
     );
-    const bootstrap = await loadAppBootstrap(resolved.input);
+    const bootstrap = await loadAppBootstrap(resolveConfiguredThemeInput(resolved.input, null));
 
     expect(bootstrap.initialTheme).toBe("github-dark-default");
   });

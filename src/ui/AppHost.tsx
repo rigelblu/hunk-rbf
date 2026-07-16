@@ -81,6 +81,7 @@ export function AppHost({
         },
       };
   const [activeBootstrap, setActiveBootstrap] = useState(initialBootstrap);
+  const activeBootstrapRef = useRef(initialBootstrap);
   const [producer] = useState(
     () =>
       reviewProducer ??
@@ -236,6 +237,8 @@ export function AppHost({
     async (nextInput: CliInput, options?: ReloadSessionOptions) => {
       if (quitRequestedRef.current) throw reloadRefusedDuringShutdown();
 
+      const currentBootstrap = activeBootstrapRef.current;
+
       // Re-run the same startup normalization pipeline used on first launch so reloads honor
       // runtime defaults and config layering instead of assuming `nextInput` is already final.
       // `sourcePath` matters for daemon-driven reloads that ask Hunk to reopen content from a
@@ -250,6 +253,16 @@ export function AppHost({
           extensionPaths: launchExtensionPaths,
         },
       });
+      const incomingCliThemeOverride = nextInput.options.theme;
+      const nextCliThemeOverride =
+        incomingCliThemeOverride ?? currentBootstrap.cliThemeOverride;
+      const configInput: CliInput = {
+        ...runtimeInput,
+        options: {
+          ...runtimeInput.options,
+          theme: nextCliThemeOverride,
+        },
+      };
       const { cwd } = validateSessionReloadWithinBounds(sessionFileBounds, runtimeInput, {
         sourcePath: options?.sourcePath,
       });
@@ -259,7 +272,7 @@ export function AppHost({
         ? resolveExtensionVcsAdapters(currentExtensions.registry, baseVcsCatalog).adapters
         : [];
       const discoveryCatalog = extendVcsCatalog(baseVcsCatalog, currentAdapters);
-      let configured = resolveConfiguredCliInput(runtimeInput, {
+      let configured = resolveConfiguredCliInput(configInput, {
         cwd,
         vcsCatalog: discoveryCatalog,
       });
@@ -303,6 +316,7 @@ export function AppHost({
           configured,
           cwd,
           extensions,
+          initialThemeMode: currentBootstrap.initialThemeMode,
           loadAtCwd: true,
           baseVcsCatalog,
         });
@@ -325,6 +339,7 @@ export function AppHost({
       try {
         const { applied, bootstrap, input: reloadInput, sessionVcs } = loaded;
         nextBootstrap = bootstrap;
+        nextBootstrap.cliThemeOverride = nextCliThemeOverride;
         if (extensions) {
           reportExtensionApplyIssues(applied.issues, extensions.context);
         }
@@ -390,6 +405,7 @@ export function AppHost({
           })
         : undefined;
 
+      activeBootstrapRef.current = nextBootstrap;
       setActiveBootstrap(nextBootstrap);
       if (options?.resetApp !== false) {
         // Bumping the key forces a full App remount. Callers that pass `resetApp: false` get a

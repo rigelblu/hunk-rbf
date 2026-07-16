@@ -68,6 +68,9 @@ export const BUNDLED_SHIKI_THEME_IDS = [
 
 export type BundledShikiThemeId = (typeof BUNDLED_SHIKI_THEME_IDS)[number];
 
+export const DEFAULT_DARK_THEME_ID = "github-dark-default";
+export const DEFAULT_LIGHT_THEME_ID = "github-light-default";
+
 export const LEGACY_THEME_ID_ALIASES = {
   graphite: "github-dark-default",
   midnight: "github-dark-dimmed",

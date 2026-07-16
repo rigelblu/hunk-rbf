@@ -5,6 +5,8 @@ import type { NamedCustomThemeConfig } from "../extension-api/types";
 import { blendHex, contrastRatio, relativeLuminance } from "./lib/color";
 import {
   BUNDLED_SHIKI_THEME_IDS,
+  DEFAULT_DARK_THEME_ID,
+  DEFAULT_LIGHT_THEME_ID,
   resolveBundledShikiThemeId,
   getBundledShikiThemeBackground,
   getBundledShikiThemeDiffColors,
@@ -14,10 +16,9 @@ import {
 import type { AppTheme, SyntaxColors, ThemeBase } from "./themes/types";
 
 export type { AppTheme } from "./themes/types";
+export { DEFAULT_DARK_THEME_ID, DEFAULT_LIGHT_THEME_ID } from "../core/theme/catalog";
 
 export const TRANSPARENT_BACKGROUND = "transparent";
-export const DEFAULT_DARK_THEME_ID = "github-dark-default";
-export const DEFAULT_LIGHT_THEME_ID = "github-light-default";
 
 const MIN_GUTTER_CONTRAST = 4.5;
 const MIN_DIFF_SIGN_CONTRAST = 3;
@@ -334,7 +335,7 @@ export function resolveTheme(
   themeMode: ThemeMode | null,
   customThemes: readonly NamedCustomThemeConfig[] = [],
 ) {
-  if (requested === "auto") {
+  if (requested === "system" || requested === "auto") {
     return fallbackTheme(themeMode);
   }
 

@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Session } from "tuistory";
 import { createPtyHarness } from "./harness";
 
@@ -227,6 +229,83 @@ describe("PTY pager", () => {
       );
 
       expect(scrolled).toContain("before_12");
+    } finally {
+      session.close();
+    }
+  });
+
+  test.each([
+    ["light", "\x1b]11;rgb:ffff/ffff/ffff\x1b\\", "catppuccin-latte"],
+    ["dark", "\x1b]11;rgb:0000/0000/0000\x1b\\", "nord"],
+  ] as const)("paired configured themes select the %s member", async (_mode, response, themeId) => {
+    const fixture = harness.createPagerPatchFixture();
+    const configHome = join(fixture.dir, "config");
+    mkdirSync(join(configHome, "hunk"), { recursive: true });
+    writeFileSync(
+      join(configHome, "hunk", "config.toml"),
+      'theme = { light = "catppuccin-latte", dark = "nord" }\n',
+    );
+    const session = await harness.launchHunk({
+      args: ["patch", fixture.patchFile],
+      cwd: fixture.dir,
+      cols: 140,
+      rows: 24,
+      env: { XDG_CONFIG_HOME: configHome },
+    });
+
+    try {
+      // Queue the terminal's OSC 11 reply immediately so startup consumes it during its bounded probe.
+      session.writeRaw(response);
+      await session.waitForText(/View\s+Navigate\s+Agent\s+Help/, { timeout: 15_000 });
+      await session.press("t");
+      const modal = await harness.waitForSnapshot(
+        session,
+        (text) =>
+          text
+            .split("\n")
+            .some((line) => line.includes(`›  ${themeId}`) && line.includes("active")),
+        5_000,
+      );
+
+      expect(
+        modal.split("\n").some((line) => line.includes(`›  ${themeId}`) && line.includes("active")),
+      ).toBe(true);
+    } finally {
+      session.close();
+    }
+  });
+
+  test("paired config keeps file-backed patch stdin interactive", async () => {
+    const fixture = harness.createPagerPatchFixture();
+    const configHome = join(fixture.dir, "config");
+    mkdirSync(join(configHome, "hunk"), { recursive: true });
+    writeFileSync(
+      join(configHome, "hunk", "config.toml"),
+      'theme = { light = "catppuccin-latte", dark = "nord" }\n',
+    );
+    const session = await harness.launchHunkWithFileBackedStdin({
+      stdinFile: fixture.patchFile,
+      args: ["patch", "-"],
+      cwd: fixture.dir,
+      cols: 120,
+      rows: 14,
+      env: { XDG_CONFIG_HOME: configHome },
+    });
+
+    try {
+      session.writeRaw("\x1b]11;rgb:0000/0000/0000\x1b\\");
+      const initial = await session.waitForText(/scroll\.ts/, { timeout: 15_000 });
+      expect(initial).toContain("before_01");
+
+      await session.waitIdle({ timeout: 200 });
+      await session.press("s");
+      const sidebarRow = /\bM scroll\.ts\s+\+40 -40/;
+      const withSidebar = await harness.waitForSnapshot(
+        session,
+        (text) => sidebarRow.test(text),
+        5_000,
+      );
+      expect(withSidebar).toMatch(sidebarRow);
     } finally {
       session.close();
     }

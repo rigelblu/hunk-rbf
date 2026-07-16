@@ -41,6 +41,8 @@ export interface AppBootstrap<ExtensionState = unknown> {
   initialMode: LayoutMode;
   initialTheme?: string;
   initialThemeMode?: TerminalThemeMode;
+  /** Launch-time CLI theme authority retained across daemon and watch reloads. */
+  cliThemeOverride?: string;
   /** Selectable custom themes for this session, in menu order. */
   customThemes?: readonly NamedCustomThemeConfig[];
   initialShowLineNumbers?: boolean;
