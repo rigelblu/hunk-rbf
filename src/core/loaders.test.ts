@@ -173,6 +173,19 @@ afterEach(() => {
 });
 
 describe("loadAppBootstrap", () => {
+  test("rejects unresolved paired themes before loading review content", async () => {
+    const invalidInput = {
+      kind: "diff",
+      left: "/definitely-missing-before",
+      right: "/definitely-missing-after",
+      options: { theme: { light: "catppuccin-latte", dark: "nord" } },
+    } as unknown as CliInput;
+
+    await expect(loadAppBootstrap(invalidInput)).rejects.toThrow(
+      "Expected paired theme input to be resolved before loading app content.",
+    );
+  });
+
   test("loads file-pair diffs and agent context", async () => {
     const dir = mkdtempSync(join(tmpdir(), "hunk-diff-"));
     tempDirs.push(dir);

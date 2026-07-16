@@ -6,6 +6,7 @@ import { cleanupTestConfigHomes, createTestConfigHome } from "../helpers/config-
 
 const repoRoot = process.cwd();
 const sourceEntrypoint = join(repoRoot, "src/main.tsx");
+const bunExecutable = process.execPath;
 // Spawned hunk processes must assert built-in defaults, not the developer's ambient user config.
 const testConfigHome = createTestConfigHome();
 
@@ -34,6 +35,13 @@ function cleanupTempDirs() {
 
 function shellQuote(value: string) {
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+/** Build the platform-specific `script` invocation used to capture a real terminal transcript. */
+function buildScriptCommand(command: string, transcript: string) {
+  return process.platform === "darwin"
+    ? `/usr/bin/script -q ${shellQuote(transcript)} /bin/bash -c ${shellQuote(command)}`
+    : `script -q -f -e -c ${shellQuote(command)} ${shellQuote(transcript)}`;
 }
 
 function stripTerminalControl(text: string) {
@@ -164,8 +172,8 @@ async function runTtySmoke(options: {
     args.push("--agent-context", (fixture as ReturnType<typeof createFixtureFiles>).agent);
   }
 
-  const hunkCommand = `bun run ${shellQuote(sourceEntrypoint)} ${args.map(shellQuote).join(" ")}`;
-  const scriptCommand = `timeout 7 script -q -f -e -c ${shellQuote(hunkCommand)} ${shellQuote(transcript)}`;
+  const hunkCommand = `${shellQuote(bunExecutable)} run ${shellQuote(sourceEntrypoint)} ${args.map(shellQuote).join(" ")}`;
+  const scriptCommand = `timeout 7 ${buildScriptCommand(hunkCommand, transcript)}`;
   const inputCommand = options.inputCommand ?? `(sleep 2; printf q)`;
   const proc = Bun.spawnSync(["bash", "-lc", `${inputCommand} | ${scriptCommand}`], {
     cwd: fixture.dir,
@@ -183,7 +191,10 @@ async function runTtySmoke(options: {
 
   if (proc.exitCode !== 0) {
     const stderr = Buffer.from(proc.stderr).toString("utf8");
-    throw new Error(stderr.trim() || `tty smoke command failed with exit ${proc.exitCode}`);
+    const stdout = Buffer.from(proc.stdout).toString("utf8");
+    throw new Error(
+      stderr.trim() || stdout.trim() || `tty smoke command failed with exit ${proc.exitCode}`,
+    );
   }
 
   return stripTerminalControl(await Bun.file(transcript).text());
@@ -198,8 +209,8 @@ async function runStdinPagerSmoke(options?: {
   const fixture = createFixtureFiles(options?.lines ?? 1);
   const transcript = join(fixture.dir, "stdin-pager-transcript.txt");
   const subcommand = options?.command === "pager" ? "pager" : "patch -";
-  const patchCommand = `cat ${shellQuote(fixture.coloredPatch)} | bun run ${shellQuote(sourceEntrypoint)} ${subcommand}`;
-  const scriptCommand = `timeout 7 script -q -f -e -c ${shellQuote(patchCommand)} ${shellQuote(transcript)}`;
+  const patchCommand = `cat ${shellQuote(fixture.coloredPatch)} | ${shellQuote(bunExecutable)} run ${shellQuote(sourceEntrypoint)} ${subcommand}`;
+  const scriptCommand = `timeout 7 ${buildScriptCommand(patchCommand, transcript)}`;
   const inputCommand =
     options?.inputCommand ?? `(sleep 2; printf ${shellQuote(options?.input ?? "q")})`;
   const proc = Bun.spawnSync(["bash", "-lc", `${inputCommand} | ${scriptCommand}`], {
@@ -218,7 +229,12 @@ async function runStdinPagerSmoke(options?: {
 
   if (proc.exitCode !== 0) {
     const stderr = Buffer.from(proc.stderr).toString("utf8");
-    throw new Error(stderr.trim() || `stdin pager smoke command failed with exit ${proc.exitCode}`);
+    const stdout = Buffer.from(proc.stdout).toString("utf8");
+    throw new Error(
+      stderr.trim() ||
+        stdout.trim() ||
+        `stdin pager smoke command failed with exit ${proc.exitCode}`,
+    );
   }
 
   return stripTerminalControl(await Bun.file(transcript).text());

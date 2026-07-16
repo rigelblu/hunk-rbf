@@ -66,6 +66,7 @@ function commandDirectory(command: string) {
 const repoRoot = path.resolve(import.meta.dir, "..");
 const packageVersion = JSON.parse(await Bun.file(path.join(repoRoot, "package.json")).text())
   .version as string;
+const cliVersion = (await Bun.file(path.join(repoRoot, "rbf", "RBF_VERSION")).text()).trim();
 const releaseRoot = releaseNpmDir(repoRoot);
 const hostSpec = getHostPlatformPackageSpec();
 const tempRoot = path.join(repoRoot, "tmp");
@@ -151,9 +152,9 @@ try {
   const version = run([installedHunk, "--version"], {
     env: commandEnv,
   });
-  if (version.stdout !== `${packageVersion}\n`) {
+  if (version.stdout !== `${cliVersion}\n`) {
     throw new Error(
-      `Expected installed hunk --version to print ${packageVersion}.\n${version.stdout}`,
+      `Expected installed hunk --version to print ${cliVersion}.\n${version.stdout}`,
     );
   }
 

@@ -321,7 +321,7 @@ export function resolveTheme(
   themeMode: ThemeMode | null,
   customTheme?: CustomThemeConfig,
 ) {
-  if (requested === "auto") {
+  if (requested === "system" || requested === "auto") {
     return fallbackTheme(themeMode);
   }
 

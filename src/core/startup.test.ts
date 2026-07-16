@@ -262,6 +262,35 @@ describe("startup planning", () => {
     expect(loaded).toBe(false);
   });
 
+  test("resolves a configured pair to its dark member for captured static pager output", async () => {
+    const patchText = "diff --git a/a.ts b/a.ts\n@@ -1 +1 @@\n-old\n+new\n";
+
+    const plan = await prepareStartupPlan(["bun", "hunk", "pager"], {
+      parseCliImpl: async () => ({ kind: "pager", options: {} }),
+      readStdinText: async () => patchText,
+      looksLikePatchInputImpl: () => true,
+      stdoutIsTTY: true,
+      env: { TERM: "dumb", LV: "-c" },
+      resolveRuntimeCliInputImpl: (input) => input,
+      resolveConfiguredCliInputImpl: (input) =>
+        ({
+          input: {
+            ...input,
+            options: {
+              ...input.options,
+              theme: { light: "catppuccin-latte", dark: "nord" },
+            },
+          },
+        }) as never,
+    });
+
+    expect(plan).toEqual({
+      kind: "static-diff-pager",
+      text: patchText,
+      options: { theme: "nord", pager: true },
+    });
+  });
+
   test("routes diff-like pager stdin to static output when no controlling terminal is available", async () => {
     let loaded = false;
     const patchText = "diff --git a/a.ts b/a.ts\n@@ -1 +1 @@\n-old\n+new\n";
@@ -407,6 +436,105 @@ describe("startup planning", () => {
       bootstrap: { initialThemeMode: "dark" },
     });
     expect(opened).toBe(1);
+  });
+
+  test("resolves a configured pair before app loading and records the startup classification", async () => {
+    const cliInput: CliInput = {
+      kind: "diff",
+      left: "before.ts",
+      right: "after.ts",
+      options: {},
+    };
+    let loadedTheme: CliInput["options"]["theme"];
+
+    const plan = await prepareStartupPlan(["bun", "hunk", "diff", "before.ts", "after.ts"], {
+      parseCliImpl: async () => cliInput,
+      resolveRuntimeCliInputImpl: (input) => input,
+      resolveConfiguredCliInputImpl: (input) =>
+        ({
+          input: {
+            ...input,
+            options: {
+              ...input.options,
+              theme: { light: "catppuccin-latte", dark: "nord" },
+            },
+          },
+        }) as never,
+      detectTerminalThemeModeFromBackgroundImpl: async () => "light",
+      loadAppBootstrapImpl: async (input) => {
+        loadedTheme = input.options.theme;
+        return createBootstrap(input);
+      },
+      stdinIsTTY: true,
+      stdoutIsTTY: true,
+      stdout: { write: () => true } as never,
+    });
+
+    expect(loadedTheme).toBe("catppuccin-latte");
+    expect(plan).toMatchObject({
+      kind: "app",
+      cliInput: { options: { theme: "catppuccin-latte" } },
+      bootstrap: {
+        initialThemeMode: "light",
+        cliThemeOverride: undefined,
+      },
+    });
+  });
+
+  test("keeps an explicit system CLI override while resolving it for rendering", async () => {
+    const cliInput: CliInput = {
+      kind: "diff",
+      left: "before.ts",
+      right: "after.ts",
+      options: { theme: "system" },
+    };
+
+    const plan = await prepareStartupPlan(["bun", "hunk", "diff", "--theme", "system"], {
+      parseCliImpl: async () => cliInput,
+      resolveRuntimeCliInputImpl: (input) => input,
+      resolveConfiguredCliInputImpl: (input) => ({ input }) as never,
+      detectTerminalThemeModeFromBackgroundImpl: async () => "dark",
+      loadAppBootstrapImpl: async (input) => createBootstrap(input),
+      stdinIsTTY: true,
+      stdoutIsTTY: true,
+      stdout: { write: () => true } as never,
+    });
+
+    expect(plan).toMatchObject({
+      kind: "app",
+      cliInput: { options: { theme: "github-dark-default" } },
+      bootstrap: {
+        initialThemeMode: "dark",
+        cliThemeOverride: "system",
+      },
+    });
+  });
+
+  test("does not probe for an unknown scalar theme request", async () => {
+    const cliInput: CliInput = {
+      kind: "diff",
+      left: "before.ts",
+      right: "after.ts",
+      options: { theme: "future-theme" },
+    };
+
+    const plan = await prepareStartupPlan(["bun", "hunk", "diff", "--theme", "future-theme"], {
+      parseCliImpl: async () => cliInput,
+      resolveRuntimeCliInputImpl: (input) => input,
+      resolveConfiguredCliInputImpl: (input) => ({ input }) as never,
+      detectTerminalThemeModeFromBackgroundImpl: async () => {
+        throw new Error("unexpected appearance probe");
+      },
+      loadAppBootstrapImpl: async (input) => createBootstrap(input),
+      stdinIsTTY: true,
+      stdoutIsTTY: true,
+    });
+
+    expect(plan).toMatchObject({
+      kind: "app",
+      cliInput: { options: { theme: "future-theme" } },
+      bootstrap: { cliThemeOverride: "future-theme" },
+    });
   });
 
   test("opens the controlling terminal for piped patch startup", async () => {

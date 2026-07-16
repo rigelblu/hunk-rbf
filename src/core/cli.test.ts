@@ -56,6 +56,7 @@ describe("parseCli", () => {
     expect(parsed.text).toContain("Global options:");
     expect(parsed.text).toContain("Common review options:");
     expect(parsed.text).toContain("auto-reload when the current diff input changes");
+    expect(parsed.text).toContain("system follows terminal appearance (auto alias)");
     expect(parsed.text).toContain("Git diff options:");
     expect(parsed.text).toContain("Notes:");
     expect(parsed.text).toContain(
@@ -72,12 +73,14 @@ describe("parseCli", () => {
     expect(explicit).toEqual(bare);
   });
 
-  test("resolves the package version metadata", () => {
-    expect(resolveCliVersion()).toBe(require("../../package.json").version);
+  test("resolves the fork version metadata", async () => {
+    const expectedVersion = (await Bun.file("rbf/RBF_VERSION").text()).trim();
+
+    expect(resolveCliVersion()).toBe(expectedVersion);
   });
 
-  test("prints the package version for --version and version", async () => {
-    const expectedVersion = require("../../package.json").version;
+  test("prints the fork version for --version and version", async () => {
+    const expectedVersion = (await Bun.file("rbf/RBF_VERSION").text()).trim();
     const flag = await parseCli(["bun", "hunk", "--version"]);
     const command = await parseCli(["bun", "hunk", "version"]);
 
@@ -964,7 +967,11 @@ describe("parseCli command help text", () => {
   }
 
   test("renders per-command help for the primary review commands", async () => {
-    expect(await expectHelp(["diff", "--help"])).toContain("review diffs or compare two concrete");
+    const diffHelp = await expectHelp(["diff", "--help"]);
+    expect(diffHelp).toContain("review diffs or compare two concrete");
+    expect(diffHelp.replace(/\s+/g, " ")).toContain(
+      "system follows terminal appearance (auto alias)",
+    );
     expect(await expectHelp(["show", "-h"])).toContain("review the last commit or a given ref");
     expect(await expectHelp(["patch", "--help"])).toContain("review a patch file");
     expect(await expectHelp(["pager", "--help"])).toContain("general Git pager wrapper");

@@ -421,6 +421,10 @@ export async function loadAppBootstrap(
   input: CliInput,
   { cwd = process.cwd(), customTheme, gitExecutable = "git" }: LoadAppBootstrapOptions = {},
 ): Promise<AppBootstrap> {
+  if (typeof input.options.theme !== "string" && input.options.theme !== undefined) {
+    throw new Error("Expected paired theme input to be resolved before loading app content.");
+  }
+
   const agentContext = await loadAgentContext(input.options.agentContext, {
     cwd,
   });

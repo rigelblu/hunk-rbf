@@ -686,8 +686,16 @@ export function createPtyHarness() {
     rows?: number;
     env?: Record<string, string | undefined>;
   }) {
+    const hunkCommand = `exec ${buildHunkCommand(options.args)} < ${shellQuote(options.stdinFile)}`;
+    const command =
+      process.platform === "darwin"
+        ? `/usr/bin/script -q /dev/null /bin/bash -c ${shellQuote(hunkCommand)}`
+        : `script -q -c ${shellQuote(hunkCommand)} /dev/null`;
+
     return launchShellCommand({
-      command: `exec ${buildHunkCommand(options.args)} < ${shellQuote(options.stdinFile)}`,
+      // Tuistory's outer PTY does not provide `/dev/tty` after stdin redirection. `script`
+      // allocates the nested controlling terminal that piped-patch Hunk sessions require.
+      command,
       cwd: options.cwd,
       cols: options.cols,
       rows: options.rows,
