@@ -55,6 +55,13 @@ function shellQuote(value: string) {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
+/** Build the platform-specific `script` invocation used to allocate a real terminal. */
+function buildScriptCommand(command: string, transcript: string) {
+  return process.platform === "darwin"
+    ? `/usr/bin/script -q ${shellQuote(transcript)} /bin/bash -c ${shellQuote(command)}`
+    : `script -q -f -e -c ${shellQuote(command)} ${shellQuote(transcript)}`;
+}
+
 function stripTerminalControl(text: string) {
   return text
     .replace(/^Script started.*?\n/s, "")
@@ -116,10 +123,10 @@ function spawnHunkSession(
   },
 ) {
   const innerCommand = `bun run ${shellQuote(sourceEntrypoint)} diff ${shellQuote(fixture.before)} ${shellQuote(fixture.after)}`;
+  const scriptCommand = buildScriptCommand(innerCommand, fixture.transcript);
   const hunkCommand = [
-    `(sleep ${quitAfterSeconds}; printf q) | timeout ${timeoutSeconds} script -q -f -e -c`,
-    shellQuote(innerCommand),
-    shellQuote(fixture.transcript),
+    `(sleep ${quitAfterSeconds}; printf q) | timeout ${timeoutSeconds}`,
+    scriptCommand,
   ].join(" ");
 
   return Bun.spawn(["bash", "-lc", hunkCommand], {

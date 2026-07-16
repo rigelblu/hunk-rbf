@@ -6,11 +6,14 @@ import { resolveGlobalConfigPath } from "./paths";
 import { detectVcs, findVcsRepoRootCandidate, getDefaultVcsAdapter, isVcsId } from "./vcs";
 import type {
   CliInput,
-  CommonOptions,
+  ConfiguredCliInput,
+  ConfiguredCommonOptions,
   CustomSyntaxColorsConfig,
   CustomThemeConfig,
   LayoutMode,
   PersistedViewPreferences,
+  ThemePairPreference,
+  ThemePreference,
   VcsMode,
 } from "./types";
 
@@ -81,7 +84,7 @@ interface ConfigResolutionOptions {
 }
 
 interface HunkConfigResolution {
-  input: CliInput;
+  input: ConfiguredCliInput;
   customTheme?: CustomThemeConfig;
   globalConfigPath?: string;
   repoConfigPath?: string;
@@ -109,6 +112,50 @@ function normalizeBoolean(value: unknown) {
 /** Accept only plain strings from config files. */
 function normalizeString(value: unknown) {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/** Validate and canonicalize one built-in theme id used by a paired preference. */
+function normalizeThemePairMember(value: unknown, keyPath: "theme.light" | "theme.dark") {
+  if (typeof value !== "string") {
+    throw new Error(`Expected ${keyPath} to be a built-in theme id.`);
+  }
+
+  if (!BUILT_IN_THEME_IDS.includes(value as (typeof BUILT_IN_THEME_IDS)[number])) {
+    throw new Error(
+      `Expected ${keyPath} to be a built-in theme id. Known themes: ${BUILT_IN_THEME_IDS.join(", ")}.`,
+    );
+  }
+
+  return value;
+}
+
+/** Read one fixed scalar or complete atomic light/dark theme preference. */
+function normalizeThemePreference(value: unknown): ThemePreference | undefined {
+  const scalar = normalizeString(value);
+  if (scalar !== undefined) {
+    return scalar;
+  }
+
+  if (value === undefined || value === "") {
+    return undefined;
+  }
+
+  if (!isRecord(value)) {
+    throw new Error("Expected theme to be a non-empty string or a light/dark TOML object.");
+  }
+
+  const unsupportedKey = Object.keys(value).find((key) => key !== "light" && key !== "dark");
+  if (unsupportedKey) {
+    throw new Error(
+      `Unsupported theme.${unsupportedKey}; paired themes currently contain only theme.light and theme.dark.`,
+    );
+  }
+
+  const pair: ThemePairPreference = {
+    light: normalizeThemePairMember(value.light, "theme.light"),
+    dark: normalizeThemePairMember(value.dark, "theme.dark"),
+  };
+  return pair;
 }
 
 /** Accept only #rrggbb theme colors and report the failing TOML key path. */
@@ -227,11 +274,11 @@ function mergeCustomTheme(
 }
 
 /** Read the view preferences stored at one TOML object level. */
-function readConfigPreferences(source: Record<string, unknown>): CommonOptions {
+function readConfigPreferences(source: Record<string, unknown>): ConfiguredCommonOptions {
   return {
     mode: normalizeLayoutMode(source.mode),
     vcs: normalizeVcsMode(source.vcs),
-    theme: normalizeString(source.theme),
+    theme: normalizeThemePreference(source.theme),
     watch: normalizeBoolean(source.watch),
     excludeUntracked: normalizeBoolean(source.exclude_untracked),
     lineNumbers: normalizeBoolean(source.line_numbers),
@@ -248,7 +295,10 @@ function readConfigPreferences(source: Record<string, unknown>): CommonOptions {
 }
 
 /** Merge partial preference layers with right-hand overrides taking precedence. */
-function mergeOptions(base: CommonOptions, overrides: CommonOptions): CommonOptions {
+function mergeOptions(
+  base: ConfiguredCommonOptions,
+  overrides: ConfiguredCommonOptions,
+): ConfiguredCommonOptions {
   return {
     ...base,
     mode: overrides.mode ?? base.mode,
@@ -270,7 +320,10 @@ function mergeOptions(base: CommonOptions, overrides: CommonOptions): CommonOpti
 }
 
 /** Apply one parsed config object, including command/pager sections, to the current invocation. */
-function resolveConfigLayer(source: Record<string, unknown>, input: CliInput): CommonOptions {
+function resolveConfigLayer(
+  source: Record<string, unknown>,
+  input: CliInput,
+): ConfiguredCommonOptions {
   let resolved = readConfigPreferences(source);
 
   const commandSection = source[input.kind];
@@ -315,7 +368,7 @@ export function resolveConfiguredCliInput(
   const userConfigPath = resolveGlobalConfigPath(env);
   let resolvedCustomTheme: CustomThemeConfig | undefined;
 
-  let resolvedOptions: CommonOptions = {
+  let resolvedOptions: ConfiguredCommonOptions = {
     mode: DEFAULT_VIEW_PREFERENCES.mode,
     vcs: detectRepoVcsMode(cwd),
     // Keep the built-in theme default explicit so stdin-backed startup paths do not depend on
@@ -374,7 +427,7 @@ export function resolveConfiguredCliInput(
     input: {
       ...input,
       options: resolvedOptions,
-    },
+    } as ConfiguredCliInput,
     customTheme: resolvedCustomTheme,
     globalConfigPath: userConfigPath,
     repoConfigPath,

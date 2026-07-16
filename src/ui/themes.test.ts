@@ -41,11 +41,13 @@ function themeContrastFailures(
 }
 
 describe("themes", () => {
-  test("defaults to GitHub's dark theme and auto chooses GitHub light/dark", () => {
+  test("defaults to GitHub's dark theme and system/auto choose GitHub light/dark", () => {
     expect(resolveTheme(undefined, null).id).toBe(DEFAULT_DARK_THEME_ID);
     expect(resolveTheme("missing", null).id).toBe(DEFAULT_DARK_THEME_ID);
     expect(resolveTheme("auto", "dark").id).toBe(DEFAULT_DARK_THEME_ID);
     expect(resolveTheme("auto", "light").id).toBe(DEFAULT_LIGHT_THEME_ID);
+    expect(resolveTheme("system", "dark").id).toBe(DEFAULT_DARK_THEME_ID);
+    expect(resolveTheme("system", "light").id).toBe(DEFAULT_LIGHT_THEME_ID);
   });
 
   test("maps removed theme ids to compatible built-in themes", () => {

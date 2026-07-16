@@ -83,7 +83,10 @@ function buildCommonOptions(
 function applyCommonOptions(command: Command) {
   return command
     .option("--mode <mode>", "layout mode: auto, split, stack", parseLayoutMode)
-    .option("--theme <theme>", "named theme override")
+    .option(
+      "--theme <theme>",
+      "named theme override; system follows terminal appearance (auto alias)",
+    )
     .option("--agent-context <path>", "JSON sidecar with agent rationale")
     .option("--pager", "use pager-style chrome and controls")
     .option("--line-numbers", "show line numbers")
@@ -158,7 +161,7 @@ function renderCliHelp() {
     "  --hunk-headers / --no-hunk-headers      show or hide hunk metadata rows",
     "  --agent-notes / --no-agent-notes        show or hide agent notes by default",
     "  --transparent-bg / --no-transparent-bg  let terminal background show through Hunk surfaces",
-    "  --theme <theme>                         named theme override",
+    "  --theme <theme>                         named theme override; system follows terminal appearance (auto alias)",
     "",
     "Git diff options:",
     "  --staged, --cached                      review staged changes",

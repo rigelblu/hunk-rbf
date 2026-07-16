@@ -63,7 +63,6 @@ function withCurrentViewOptions(
   input: CliInput,
   view: {
     layoutMode: LayoutMode;
-    themeId: string;
     showAgentNotes: boolean;
     showHunkHeaders: boolean;
     showLineNumbers: boolean;
@@ -71,12 +70,13 @@ function withCurrentViewOptions(
     wrapLines: boolean;
   },
 ): CliInput {
+  const reloadOptions = { ...input.options };
+  delete reloadOptions.theme;
   return {
     ...input,
     options: {
-      ...input.options,
+      ...reloadOptions,
       mode: view.layoutMode,
-      theme: view.themeId,
       agentNotes: view.showAgentNotes,
       hunkHeaders: view.showHunkHeaders,
       lineNumbers: view.showLineNumbers,
@@ -120,14 +120,7 @@ export function App({
   const [layoutToggleRequestId, setLayoutToggleRequestId] = useState(0);
   const [transientNoticeText, setTransientNoticeText] = useState<string | null>(null);
   const [layoutMode, setLayoutMode] = useState<LayoutMode>(bootstrap.initialMode);
-  const [themeId, setThemeId] = useState(
-    () =>
-      resolveTheme(
-        bootstrap.initialTheme,
-        bootstrap.initialThemeMode ?? renderer.themeMode,
-        bootstrap.customTheme,
-      ).id,
-  );
+  const [sessionThemeOverrideId, setSessionThemeOverrideId] = useState<string | null>(null);
   // Soft reloads replace bootstrap without re-running startup terminal theme detection.
   const [detectedThemeMode] = useState(() => bootstrap.initialThemeMode);
   const [showAgentNotes, setShowAgentNotes] = useState(bootstrap.initialShowAgentNotes ?? false);
@@ -158,10 +151,16 @@ export function App({
     () => availableThemes(bootstrap.customTheme),
     [bootstrap.customTheme],
   );
-  const effectiveThemeId = themeSelectorState.previewThemeId ?? themeId;
+  const effectiveThemeId =
+    themeSelectorState.previewThemeId ?? sessionThemeOverrideId ?? bootstrap.initialTheme;
   const baseTheme = useMemo(
-    () => resolveTheme(effectiveThemeId, detectedThemeMode ?? null, bootstrap.customTheme),
-    [effectiveThemeId, detectedThemeMode, bootstrap.customTheme],
+    () =>
+      resolveTheme(
+        effectiveThemeId,
+        detectedThemeMode ?? renderer.themeMode,
+        bootstrap.customTheme,
+      ),
+    [effectiveThemeId, detectedThemeMode, renderer.themeMode, bootstrap.customTheme],
   );
   const activeTheme = useMemo(
     () =>
@@ -419,7 +418,7 @@ export function App({
   const selectTheme = useCallback(
     (nextThemeId: string) => {
       const nextTheme = themeOptions.find((theme) => theme.id === nextThemeId);
-      setThemeId(nextThemeId);
+      setSessionThemeOverrideId(nextThemeId);
       showTransientNotice(`Theme: ${nextTheme?.label ?? nextThemeId}`);
     },
     [showTransientNotice, themeOptions],
@@ -523,7 +522,6 @@ export function App({
 
     const nextInput = withCurrentViewOptions(bootstrap.input, {
       layoutMode,
-      themeId,
       showAgentNotes,
       showHunkHeaders,
       showLineNumbers,
@@ -550,7 +548,6 @@ export function App({
     showHunkHeaders,
     showLineNumbers,
     showMenuBar,
-    themeId,
     wrapLines,
   ]);
 

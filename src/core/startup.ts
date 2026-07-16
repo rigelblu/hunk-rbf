@@ -3,6 +3,7 @@ import { HunkUserError } from "./errors";
 import { loadAppBootstrap } from "./loaders";
 import { looksLikePatchInput } from "./pager";
 import { detectTerminalThemeModeFromBackground } from "./themeDetection";
+import { resolveConfiguredThemeInput, themePreferenceFollowsAppearance } from "./themePreference";
 import {
   openControllingTerminal,
   resolveRuntimeCliInput,
@@ -131,10 +132,11 @@ export async function prepareStartupPlan(
       const configuredStatic = resolveConfiguredCliInputImpl(
         resolveRuntimeCliInputImpl(staticPatchInput),
       );
+      const staticInput = resolveConfiguredThemeInput(configuredStatic.input, null);
       const staticPlan = {
         kind: "static-diff-pager" as const,
         text: stdinText,
-        options: configuredStatic.input.options,
+        options: staticInput.options,
       };
 
       return configuredStatic.customTheme
@@ -194,8 +196,9 @@ export async function prepareStartupPlan(
   }
 
   const runtimeCliInput = resolveRuntimeCliInputImpl(parsedCliInput);
+  const cliThemeOverride =
+    typeof runtimeCliInput.options.theme === "string" ? runtimeCliInput.options.theme : undefined;
   const configured = resolveConfiguredCliInputImpl(runtimeCliInput);
-  const cliInput = configured.input;
 
   // Any app session launched with piped stdin still needs a real terminal input stream for
   // keyboard, mouse, and terminal query responses. Auto-theme happened to open this path during
@@ -205,7 +208,7 @@ export async function prepareStartupPlan(
   }
 
   let initialThemeMode: AppBootstrap["initialThemeMode"];
-  if (cliInput.options.theme === "auto" && stdoutIsTTY) {
+  if (themePreferenceFollowsAppearance(configured.input.options.theme) && stdoutIsTTY) {
     const themeInput = controllingTerminal?.stdin ?? (stdinIsTTY ? process.stdin : null);
     if (themeInput) {
       initialThemeMode =
@@ -213,6 +216,8 @@ export async function prepareStartupPlan(
         undefined;
     }
   }
+
+  const cliInput = resolveConfiguredThemeInput(configured.input, initialThemeMode);
 
   if (cliInput.options.watch && !canReloadInput(cliInput)) {
     throw new HunkUserError(
@@ -232,6 +237,7 @@ export async function prepareStartupPlan(
   }
 
   bootstrap.initialThemeMode = initialThemeMode ?? bootstrap.initialThemeMode;
+  bootstrap.cliThemeOverride = cliThemeOverride;
 
   controllingTerminal ??= usesPipedPatchInputImpl(cliInput) ? openControllingTerminalImpl() : null;
 

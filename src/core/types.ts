@@ -5,6 +5,13 @@ export type LayoutMode = "auto" | "split" | "stack";
 export type VcsMode = string;
 export type TerminalThemeMode = "light" | "dark";
 
+export interface ThemePairPreference {
+  light: string;
+  dark: string;
+}
+
+export type ThemePreference = string | ThemePairPreference;
+
 export type ReviewNoteSource = "ai" | "agent" | "user";
 export type SessionCommentListType = "live" | "all" | ReviewNoteSource;
 
@@ -349,6 +356,16 @@ export type CliInput =
   | PatchCommandInput
   | DiffToolCommandInput;
 
+export type ConfiguredCommonOptions = Omit<CommonOptions, "theme"> & {
+  theme?: ThemePreference;
+};
+
+type WithConfiguredTheme<Input> = Input extends { options: CommonOptions }
+  ? Omit<Input, "options"> & { options: ConfiguredCommonOptions }
+  : never;
+
+export type ConfiguredCliInput = WithConfiguredTheme<CliInput>;
+
 export type ParsedCliInput =
   | CliInput
   | HelpCommandInput
@@ -362,6 +379,7 @@ export interface AppBootstrap {
   initialMode: LayoutMode;
   initialTheme?: string;
   initialThemeMode?: TerminalThemeMode;
+  cliThemeOverride?: string;
   customTheme?: CustomThemeConfig;
   initialShowLineNumbers?: boolean;
   initialWrapLines?: boolean;

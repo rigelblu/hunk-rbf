@@ -1,7 +1,8 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { resolveConfiguredCliInput } from "../core/config";
 import { loadAppBootstrap } from "../core/loaders";
 import { resolveRuntimeCliInput } from "../core/terminal";
+import { resolveConfiguredThemeInput } from "../core/themePreference";
 import type { AppBootstrap, CliInput } from "../core/types";
 import type { UpdateNotice } from "../core/updateNotice";
 import {
@@ -30,6 +31,8 @@ export function AppHost({
 }) {
   const [activeBootstrap, setActiveBootstrap] = useState(bootstrap);
   const [appVersion, setAppVersion] = useState(0);
+  const activeBootstrapRef = useRef(bootstrap);
+  const reloadQueueRef = useRef<Promise<void>>(Promise.resolve());
   const [sessionFileBounds] = useState(() =>
     createSessionReloadBounds(bootstrap, {
       cwd: hostClient?.getRegistration().cwd,
@@ -41,51 +44,79 @@ export function AppHost({
   });
 
   const reloadSession = useCallback(
-    async (nextInput: CliInput, options?: { resetApp?: boolean; sourcePath?: string }) => {
-      // Re-run the same startup normalization pipeline used on first launch so reloads honor
-      // runtime defaults and config layering instead of assuming `nextInput` is already final.
-      // `sourcePath` matters for daemon-driven reloads that ask Hunk to reopen content from a
-      // different working directory than the process originally started in.
-      const runtimeInput = resolveRuntimeCliInput(nextInput);
-      const { cwd } = validateSessionReloadWithinBounds(sessionFileBounds, runtimeInput, {
-        sourcePath: options?.sourcePath,
-      });
-      const configured = resolveConfiguredCliInput(runtimeInput, { cwd });
-      const nextBootstrap = await loadAppBootstrap(configured.input, {
-        cwd,
-        customTheme: configured.customTheme,
-      });
-      const nextSnapshot = createInitialSessionSnapshot(nextBootstrap);
-
-      let sessionId = "local-session";
-      if (hostClient) {
-        // Keep the daemon-facing session registration in sync with whatever the UI is about to
-        // show. Replacing both registration and snapshot here means external session commands see
-        // the new source, title, and selection baseline immediately after reload.
-        const nextRegistration = updateSessionRegistration(
-          hostClient.getRegistration(),
-          nextBootstrap,
+    (nextInput: CliInput, options?: { resetApp?: boolean; sourcePath?: string }) => {
+      const reloadResult = reloadQueueRef.current.then(async () => {
+        const currentBootstrap = activeBootstrapRef.current;
+        // Re-run the same startup normalization pipeline used on first launch so reloads honor
+        // runtime defaults and config layering instead of assuming `nextInput` is already final.
+        // `sourcePath` matters for daemon-driven reloads that ask Hunk to reopen content from a
+        // different working directory than the process originally started in.
+        const runtimeInput = resolveRuntimeCliInput(nextInput);
+        const incomingCliThemeOverride =
+          typeof runtimeInput.options.theme === "string" ? runtimeInput.options.theme : undefined;
+        const nextCliThemeOverride = incomingCliThemeOverride ?? currentBootstrap.cliThemeOverride;
+        const configInput: CliInput = {
+          ...runtimeInput,
+          options: {
+            ...runtimeInput.options,
+            theme: nextCliThemeOverride,
+          },
+        };
+        const { cwd } = validateSessionReloadWithinBounds(sessionFileBounds, runtimeInput, {
+          sourcePath: options?.sourcePath,
+        });
+        const configured = resolveConfiguredCliInput(configInput, { cwd });
+        const resolvedInput = resolveConfiguredThemeInput(
+          configured.input,
+          currentBootstrap.initialThemeMode,
         );
-        sessionId = nextRegistration.sessionId;
-        hostClient.replaceSession(nextRegistration, nextSnapshot);
-      }
+        const nextBootstrap = await loadAppBootstrap(resolvedInput, {
+          cwd,
+          customTheme: configured.customTheme,
+        });
+        nextBootstrap.initialThemeMode = currentBootstrap.initialThemeMode;
+        nextBootstrap.cliThemeOverride = nextCliThemeOverride;
+        const nextSnapshot = createInitialSessionSnapshot(nextBootstrap);
 
-      setActiveBootstrap(nextBootstrap);
-      if (options?.resetApp !== false) {
-        // Bumping the key forces a full App remount. Callers that pass `resetApp: false` get a
-        // soft reload that preserves in-memory UI state like selection, filter text, and pane size.
-        setAppVersion((current) => current + 1);
-      }
+        let sessionId = "local-session";
+        if (hostClient) {
+          // Keep the daemon-facing session registration in sync with whatever the UI is about to
+          // show. Replacing both registration and snapshot here means external session commands see
+          // the new source, title, and selection baseline immediately after reload.
+          const nextRegistration = updateSessionRegistration(
+            hostClient.getRegistration(),
+            nextBootstrap,
+          );
+          sessionId = nextRegistration.sessionId;
+          hostClient.replaceSession(nextRegistration, nextSnapshot);
+        }
 
-      return {
-        sessionId,
-        inputKind: nextBootstrap.input.kind,
-        title: nextBootstrap.changeset.title,
-        sourceLabel: nextBootstrap.changeset.sourceLabel,
-        fileCount: nextBootstrap.changeset.files.length,
-        selectedFilePath: nextSnapshot.state.selectedFilePath,
-        selectedHunkIndex: nextSnapshot.state.selectedHunkIndex,
-      };
+        activeBootstrapRef.current = nextBootstrap;
+        setActiveBootstrap(nextBootstrap);
+        if (options?.resetApp !== false) {
+          // Bumping the key forces a full App remount. Callers that pass `resetApp: false` get a
+          // soft reload that preserves in-memory UI state like selection, filter text, and pane size.
+          setAppVersion((current) => current + 1);
+        }
+
+        return {
+          sessionId,
+          inputKind: nextBootstrap.input.kind,
+          title: nextBootstrap.changeset.title,
+          sourceLabel: nextBootstrap.changeset.sourceLabel,
+          fileCount: nextBootstrap.changeset.files.length,
+          selectedFilePath: nextSnapshot.state.selectedFilePath,
+          selectedHunkIndex: nextSnapshot.state.selectedHunkIndex,
+        };
+      });
+
+      // Keep later reloads ordered even if one request fails, while returning the original result
+      // to the caller that owns this command.
+      reloadQueueRef.current = reloadResult.then(
+        () => undefined,
+        () => undefined,
+      );
+      return reloadResult;
     },
     [hostClient, sessionFileBounds],
   );

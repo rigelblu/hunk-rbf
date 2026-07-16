@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, mock, test } from "bun:test";
@@ -11,7 +11,7 @@ import type {
   HunkSessionServerMessage,
   HunkSessionSnapshot,
 } from "../hunk-session/types";
-import type { AppBootstrap, LayoutMode } from "../core/types";
+import type { AppBootstrap, CliInput, LayoutMode, TerminalThemeMode } from "../core/types";
 import { createTestVcsAppBootstrap } from "../../test/helpers/app-bootstrap";
 import { capturedTestColorToHex } from "../../test/helpers/test-color-helpers";
 import { createTestDiffFile as buildTestDiffFile, lines } from "../../test/helpers/diff-helpers";
@@ -19,6 +19,8 @@ import { AGENT_SKILL_COMMAND, AGENT_SKILL_PROMPT } from "./components/chrome/Age
 import { resolveTheme } from "./themes";
 
 const { loadAppBootstrap } = await import("../core/loaders");
+const { resolveConfiguredCliInput } = await import("../core/config");
+const { resolveThemePreference } = await import("../core/themePreference");
 const { AppHost } = await import("./AppHost");
 
 const TEST_KEY_PAGE_UP = "\x1B[5~";
@@ -123,6 +125,71 @@ function createMockHostClient({
       });
     },
   };
+}
+
+/** Write one complete repo-local pair used by reload interaction tests. */
+function writeThemePairTestConfig(repo: string, light: string, dark: string) {
+  mkdirSync(join(repo, ".hunk"), { recursive: true });
+  writeFileSync(
+    join(repo, ".hunk", "config.toml"),
+    `theme = { light = "${light}", dark = "${dark}" }\n`,
+  );
+}
+
+/** Build a file-diff bootstrap after resolving a repo-local pair for one startup appearance. */
+async function createThemePairTestBootstrap({
+  cliThemeOverride,
+  left,
+  mode,
+  repo,
+  right,
+}: {
+  cliThemeOverride?: string;
+  left: string;
+  mode: TerminalThemeMode;
+  repo: string;
+  right: string;
+}) {
+  const input: CliInput = {
+    kind: "diff",
+    left,
+    right,
+    options: {
+      mode: "split",
+      theme: cliThemeOverride,
+    },
+  };
+  const configured = resolveConfiguredCliInput(input, { cwd: repo, env: {} });
+  const resolvedInput: CliInput = {
+    ...configured.input,
+    options: {
+      ...configured.input.options,
+      theme: resolveThemePreference(configured.input.options.theme, mode),
+    },
+  };
+  const bootstrap = await loadAppBootstrap(resolvedInput, { cwd: repo });
+  bootstrap.initialThemeMode = mode;
+  bootstrap.cliThemeOverride = cliThemeOverride;
+  return bootstrap;
+}
+
+/** Settle async reload state before asserting the next theme-selector frame. */
+async function settleThemeReloadTest(setup: Awaited<ReturnType<typeof testRender>>) {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    await flush(setup);
+    await Bun.sleep(10);
+  }
+}
+
+/** Set the OpenTUI test renderer's terminal appearance before forcing an App rerender. */
+function setTestRendererThemeMode(
+  setup: Awaited<ReturnType<typeof testRender>>,
+  mode: TerminalThemeMode,
+) {
+  const renderer = setup.renderer as unknown as {
+    themeModeState: { applyThemeMode: (nextMode: TerminalThemeMode) => TerminalThemeMode | null };
+  };
+  renderer.themeModeState.applyThemeMode(mode);
 }
 
 function createBootstrap(initialMode: LayoutMode = "split", pager = false): AppBootstrap {
@@ -513,6 +580,22 @@ async function openThemesModalFromViewMenu(setup: Awaited<ReturnType<typeof test
   });
 
   return waitForFrame(setup, (frame) => frame.includes("Theme selector"), 12);
+}
+
+/** Open the theme selector through its direct keyboard shortcut. */
+async function openThemeSelectorTest(setup: Awaited<ReturnType<typeof testRender>>) {
+  await act(async () => {
+    await setup.mockInput.typeText("t");
+  });
+  return waitForFrame(setup, (frame) => frame.includes("Theme selector"), 12);
+}
+
+/** Close the theme selector and wait until ordinary review shortcuts are active again. */
+async function closeThemeSelectorTest(setup: Awaited<ReturnType<typeof testRender>>) {
+  await act(async () => {
+    await setup.mockInput.pressEscape();
+  });
+  return waitForFrame(setup, (frame) => !frame.includes("Theme selector"), 12);
 }
 
 async function pressHunkNavigationKey(
@@ -991,9 +1074,7 @@ describe("App interactions", () => {
       });
       await waitForFrame(setup, (nextFrame) => nextFrame.includes("›  github-dark-high-contrast"));
 
-      await act(async () => {
-        await setup.mockInput.pressEscape();
-      });
+      await closeThemeSelectorTest(setup);
       await waitForFrame(setup, (nextFrame) => !nextFrame.includes("Theme selector"));
 
       await act(async () => {
@@ -1744,6 +1825,7 @@ describe("App interactions", () => {
     });
     // loadAppBootstrap does not do startup-time terminal theme detection in tests.
     bootstrap.initialThemeMode = "light";
+    bootstrap.cliThemeOverride = "auto";
 
     const setup = await testRender(<AppHost bootstrap={bootstrap} />, {
       width: 220,
@@ -1770,6 +1852,202 @@ describe("App interactions", () => {
         setup.renderer.destroy();
       });
       rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
+  test("soft reload applies a changed paired base and preserves a selector override", async () => {
+    const repo = mkdtempSync(join(process.cwd(), ".hunk-theme-pair-reload-"));
+    const left = join(repo, "before.ts");
+    const right = join(repo, "after.ts");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    writeFileSync(left, "export const answer = 41;\n");
+    writeFileSync(right, "export const answer = 42;\n");
+    writeThemePairTestConfig(repo, "catppuccin-latte", "nord");
+
+    const bootstrap = await createThemePairTestBootstrap({ left, mode: "light", repo, right });
+    const { dispatchCommand, hostClient } = createMockHostClient({ cwd: repo, repoRoot: repo });
+    const setup = await testRender(<AppHost bootstrap={bootstrap} hostClient={hostClient} />, {
+      width: 220,
+      height: 24,
+    });
+    const reloadWithoutTheme = async (requestId: string) => {
+      await act(async () => {
+        await dispatchCommand({
+          type: "command",
+          requestId,
+          command: "reload_session",
+          input: {
+            sessionId: "session-1",
+            nextInput: { kind: "diff", left, right, options: { mode: "split" } },
+          },
+        });
+      });
+      await settleThemeReloadTest(setup);
+    };
+
+    try {
+      await flush(setup);
+      let frame = await openThemeSelectorTest(setup);
+      expect(frame).toContain("›  catppuccin-latte");
+      expect(frame).toContain("active");
+
+      await closeThemeSelectorTest(setup);
+      writeThemePairTestConfig(repo, "github-light-default", "nord");
+      writeFileSync(right, "export const answer = 42;\nexport const reloaded = true;\n");
+      await reloadWithoutTheme("reload-changed-pair");
+      frame = setup.captureCharFrame();
+      expect(frame).toContain("reloaded");
+
+      frame = await openThemeSelectorTest(setup);
+      expect(frame).toContain("›  github-light-default");
+      expect(frame).toContain("active");
+
+      await act(async () => {
+        await setup.mockInput.pressArrow("down");
+      });
+      frame = await waitForFrame(setup, (currentFrame) =>
+        currentFrame.includes("›  github-light-high-contrast"),
+      );
+      expect(frame).toContain("›  github-light-high-contrast");
+      await act(async () => {
+        await setup.mockInput.pressEnter();
+      });
+      frame = await waitForFrame(setup, (currentFrame) =>
+        currentFrame.includes("Theme: github-light-high-contrast"),
+      );
+      expect(frame).toContain("Theme: github-light-high-contrast");
+
+      writeThemePairTestConfig(repo, "catppuccin-latte", "nord");
+      await reloadWithoutTheme("reload-preserve-selector");
+
+      frame = await openThemeSelectorTest(setup);
+      expect(frame).toContain("›  github-light-high-contrast");
+      expect(frame).toContain("active");
+    } finally {
+      await act(async () => {
+        setup.renderer.destroy();
+      });
+      rmSync(repo, { force: true, recursive: true });
+    }
+  });
+
+  test("daemon reload replaces explicit CLI theme provenance and preserves it when omitted", async () => {
+    const repo = mkdtempSync(join(process.cwd(), ".hunk-theme-cli-reload-"));
+    const left = join(repo, "before.ts");
+    const right = join(repo, "after.ts");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    writeFileSync(left, "export const answer = 41;\n");
+    writeFileSync(right, "export const answer = 42;\n");
+    writeThemePairTestConfig(repo, "catppuccin-latte", "nord");
+
+    const bootstrap = await createThemePairTestBootstrap({
+      cliThemeOverride: "system",
+      left,
+      mode: "light",
+      repo,
+      right,
+    });
+    const { dispatchCommand, hostClient } = createMockHostClient({ cwd: repo, repoRoot: repo });
+    const setup = await testRender(<AppHost bootstrap={bootstrap} hostClient={hostClient} />, {
+      width: 220,
+      height: 24,
+    });
+    const reload = async (requestId: string, theme?: string) => {
+      await act(async () => {
+        await dispatchCommand({
+          type: "command",
+          requestId,
+          command: "reload_session",
+          input: {
+            sessionId: "session-1",
+            nextInput: {
+              kind: "diff",
+              left,
+              right,
+              options: { mode: "split", theme },
+            },
+          },
+        });
+      });
+      await settleThemeReloadTest(setup);
+    };
+    const dispatchReload = (requestId: string, theme?: string) =>
+      dispatchCommand({
+        type: "command",
+        requestId,
+        command: "reload_session",
+        input: {
+          sessionId: "session-1",
+          nextInput: {
+            kind: "diff",
+            left,
+            right,
+            options: { mode: "split", theme },
+          },
+        },
+      });
+
+    try {
+      await flush(setup);
+      let frame = await openThemeSelectorTest(setup);
+      expect(frame).toContain("›  github-light-default");
+
+      await closeThemeSelectorTest(setup);
+      await reload("reload-preserve-system");
+      frame = await openThemeSelectorTest(setup);
+      expect(frame).toContain("›  github-light-default");
+
+      await closeThemeSelectorTest(setup);
+      await reload("reload-replace-theme", "nord");
+      frame = await openThemeSelectorTest(setup);
+      expect(frame).toContain("›  nord");
+
+      await closeThemeSelectorTest(setup);
+      await reload("reload-preserve-replacement");
+      frame = await openThemeSelectorTest(setup);
+      expect(frame).toContain("›  nord");
+
+      await closeThemeSelectorTest(setup);
+      await act(async () => {
+        await Promise.all([
+          dispatchReload("reload-back-to-back-explicit", "dracula"),
+          dispatchReload("reload-back-to-back-omitted"),
+        ]);
+      });
+      await settleThemeReloadTest(setup);
+      frame = await openThemeSelectorTest(setup);
+      expect(frame).toContain("›  dracula");
+    } finally {
+      await act(async () => {
+        setup.renderer.destroy();
+      });
+      rmSync(repo, { force: true, recursive: true });
+    }
+  });
+
+  test("unknown scalar theme uses the renderer appearance fallback", async () => {
+    const bootstrap = createBootstrap();
+    bootstrap.initialTheme = "future-theme";
+    bootstrap.initialThemeMode = undefined;
+    const setup = await testRender(<AppHost bootstrap={bootstrap} />, {
+      width: 220,
+      height: 24,
+    });
+
+    try {
+      setTestRendererThemeMode(setup, "light");
+      await flush(setup);
+
+      const frame = await openThemeSelectorTest(setup);
+      expect(
+        frame
+          .split("\n")
+          .some((line) => line.includes("github-light-default") && line.includes("active")),
+      ).toBe(true);
+    } finally {
+      await act(async () => {
+        setup.renderer.destroy();
+      });
     }
   });
 
