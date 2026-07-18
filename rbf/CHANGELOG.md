@@ -9,6 +9,12 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 
 ---
 
+# 🔵⋯ v0.2.1 (2026-07-22)
+## 🟠⋯ Added for Builders
+- 2026-07-22 - data (ux) | compare a personal light/dark theme pair against the same focused review fixture (#hk-5)
+
+---
+
 # 🔵⋯ v0.2.0 (2026-07-22)
 ## 🟠⋯ Added for End Users
 - 2026-07-22 - feat (ux) | load multiple named custom themes and use them directly or in a light/dark pair (#hk-2)
