@@ -38,3 +38,12 @@ background = "#181818"
 ```
 
 Named ids appear in the theme selector and work anywhere a theme id is accepted. Global and repository definitions merge field-by-field, with repository values taking precedence. Custom themes inherit only from built-in themes. The existing singular `[custom_theme]` table and `theme = "custom"` remain supported.
+
+# 🔵⋯ Dogfood a personal light/dark pair
+Use the focused theme fixture to compare both members of a personal pair against the same review:
+
+```sh
+hunk diff test/fixtures/themes/rose-pine/before.ts test/fixtures/themes/rose-pine/after.ts
+```
+
+Press `t` to select each named theme, then inspect diff meaning, selection, line numbers, and syntax in light and dark terminal appearances. Keep personal palette values in user configuration rather than copying them into Hunk source or release artifacts.
