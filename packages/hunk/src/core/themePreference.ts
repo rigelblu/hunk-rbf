@@ -50,18 +50,32 @@ export function normalizeThemePreference(value: unknown): ThemePreference | unde
   };
 }
 
-/** Validate one built-in theme id used by an appearance-aware pair. */
+/** Require one non-empty theme id before the complete configured catalog is available. */
 function normalizeThemePairMember(value: unknown, keyPath: "theme.light" | "theme.dark") {
-  if (
-    typeof value !== "string" ||
-    !BUNDLED_SHIKI_THEME_IDS.includes(value as (typeof BUNDLED_SHIKI_THEME_IDS)[number])
-  ) {
-    throw new Error(
-      `Expected ${keyPath} to be a built-in theme id. Known themes: ${BUNDLED_THEME_IDS_FOR_MESSAGES.join(", ")}.`,
-    );
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`Expected ${keyPath} to be a built-in or loaded custom theme id.`);
   }
 
   return value;
+}
+
+/** Validate a pair after config-defined custom theme ids have been collected. */
+export function validateThemePairPreference(
+  preference: ThemePreference | undefined,
+  customThemeIds: Iterable<string>,
+) {
+  if (!isThemePairPreference(preference)) {
+    return;
+  }
+
+  const knownIds = new Set<string>([...BUNDLED_THEME_IDS_FOR_MESSAGES, ...customThemeIds]);
+  for (const key of ["light", "dark"] as const) {
+    if (!knownIds.has(preference[key])) {
+      throw new Error(
+        `Expected theme.${key} to resolve to a built-in or loaded custom theme id. Known themes: ${[...knownIds].join(", ")}.`,
+      );
+    }
+  }
 }
 
 /** Return whether one configured theme preference is an explicit light/dark pair. */
