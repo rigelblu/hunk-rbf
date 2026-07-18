@@ -72,7 +72,7 @@ export function AppHost({
         );
         const nextBootstrap = await loadAppBootstrap(resolvedInput, {
           cwd,
-          customTheme: configured.customTheme,
+          customThemes: configured.customThemes,
         });
         nextBootstrap.initialThemeMode = currentBootstrap.initialThemeMode;
         nextBootstrap.cliThemeOverride = nextCliThemeOverride;

@@ -148,9 +148,17 @@ export function App({
   const sessionNoticeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const themeOptions = useMemo(
-    () => availableThemes(bootstrap.customTheme),
-    [bootstrap.customTheme],
+    () => availableThemes(bootstrap.customThemes),
+    [bootstrap.customThemes],
   );
+  useEffect(() => {
+    if (
+      sessionThemeOverrideId &&
+      !themeOptions.some((theme) => theme.id === sessionThemeOverrideId)
+    ) {
+      setSessionThemeOverrideId(null);
+    }
+  }, [sessionThemeOverrideId, themeOptions]);
   const effectiveThemeId =
     themeSelectorState.previewThemeId ?? sessionThemeOverrideId ?? bootstrap.initialTheme;
   const baseTheme = useMemo(
@@ -158,9 +166,9 @@ export function App({
       resolveTheme(
         effectiveThemeId,
         detectedThemeMode ?? renderer.themeMode,
-        bootstrap.customTheme,
+        bootstrap.customThemes,
       ),
-    [effectiveThemeId, detectedThemeMode, renderer.themeMode, bootstrap.customTheme],
+    [effectiveThemeId, detectedThemeMode, renderer.themeMode, bootstrap.customThemes],
   );
   const activeTheme = useMemo(
     () =>

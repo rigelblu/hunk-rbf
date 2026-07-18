@@ -145,14 +145,16 @@ describe("config resolution", () => {
     });
 
     expect(resolved.input.options.theme).toBe("custom");
-    expect(resolved.customTheme).toEqual({
-      base: "github-dark-default",
-      label: "Repo Custom",
-      accent: "#123456",
-      panel: "#654321",
-      syntax: {
-        keyword: "#abcdef",
-        string: "#fedcba",
+    expect(resolved.customThemes).toEqual({
+      custom: {
+        base: "github-dark-default",
+        label: "Repo Custom",
+        accent: "#123456",
+        panel: "#654321",
+        syntax: {
+          keyword: "#abcdef",
+          string: "#fedcba",
+        },
       },
     });
   });
@@ -172,7 +174,7 @@ describe("config resolution", () => {
         env: { HOME: home },
       });
 
-      expect(resolved.customTheme).toEqual({ base });
+      expect(resolved.customThemes).toEqual({ custom: { base } });
     },
   );
 
@@ -189,7 +191,119 @@ describe("config resolution", () => {
       env: { HOME: home },
     });
 
-    expect(resolved.customTheme).toEqual({ base: "github-dark-default" });
+    expect(resolved.customThemes).toEqual({ custom: { base: "github-dark-default" } });
+  });
+
+  test("loads, merges, orders, and pairs named custom themes", () => {
+    const home = createTempDir("hunk-config-home-");
+    const repo = createTempDir("hunk-config-repo-");
+    mkdirSync(join(home, ".config", "hunk"), { recursive: true });
+    mkdirSync(join(repo, ".hunk"), { recursive: true });
+    writeFileSync(join(repo, ".git"), "gitdir: elsewhere\n");
+    writeFileSync(
+      join(home, ".config", "hunk", "config.toml"),
+      [
+        'theme = { light = "my-light", dark = "my-dark" }',
+        "",
+        "[custom_themes.my-light]",
+        'base = "github-light-default"',
+        'label = "My Light"',
+        "",
+        "[custom_themes.my-light.syntax]",
+        'keyword = "#abcdef"',
+        "",
+        "[custom_themes.my-dark]",
+        'base = "github-dark-default"',
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(repo, ".hunk", "config.toml"),
+      [
+        "[custom_themes.my-light]",
+        'accent = "#123456"',
+        "",
+        "[custom_themes.my-light.syntax]",
+        'string = "#fedcba"',
+        "",
+        "[custom_themes.third-theme]",
+        'base = "dracula"',
+      ].join("\n"),
+    );
+
+    const resolved = resolveConfiguredCliInput(createPatchPagerInput(), {
+      cwd: repo,
+      env: { HOME: home },
+    });
+
+    expect(resolved.input.options.theme).toEqual({ light: "my-light", dark: "my-dark" });
+    expect(Object.keys(resolved.customThemes ?? {})).toEqual([
+      "my-light",
+      "my-dark",
+      "third-theme",
+    ]);
+    expect(resolved.customThemes?.["my-light"]).toEqual({
+      base: "github-light-default",
+      label: "My Light",
+      accent: "#123456",
+      syntax: { keyword: "#abcdef", string: "#fedcba" },
+    });
+  });
+
+  test.each(["1bad", "Bad", "bad_name", "nord", "graphite", "system", "custom"])(
+    "rejects invalid or reserved named custom theme id: %s",
+    (id) => {
+      const home = createTempDir("hunk-config-home-");
+      mkdirSync(join(home, ".config", "hunk"), { recursive: true });
+      writeFileSync(
+        join(home, ".config", "hunk", "config.toml"),
+        [`[custom_themes.${JSON.stringify(id)}]`, 'base = "github-dark-default"'].join("\n"),
+      );
+
+      expect(() =>
+        resolveConfiguredCliInput(createPatchPagerInput(), {
+          cwd: createTempDir("hunk-config-cwd-"),
+          env: { HOME: home },
+        }),
+      ).toThrow(/custom theme id|reserved or built in/);
+    },
+  );
+
+  test("supports prototype-looking ids without inheriting registry properties", () => {
+    const home = createTempDir("hunk-config-home-");
+    mkdirSync(join(home, ".config", "hunk"), { recursive: true });
+    writeFileSync(
+      join(home, ".config", "hunk", "config.toml"),
+      [
+        'theme = "constructor"',
+        "",
+        "[custom_themes.constructor]",
+        'base = "github-dark-default"',
+      ].join("\n"),
+    );
+
+    const resolved = resolveConfiguredCliInput(createPatchPagerInput(), {
+      cwd: createTempDir("hunk-config-cwd-"),
+      env: { HOME: home },
+    });
+
+    expect(Object.hasOwn(resolved.customThemes ?? {}, "constructor")).toBe(true);
+    expect(resolved.customThemes?.["constructor"]).toEqual({ base: "github-dark-default" });
+  });
+
+  test("rejects dotted named custom headers instead of silently creating nested tables", () => {
+    const home = createTempDir("hunk-config-home-");
+    mkdirSync(join(home, ".config", "hunk"), { recursive: true });
+    writeFileSync(
+      join(home, ".config", "hunk", "config.toml"),
+      ["[custom_themes.foo.bar]", 'base = "github-dark-default"'].join("\n"),
+    );
+
+    expect(() =>
+      resolveConfiguredCliInput(createPatchPagerInput(), {
+        cwd: createTempDir("hunk-config-cwd-"),
+        env: { HOME: home },
+      }),
+    ).toThrow("Unsupported custom_themes.foo.bar.");
   });
 
   test("rejects invalid custom theme base ids", () => {
@@ -626,15 +740,17 @@ describe("config resolution", () => {
       { cwd: repo, env: { HOME: home } },
     );
     const bootstrap = await loadAppBootstrap(resolveConfiguredThemeInput(resolved.input, null), {
-      customTheme: resolved.customTheme,
+      customThemes: resolved.customThemes,
     });
 
     expect(bootstrap.initialTheme).toBe("custom");
-    expect(bootstrap.customTheme).toEqual({
-      base: "catppuccin-mocha",
-      accent: "#7755aa",
-      syntax: {
-        comment: "#998877",
+    expect(bootstrap.customThemes).toEqual({
+      custom: {
+        base: "catppuccin-mocha",
+        accent: "#7755aa",
+        syntax: {
+          comment: "#998877",
+        },
       },
     });
   });

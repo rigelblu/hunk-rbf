@@ -10,6 +10,7 @@ import type {
   ConfiguredCommonOptions,
   CustomSyntaxColorsConfig,
   CustomThemeConfig,
+  CustomThemeRegistry,
   LayoutMode,
   PersistedViewPreferences,
   ThemePairPreference,
@@ -19,6 +20,8 @@ import type {
 
 const BUILT_IN_THEME_IDS = BUNDLED_SHIKI_THEME_IDS;
 const HEX_COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
+const CUSTOM_THEME_ID_PATTERN = /^[a-z][a-z0-9-]*$/;
+const RESERVED_CUSTOM_THEME_IDS = new Set(["system", "auto", "custom"]);
 const CUSTOM_THEME_COLOR_KEYS = [
   "background",
   "panel",
@@ -67,6 +70,8 @@ const CUSTOM_SYNTAX_COLOR_KEYS = [
   "operator",
   "punctuation",
 ] as const;
+const CUSTOM_THEME_KEYS = new Set<string>(["base", "label", "syntax", ...CUSTOM_THEME_COLOR_KEYS]);
+const CUSTOM_SYNTAX_KEYS = new Set<string>(CUSTOM_SYNTAX_COLOR_KEYS);
 
 const DEFAULT_VIEW_PREFERENCES: PersistedViewPreferences = {
   mode: "auto",
@@ -85,7 +90,7 @@ interface ConfigResolutionOptions {
 
 interface HunkConfigResolution {
   input: ConfiguredCliInput;
-  customTheme?: CustomThemeConfig;
+  customThemes?: CustomThemeRegistry;
   globalConfigPath?: string;
   repoConfigPath?: string;
 }
@@ -114,16 +119,10 @@ function normalizeString(value: unknown) {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-/** Validate and canonicalize one built-in theme id used by a paired preference. */
+/** Read one non-empty theme id used by a paired preference. */
 function normalizeThemePairMember(value: unknown, keyPath: "theme.light" | "theme.dark") {
-  if (typeof value !== "string") {
-    throw new Error(`Expected ${keyPath} to be a built-in theme id.`);
-  }
-
-  if (!BUILT_IN_THEME_IDS.includes(value as (typeof BUILT_IN_THEME_IDS)[number])) {
-    throw new Error(
-      `Expected ${keyPath} to be a built-in theme id. Known themes: ${BUILT_IN_THEME_IDS.join(", ")}.`,
-    );
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`Expected ${keyPath} to be a non-empty theme id.`);
   }
 
   return value;
@@ -172,21 +171,21 @@ function normalizeThemeColor(value: unknown, keyPath: string) {
 }
 
 /** Accept only built-in theme ids for config-defined custom themes. */
-function normalizeCustomThemeBase(value: unknown) {
+function normalizeCustomThemeBase(value: unknown, keyPath: string) {
   if (value === undefined) {
     return undefined;
   }
 
   if (typeof value !== "string") {
     throw new Error(
-      `Expected custom_theme.base to be a built-in theme id. Known themes: ${BUILT_IN_THEME_IDS.join(", ")}.`,
+      `Expected ${keyPath}.base to be a built-in theme id. Known themes: ${BUILT_IN_THEME_IDS.join(", ")}.`,
     );
   }
 
   const resolvedThemeId = normalizeBuiltInThemeId(value);
   if (!resolvedThemeId) {
     throw new Error(
-      `Expected custom_theme.base to be a built-in theme id. Known themes: ${BUILT_IN_THEME_IDS.join(", ")}.`,
+      `Expected ${keyPath}.base to be a built-in theme id. Known themes: ${BUILT_IN_THEME_IDS.join(", ")}.`,
     );
   }
 
@@ -196,11 +195,16 @@ function normalizeCustomThemeBase(value: unknown) {
 /** Read the nested syntax color overrides from a [custom_theme.syntax] TOML table. */
 function readCustomSyntaxColors(
   source: Record<string, unknown>,
+  keyPath: string,
 ): CustomSyntaxColorsConfig | undefined {
+  const unsupportedKey = Object.keys(source).find((key) => !CUSTOM_SYNTAX_KEYS.has(key));
+  if (unsupportedKey) {
+    throw new Error(`Unsupported ${keyPath}.syntax.${unsupportedKey}.`);
+  }
   const syntax: CustomSyntaxColorsConfig = {};
 
   for (const key of CUSTOM_SYNTAX_COLOR_KEYS) {
-    const value = normalizeThemeColor(source[key], `custom_theme.syntax.${key}`);
+    const value = normalizeThemeColor(source[key], `${keyPath}.syntax.${key}`);
     if (value !== undefined) {
       syntax[key] = value;
     }
@@ -209,20 +213,22 @@ function readCustomSyntaxColors(
   return Object.keys(syntax).length > 0 ? syntax : undefined;
 }
 
-/** Read the optional config-defined custom theme palette from one TOML object level. */
-function readCustomTheme(source: Record<string, unknown>): CustomThemeConfig | undefined {
-  const customThemeSource = source.custom_theme;
-  if (!isRecord(customThemeSource)) {
-    return undefined;
+/** Read one config-defined custom theme palette with source-accurate error paths. */
+function readCustomThemeDefinition(
+  customThemeSource: Record<string, unknown>,
+  keyPath: string,
+): CustomThemeConfig {
+  const unsupportedKey = Object.keys(customThemeSource).find((key) => !CUSTOM_THEME_KEYS.has(key));
+  if (unsupportedKey) {
+    throw new Error(`Unsupported ${keyPath}.${unsupportedKey}.`);
   }
-
   const syntaxSource = customThemeSource.syntax;
   if (syntaxSource !== undefined && !isRecord(syntaxSource)) {
-    throw new Error("Expected custom_theme.syntax to contain a TOML table.");
+    throw new Error(`Expected ${keyPath}.syntax to contain a TOML table.`);
   }
 
   const customTheme: CustomThemeConfig = {
-    base: normalizeCustomThemeBase(customThemeSource.base),
+    base: normalizeCustomThemeBase(customThemeSource.base, keyPath),
   };
   const label = normalizeString(customThemeSource.label);
   if (label !== undefined) {
@@ -230,20 +236,57 @@ function readCustomTheme(source: Record<string, unknown>): CustomThemeConfig | u
   }
 
   for (const key of CUSTOM_THEME_COLOR_KEYS) {
-    const value = normalizeThemeColor(customThemeSource[key], `custom_theme.${key}`);
+    const value = normalizeThemeColor(customThemeSource[key], `${keyPath}.${key}`);
     if (value !== undefined) {
       customTheme[key] = value;
     }
   }
 
   if (isRecord(syntaxSource)) {
-    const syntax = readCustomSyntaxColors(syntaxSource);
+    const syntax = readCustomSyntaxColors(syntaxSource, keyPath);
     if (syntax) {
       customTheme.syntax = syntax;
     }
   }
 
   return customTheme;
+}
+
+/** Validate a named custom id whose object-key order is used by the selector. */
+function normalizeCustomThemeId(id: string) {
+  if (!CUSTOM_THEME_ID_PATTERN.test(id)) {
+    throw new Error(
+      `Expected custom theme id ${JSON.stringify(id)} to match ${CUSTOM_THEME_ID_PATTERN.source}.`,
+    );
+  }
+  if (RESERVED_CUSTOM_THEME_IDS.has(id) || normalizeBuiltInThemeId(id)) {
+    throw new Error(`Custom theme id ${JSON.stringify(id)} is reserved or built in.`);
+  }
+  return id;
+}
+
+/** Read legacy and named definitions into the one registry consumed at runtime. */
+function readCustomThemes(source: Record<string, unknown>): CustomThemeRegistry {
+  const registry = Object.create(null) as CustomThemeRegistry;
+  if (isRecord(source.custom_theme)) {
+    registry.custom = readCustomThemeDefinition(source.custom_theme, "custom_theme");
+  }
+
+  if (source.custom_themes === undefined) {
+    return registry;
+  }
+  if (!isRecord(source.custom_themes)) {
+    throw new Error("Expected custom_themes to contain a TOML table.");
+  }
+
+  for (const [rawId, definition] of Object.entries(source.custom_themes)) {
+    const id = normalizeCustomThemeId(rawId);
+    if (!isRecord(definition)) {
+      throw new Error(`Expected custom_themes.${id} to contain a TOML table.`);
+    }
+    registry[id] = readCustomThemeDefinition(definition, `custom_themes.${id}`);
+  }
+  return registry;
 }
 
 /** Merge partial custom theme layers while keeping nested syntax overrides field-based. */
@@ -271,6 +314,35 @@ function mergeCustomTheme(
           }
         : undefined,
   };
+}
+
+/** Merge registry layers without changing the first-definition selector order. */
+function mergeCustomThemes(
+  base: CustomThemeRegistry,
+  overrides: CustomThemeRegistry,
+): CustomThemeRegistry {
+  const merged = Object.assign(Object.create(null), base) as CustomThemeRegistry;
+  for (const [id, definition] of Object.entries(overrides)) {
+    const existing = Object.hasOwn(merged, id) ? merged[id] : undefined;
+    merged[id] = mergeCustomTheme(existing, definition) ?? definition;
+  }
+  return merged;
+}
+
+/** Validate a final paired preference once named custom ids are available. */
+function validateThemePair(theme: ThemePreference | undefined, customThemes: CustomThemeRegistry) {
+  if (!isRecord(theme)) {
+    return;
+  }
+  const knownIds = new Set<string>([...BUILT_IN_THEME_IDS, ...Object.keys(customThemes)]);
+  for (const key of ["light", "dark"] as const) {
+    const id = theme[key];
+    if (typeof id !== "string" || !knownIds.has(id)) {
+      throw new Error(
+        `Expected theme.${key} to resolve to a built-in or loaded custom theme id. Known themes: ${[...knownIds].join(", ")}.`,
+      );
+    }
+  }
 }
 
 /** Read the view preferences stored at one TOML object level. */
@@ -366,7 +438,7 @@ export function resolveConfiguredCliInput(
   const repoRoot = findVcsRepoRootCandidate(cwd);
   const repoConfigPath = repoRoot ? join(repoRoot, ".hunk", "config.toml") : undefined;
   const userConfigPath = resolveGlobalConfigPath(env);
-  let resolvedCustomTheme: CustomThemeConfig | undefined;
+  let resolvedCustomThemes = Object.create(null) as CustomThemeRegistry;
 
   let resolvedOptions: ConfiguredCommonOptions = {
     mode: DEFAULT_VIEW_PREFERENCES.mode,
@@ -390,13 +462,13 @@ export function resolveConfiguredCliInput(
   if (userConfigPath) {
     const userConfig = readTomlRecord(userConfigPath);
     resolvedOptions = mergeOptions(resolvedOptions, resolveConfigLayer(userConfig, input));
-    resolvedCustomTheme = mergeCustomTheme(resolvedCustomTheme, readCustomTheme(userConfig));
+    resolvedCustomThemes = mergeCustomThemes(resolvedCustomThemes, readCustomThemes(userConfig));
   }
 
   if (repoConfigPath) {
     const repoConfig = readTomlRecord(repoConfigPath);
     resolvedOptions = mergeOptions(resolvedOptions, resolveConfigLayer(repoConfig, input));
-    resolvedCustomTheme = mergeCustomTheme(resolvedCustomTheme, readCustomTheme(repoConfig));
+    resolvedCustomThemes = mergeCustomThemes(resolvedCustomThemes, readCustomThemes(repoConfig));
   }
 
   resolvedOptions = mergeOptions(resolvedOptions, input.options);
@@ -419,7 +491,9 @@ export function resolveConfiguredCliInput(
     colorMoved: resolvedOptions.colorMoved,
   };
 
-  if (resolvedOptions.theme === "custom" && !resolvedCustomTheme) {
+  validateThemePair(resolvedOptions.theme, resolvedCustomThemes);
+
+  if (resolvedOptions.theme === "custom" && !resolvedCustomThemes.custom) {
     throw new Error('Expected a [custom_theme] table when config selects theme = "custom".');
   }
 
@@ -428,7 +502,7 @@ export function resolveConfiguredCliInput(
       ...input,
       options: resolvedOptions,
     } as ConfiguredCliInput,
-    customTheme: resolvedCustomTheme,
+    customThemes: Object.keys(resolvedCustomThemes).length > 0 ? resolvedCustomThemes : undefined,
     globalConfigPath: userConfigPath,
     repoConfigPath,
   };

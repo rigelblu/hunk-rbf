@@ -157,6 +157,8 @@ export interface CustomThemeConfig {
   syntax?: CustomSyntaxColorsConfig;
 }
 
+export type CustomThemeRegistry = Record<string, CustomThemeConfig>;
+
 export interface PersistedViewPreferences {
   mode: LayoutMode;
   theme?: string;
@@ -380,7 +382,7 @@ export interface AppBootstrap {
   initialTheme?: string;
   initialThemeMode?: TerminalThemeMode;
   cliThemeOverride?: string;
-  customTheme?: CustomThemeConfig;
+  customThemes?: CustomThemeRegistry;
   initialShowLineNumbers?: boolean;
   initialWrapLines?: boolean;
   initialShowHunkHeaders?: boolean;

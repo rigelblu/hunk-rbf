@@ -227,7 +227,7 @@ describe("startup planning", () => {
   test("routes diff-like pager stdin to static output when the host advertises a captured pager", async () => {
     let loaded = false;
     const patchText = "diff --git a/a.ts b/a.ts\n@@ -1 +1 @@\n-old\n+new\n";
-    const customTheme = { base: "github-light-default", text: "#123456" };
+    const customThemes = { custom: { base: "github-light-default", text: "#123456" } };
 
     const plan = await prepareStartupPlan(["bun", "hunk", "pager"], {
       parseCliImpl: async () => ({
@@ -245,7 +245,7 @@ describe("startup planning", () => {
             ...input,
             options: { ...input.options, lineNumbers: false, theme: "custom" },
           },
-          customTheme,
+          customThemes,
         }) as never,
       loadAppBootstrapImpl: async () => {
         loaded = true;
@@ -257,7 +257,7 @@ describe("startup planning", () => {
       kind: "static-diff-pager",
       text: patchText,
       options: { theme: "custom", pager: true, lineNumbers: false },
-      customTheme,
+      customThemes,
     });
     expect(loaded).toBe(false);
   });
@@ -326,21 +326,23 @@ describe("startup planning", () => {
         theme: "custom",
       },
     };
-    const customTheme = {
-      base: "github-dark-default",
-      accent: "#123456",
+    const customThemes = {
+      custom: {
+        base: "github-dark-default",
+        accent: "#123456",
+      },
     };
 
     await prepareStartupPlan(["bun", "hunk", "patch", "-"], {
       parseCliImpl: async () => cliInput as ParsedCliInput,
       resolveRuntimeCliInputImpl: (input) => input,
-      resolveConfiguredCliInputImpl: (input) => ({ input, customTheme }) as never,
+      resolveConfiguredCliInputImpl: (input) => ({ input, customThemes }) as never,
       loadAppBootstrapImpl: async (input, options) => {
         expect(input).toBe(cliInput);
-        expect(options).toEqual({ customTheme });
+        expect(options).toEqual({ customThemes });
         return {
           ...createBootstrap(input),
-          customTheme,
+          customThemes,
         };
       },
       usesPipedPatchInputImpl: () => false,

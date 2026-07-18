@@ -18,7 +18,7 @@ import type {
   AgentContext,
   Changeset,
   CliInput,
-  CustomThemeConfig,
+  CustomThemeRegistry,
   DiffFile,
   DiffLineMoveKind,
   DiffLineMoveKinds,
@@ -32,7 +32,7 @@ import type {
 
 interface LoadAppBootstrapOptions {
   cwd?: string;
-  customTheme?: CustomThemeConfig;
+  customThemes?: CustomThemeRegistry;
   gitExecutable?: string;
 }
 
@@ -419,7 +419,7 @@ async function loadPatchChangeset(
 /** Resolve CLI input into the fully loaded app bootstrap state. */
 export async function loadAppBootstrap(
   input: CliInput,
-  { cwd = process.cwd(), customTheme, gitExecutable = "git" }: LoadAppBootstrapOptions = {},
+  { cwd = process.cwd(), customThemes, gitExecutable = "git" }: LoadAppBootstrapOptions = {},
 ): Promise<AppBootstrap> {
   if (typeof input.options.theme !== "string" && input.options.theme !== undefined) {
     throw new Error("Expected paired theme input to be resolved before loading app content.");
@@ -458,7 +458,7 @@ export async function loadAppBootstrap(
     changeset,
     initialMode: input.options.mode ?? "auto",
     initialTheme: input.options.theme,
-    customTheme,
+    customThemes,
     initialShowLineNumbers: input.options.lineNumbers ?? true,
     initialWrapLines: input.options.wrapLines ?? false,
     initialShowHunkHeaders: input.options.hunkHeaders ?? true,

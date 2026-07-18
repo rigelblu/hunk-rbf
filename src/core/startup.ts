@@ -38,7 +38,7 @@ export type StartupPlan =
       kind: "static-diff-pager";
       text: string;
       options: CliInput["options"];
-      customTheme?: AppBootstrap["customTheme"];
+      customThemes?: AppBootstrap["customThemes"];
     }
   | {
       kind: "app";
@@ -139,8 +139,8 @@ export async function prepareStartupPlan(
         options: staticInput.options,
       };
 
-      return configuredStatic.customTheme
-        ? { ...staticPlan, customTheme: configuredStatic.customTheme }
+      return configuredStatic.customThemes
+        ? { ...staticPlan, customThemes: configuredStatic.customThemes }
         : staticPlan;
     };
 
@@ -230,7 +230,7 @@ export async function prepareStartupPlan(
 
   let bootstrap: AppBootstrap;
   try {
-    bootstrap = await loadAppBootstrapImpl(cliInput, { customTheme: configured.customTheme });
+    bootstrap = await loadAppBootstrapImpl(cliInput, { customThemes: configured.customThemes });
   } catch (error) {
     controllingTerminal?.close();
     throw error;
