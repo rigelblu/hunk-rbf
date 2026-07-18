@@ -37,6 +37,7 @@ import type {
 } from "./commandInputs";
 import {
   normalizeThemePreference,
+  validateThemePairPreference,
   type ConfiguredCliInput,
   type ConfiguredCommonOptions,
 } from "../themePreference";
@@ -1195,6 +1196,11 @@ export function resolveConfiguredCliInput(
     transparentBackground: resolvedOptions.transparentBackground ?? false,
     colorMoved: resolvedOptions.colorMoved,
   };
+
+  validateThemePairPreference(
+    resolvedOptions.theme,
+    resolvedCustomThemes.map((theme) => theme.id),
+  );
 
   // Only the legacy `custom` id is a hard error: every other unknown id may still name a theme an
   // extension contributes later, so those fall back to the default theme instead of failing startup.

@@ -816,6 +816,25 @@ describe("config resolution", () => {
         env: { HOME: home },
       }).input.options.theme,
     ).toBe("everforest-dark");
+
+    writeFileSync(
+      join(repo, ".hunk", "config.toml"),
+      [
+        'theme = { light = "my-light", dark = "my-dark" }',
+        "",
+        "[themes.my-light]",
+        'base = "github-light-default"',
+        "",
+        "[themes.my-dark]",
+        'base = "github-dark-default"',
+      ].join("\n"),
+    );
+    expect(
+      resolveConfiguredCliInput(createPatchPagerInput(), {
+        cwd: repo,
+        env: { HOME: home },
+      }).input.options.theme,
+    ).toEqual({ light: "my-light", dark: "my-dark" });
   });
 
   test.each([
