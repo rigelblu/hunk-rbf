@@ -1,5 +1,5 @@
 import type { ThemeMode } from "@opentui/core";
-import type { CustomThemeConfig } from "../core/types";
+import type { CustomThemeConfig, CustomThemeRegistry } from "../core/types";
 import { blendHex, contrastRatio, relativeLuminance } from "./lib/color";
 import {
   BUNDLED_SHIKI_THEME_IDS,
@@ -251,12 +251,12 @@ function fallbackTheme(themeMode?: ThemeMode | null) {
 }
 
 /** Build one config-defined custom theme by inheriting from a Shiki-backed base palette. */
-function buildCustomTheme(customTheme: CustomThemeConfig) {
+function buildCustomTheme(id: string, customTheme: CustomThemeConfig) {
   const baseTheme = builtInThemeById(customTheme.base) ?? fallbackTheme();
   const themeBase: ThemeBase = {
     ...baseTheme,
-    id: "custom",
-    label: customTheme.label ?? "Custom",
+    id,
+    label: customTheme.label ?? id,
     background: customTheme.background ?? baseTheme.background,
     panel: customTheme.panel ?? baseTheme.panel,
     panelAlt: customTheme.panelAlt ?? baseTheme.panelAlt,
@@ -301,37 +301,43 @@ function buildCustomTheme(customTheme: CustomThemeConfig) {
   });
 }
 
-/** Return the theme ids the app should expose based on whether config defines a custom palette. */
-export function availableThemeIds(customTheme?: CustomThemeConfig): string[] {
-  const themeIds = THEMES.map((theme) => theme.id);
-  if (customTheme) {
-    themeIds.push("custom");
-  }
-  return themeIds;
+/** Return built-in ids followed by config-defined ids in stable registry order. */
+export function availableThemeIds(customThemes?: CustomThemeRegistry): string[] {
+  return [...THEMES.map((theme) => theme.id), ...Object.keys(customThemes ?? {})];
 }
 
-/** Return selectable themes, adding the config-defined custom theme only when available. */
-export function availableThemes(customTheme?: CustomThemeConfig): AppTheme[] {
-  return customTheme ? [...THEMES, buildCustomTheme(customTheme)] : THEMES;
+/** Return selectable built-in and config-defined themes from one registry. */
+export function availableThemes(customThemes?: CustomThemeRegistry): AppTheme[] {
+  if (!customThemes) {
+    return THEMES;
+  }
+  return [
+    ...THEMES,
+    ...Object.entries(customThemes).map(([id, definition]) => buildCustomTheme(id, definition)),
+  ];
 }
 
 /** Resolve a named theme, including terminal-background auto mode and custom themes. */
 export function resolveTheme(
   requested: string | undefined,
   themeMode: ThemeMode | null,
-  customTheme?: CustomThemeConfig,
+  customThemes?: CustomThemeRegistry,
 ) {
   if (requested === "system" || requested === "auto") {
     return fallbackTheme(themeMode);
   }
 
-  if (requested === "custom" && customTheme) {
-    return buildCustomTheme(customTheme);
-  }
-
   const exact = builtInThemeById(requested);
   if (exact) {
     return exact;
+  }
+
+  const customTheme =
+    requested && customThemes && Object.hasOwn(customThemes, requested)
+      ? customThemes[requested]
+      : undefined;
+  if (requested && customTheme) {
+    return buildCustomTheme(requested, customTheme);
   }
 
   return fallbackTheme(themeMode);

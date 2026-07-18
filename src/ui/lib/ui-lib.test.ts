@@ -448,11 +448,13 @@ describe("ui helpers", () => {
     const autoLight = resolveTheme("auto", "light");
     const autoDark = resolveTheme("auto", "dark");
     const custom = resolveTheme("custom", null, {
-      base: "github-light-default",
-      label: "My Theme",
-      accent: "#7755aa",
-      syntax: {
-        keyword: "#123456",
+      custom: {
+        base: "github-light-default",
+        label: "My Theme",
+        accent: "#7755aa",
+        syntax: {
+          keyword: "#123456",
+        },
       },
     });
     const missingCustom = resolveTheme("custom", null);

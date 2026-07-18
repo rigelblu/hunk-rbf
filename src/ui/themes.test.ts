@@ -234,10 +234,12 @@ describe("themes", () => {
 
   test("layers custom theme overrides on a bundled base", () => {
     const custom = resolveTheme("custom", null, {
-      base: "catppuccin-mocha",
-      label: "My Theme",
-      text: "#ffffff",
-      syntax: { keyword: "#ff00ff" },
+      custom: {
+        base: "catppuccin-mocha",
+        label: "My Theme",
+        text: "#ffffff",
+        syntax: { keyword: "#ff00ff" },
+      },
     });
 
     expect(custom.id).toBe("custom");
@@ -246,6 +248,32 @@ describe("themes", () => {
     expect(custom.text).toBe("#ffffff");
     expect(custom.syntaxTheme).toBeUndefined();
     expect(custom.syntaxColors.keyword).toBe("#ff00ff");
+  });
+
+  test("appends named custom themes in registry order and defaults labels to ids", () => {
+    const registry = {
+      "my-light": { base: "github-light-default", accent: "#123456" },
+      "my-dark": { base: "github-dark-default", label: "My Dark" },
+    };
+
+    expect(availableThemeIds(registry).slice(-2)).toEqual(["my-light", "my-dark"]);
+    expect(
+      availableThemes(registry)
+        .slice(-2)
+        .map(({ id, label }) => ({ id, label })),
+    ).toEqual([
+      { id: "my-light", label: "my-light" },
+      { id: "my-dark", label: "My Dark" },
+    ]);
+    expect(resolveTheme("my-light", null, registry)).toMatchObject({
+      id: "my-light",
+      appearance: "light",
+      accent: "#123456",
+    });
+    expect(resolveTheme("constructor", null, registry).id).toBe(DEFAULT_DARK_THEME_ID);
+    expect(resolveTheme("nord", null, { nord: { base: "github-light-default" } }).appearance).toBe(
+      "dark",
+    );
   });
 
   test("withTransparentSurfaces keeps added/removed row tints", () => {

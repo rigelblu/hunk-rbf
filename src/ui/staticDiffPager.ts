@@ -15,7 +15,7 @@
  * text so pager pipelines keep working.
  */
 import { loadAppBootstrap } from "../core/loaders";
-import type { CommonOptions, CustomThemeConfig, DiffFile } from "../core/types";
+import type { CommonOptions, CustomThemeRegistry, DiffFile } from "../core/types";
 import {
   buildSplitRows,
   buildStackRows,
@@ -354,7 +354,7 @@ function fallbackMessage(error: unknown) {
 }
 
 export interface StaticDiffPagerDeps {
-  customTheme?: CustomThemeConfig;
+  customThemes?: CustomThemeRegistry;
   stderr?: Pick<NodeJS.WriteStream, "write">;
   terminalColumns?: number;
 }
@@ -388,7 +388,7 @@ export async function renderStaticDiffPager(
         pager: true,
       },
     });
-    const resolvedTheme = resolveTheme(options.theme, null, deps.customTheme);
+    const resolvedTheme = resolveTheme(options.theme, null, deps.customThemes);
     const theme = options.transparentBackground
       ? withTransparentSurfaces(resolvedTheme)
       : resolvedTheme;

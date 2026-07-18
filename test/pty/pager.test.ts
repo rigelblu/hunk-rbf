@@ -275,6 +275,54 @@ describe("PTY pager", () => {
     }
   });
 
+  test.each([
+    ["light", "\x1b]11;rgb:ffff/ffff/ffff\x1b\\", "My Light"],
+    ["dark", "\x1b]11;rgb:0000/0000/0000\x1b\\", "My Dark"],
+  ] as const)("named custom theme pair selects the %s member", async (_mode, response, label) => {
+    const fixture = harness.createPagerPatchFixture();
+    const configHome = join(fixture.dir, "config");
+    mkdirSync(join(configHome, "hunk"), { recursive: true });
+    writeFileSync(
+      join(configHome, "hunk", "config.toml"),
+      [
+        'theme = { light = "my-light", dark = "my-dark" }',
+        "",
+        "[custom_themes.my-light]",
+        'base = "github-light-default"',
+        'label = "My Light"',
+        "",
+        "[custom_themes.my-dark]",
+        'base = "github-dark-default"',
+        'label = "My Dark"',
+      ].join("\n"),
+    );
+    const session = await harness.launchHunk({
+      args: ["patch", fixture.patchFile],
+      cwd: fixture.dir,
+      cols: 140,
+      rows: 24,
+      env: { XDG_CONFIG_HOME: configHome },
+    });
+
+    try {
+      session.writeRaw(response);
+      await session.waitForText(/View\s+Navigate\s+Agent\s+Help/, { timeout: 15_000 });
+      await session.press("t");
+      const modal = await harness.waitForSnapshot(
+        session,
+        (text) =>
+          text.split("\n").some((line) => line.includes(`›  ${label}`) && line.includes("active")),
+        5_000,
+      );
+
+      expect(
+        modal.split("\n").some((line) => line.includes(`›  ${label}`) && line.includes("active")),
+      ).toBe(true);
+    } finally {
+      session.close();
+    }
+  });
+
   test("paired config keeps file-backed patch stdin interactive", async () => {
     const fixture = harness.createPagerPatchFixture();
     const configHome = join(fixture.dir, "config");

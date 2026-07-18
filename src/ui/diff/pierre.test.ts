@@ -654,11 +654,13 @@ describe("Pierre diff rows", () => {
 
     for (const themeId of ["github-dark-default", "github-light-default"] as const) {
       const theme = resolveTheme("custom", null, {
-        base: themeId,
-        syntax: {
-          keyword: "#112233",
-          function: "#223344",
-          string: "#334455",
+        custom: {
+          base: themeId,
+          syntax: {
+            keyword: "#112233",
+            function: "#223344",
+            string: "#334455",
+          },
         },
       });
       const highlighted = await loadHighlightedDiff(file, theme.appearance);

@@ -136,6 +136,25 @@ function writeThemePairTestConfig(repo: string, light: string, dark: string) {
   );
 }
 
+/** Write a repo-local named custom pair used by reload interaction tests. */
+function writeNamedCustomThemePairTestConfig(repo: string) {
+  mkdirSync(join(repo, ".hunk"), { recursive: true });
+  writeFileSync(
+    join(repo, ".hunk", "config.toml"),
+    [
+      'theme = { light = "my-light", dark = "my-dark" }',
+      "",
+      "[custom_themes.my-light]",
+      'base = "github-light-default"',
+      'label = "My Light"',
+      "",
+      "[custom_themes.my-dark]",
+      'base = "github-dark-default"',
+      'label = "My Dark"',
+    ].join("\n"),
+  );
+}
+
 /** Build a file-diff bootstrap after resolving a repo-local pair for one startup appearance. */
 async function createThemePairTestBootstrap({
   cliThemeOverride,
@@ -167,7 +186,10 @@ async function createThemePairTestBootstrap({
       theme: resolveThemePreference(configured.input.options.theme, mode),
     },
   };
-  const bootstrap = await loadAppBootstrap(resolvedInput, { cwd: repo });
+  const bootstrap = await loadAppBootstrap(resolvedInput, {
+    cwd: repo,
+    customThemes: configured.customThemes,
+  });
   bootstrap.initialThemeMode = mode;
   bootstrap.cliThemeOverride = cliThemeOverride;
   return bootstrap;
@@ -1931,6 +1953,60 @@ describe("App interactions", () => {
     }
   });
 
+  test("named custom theme reload clears a selected id after its definition is removed", async () => {
+    const repo = mkdtempSync(join(process.cwd(), ".hunk-named-theme-reload-"));
+    const left = join(repo, "before.ts");
+    const right = join(repo, "after.ts");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    writeFileSync(left, "export const answer = 41;\n");
+    writeFileSync(right, "export const answer = 42;\n");
+    writeNamedCustomThemePairTestConfig(repo);
+
+    const bootstrap = await createThemePairTestBootstrap({ left, mode: "light", repo, right });
+    const { dispatchCommand, hostClient } = createMockHostClient({ cwd: repo, repoRoot: repo });
+    const setup = await testRender(<AppHost bootstrap={bootstrap} hostClient={hostClient} />, {
+      width: 220,
+      height: 24,
+    });
+
+    try {
+      await flush(setup);
+      let frame = await openThemeSelectorTest(setup);
+      expect(frame).toContain("›  My Light");
+      expect(frame).toContain("active");
+      await act(async () => {
+        await setup.mockInput.pressEnter();
+      });
+
+      writeThemePairTestConfig(repo, "github-light-default", "github-dark-default");
+      await act(async () => {
+        await dispatchCommand({
+          type: "command",
+          requestId: "reload-remove-named-theme",
+          command: "reload_session",
+          input: {
+            sessionId: "session-1",
+            nextInput: { kind: "diff", left, right, options: { mode: "split" } },
+          },
+        });
+      });
+      await settleThemeReloadTest(setup);
+
+      await openThemeSelectorTest(setup);
+      frame = await waitForFrame(setup, (currentFrame) =>
+        currentFrame.includes("Theme: github-light-default"),
+      );
+      expect(frame).not.toContain("›  My Light");
+      expect(frame).toContain("›  github-light-default");
+      expect(frame).toContain("active");
+    } finally {
+      await act(async () => {
+        setup.renderer.destroy();
+      });
+      rmSync(repo, { force: true, recursive: true });
+    }
+  });
+
   test("daemon reload replaces explicit CLI theme provenance and preserves it when omitted", async () => {
     const repo = mkdtempSync(join(process.cwd(), ".hunk-theme-cli-reload-"));
     const left = join(repo, "before.ts");
@@ -2054,10 +2130,12 @@ describe("App interactions", () => {
   test("custom theme stays active in the theme selector when bootstrap provides a custom palette", async () => {
     const bootstrap = createBootstrap();
     bootstrap.initialTheme = "custom";
-    bootstrap.customTheme = {
-      base: "github-light-default",
-      label: "My Theme",
-      accent: "#7755aa",
+    bootstrap.customThemes = {
+      custom: {
+        base: "github-light-default",
+        label: "My Theme",
+        accent: "#7755aa",
+      },
     };
 
     const setup = await testRender(<AppHost bootstrap={bootstrap} />, {

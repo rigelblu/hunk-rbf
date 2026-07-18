@@ -102,7 +102,7 @@ describe("static diff pager", () => {
     const output = await renderStaticDiffPager(
       patchText,
       { theme: "custom" },
-      { customTheme: { base: "github-dark-default", text: "#123456" } },
+      { customThemes: { custom: { base: "github-dark-default", text: "#123456" } } },
     );
 
     expect(stripAnsi(output)).toContain("a.ts modified +1 -1");
