@@ -10,9 +10,10 @@ import {
   createTestSourceFetcher,
   lines,
 } from "../../../test/helpers/diff-helpers";
-import { hexColorDistance } from "../lib/color";
+import { ensureMinimumContrast, hexColorDistance } from "../lib/color";
 import { RAPID_SCROLL_OVERSCAN_IDLE_MS } from "../lib/adaptiveScrollOverscan";
-import { resolveTheme } from "../themes";
+import { resolveTheme, themeRenderSurfaces } from "../themes";
+import { selectionHighlightBg } from "../diff/rowStyle";
 import { measureDiffSectionGeometry } from "../diff/diffSectionGeometry";
 import { buildFileSectionLayouts, buildInStreamFileHeaderHeights } from "../lib/fileSectionLayout";
 
@@ -22,12 +23,61 @@ const { HelpDialog } = await import("./chrome/HelpDialog");
 const { SidebarPane } = await import("./panes/SidebarPane");
 const { AgentCard } = await import("./panes/AgentCard");
 const { AgentInlineNote } = await import("./panes/AgentInlineNote");
-const { DiffPane } = await import("./panes/DiffPane");
+const { DiffPane: StrictDiffPane } = await import("./panes/DiffPane");
 const { MenuDropdown } = await import("./chrome/MenuDropdown");
 const { StatusBar } = await import("./chrome/StatusBar");
 const { DiffFileHeaderRow } = await import("./panes/DiffFileHeaderRow");
-const { PierreDiffView } = await import("../diff/PierreDiffView");
-const { DiffRowView } = await import("../diff/renderRows");
+const { PierreDiffView: StrictPierreDiffView } = await import("../diff/PierreDiffView");
+const { DiffRowView: StrictDiffRowView } = await import("../diff/renderRows");
+
+/** Build the opaque render-surface contract used by direct component tests. */
+function opaqueThemeSurfaces(theme: ReturnType<typeof resolveTheme>) {
+  return themeRenderSurfaces(theme, false);
+}
+
+type TestThemeProps = {
+  theme?: ReturnType<typeof resolveTheme>;
+  themeSurfaces?: ReturnType<typeof themeRenderSurfaces>;
+};
+
+/** Keep legacy test fixtures concise while production components require one surface source. */
+function testThemeSurfaces({ theme, themeSurfaces }: TestThemeProps) {
+  if (themeSurfaces) {
+    return themeSurfaces;
+  }
+  if (theme) {
+    return opaqueThemeSurfaces(theme);
+  }
+  throw new Error("A direct diff component test must provide a theme or theme surfaces.");
+}
+
+function DiffPane({
+  theme,
+  themeSurfaces,
+  ...props
+}: Omit<Parameters<typeof StrictDiffPane>[0], "themeSurfaces"> & TestThemeProps) {
+  return <StrictDiffPane {...props} themeSurfaces={testThemeSurfaces({ theme, themeSurfaces })} />;
+}
+
+function PierreDiffView({
+  theme,
+  themeSurfaces,
+  ...props
+}: Omit<Parameters<typeof StrictPierreDiffView>[0], "themeSurfaces"> & TestThemeProps) {
+  return (
+    <StrictPierreDiffView {...props} themeSurfaces={testThemeSurfaces({ theme, themeSurfaces })} />
+  );
+}
+
+function DiffRowView({
+  theme,
+  themeSurfaces,
+  ...props
+}: Omit<Parameters<typeof StrictDiffRowView>[0], "themeSurfaces"> & TestThemeProps) {
+  return (
+    <StrictDiffRowView {...props} themeSurfaces={testThemeSurfaces({ theme, themeSurfaces })} />
+  );
+}
 
 function createTestDiffFile(
   id: string,
@@ -246,7 +296,7 @@ function createDiffPaneProps(
     showHunkHeaders: true,
     wrapLines: false,
     wrapToggleScrollTop: null,
-    theme,
+    themeSurfaces: opaqueThemeSurfaces(theme),
     width: 76,
     onSelectFile: () => {},
     ...overrides,
@@ -716,6 +766,122 @@ describe("UI components", () => {
       }, 0);
 
       expect(panelAltWidth).toBe(24);
+    } finally {
+      await act(async () => {
+        setup.renderer.destroy();
+      });
+    }
+  });
+
+  test("DiffRowView adjusts syntax against row and word-diff backgrounds", async () => {
+    const theme = resolveTheme("dawn", null, {
+      dawn: {
+        base: "github-light-default",
+        contextBg: "#faf4ed",
+        diffAddedColor: "#3daa8e",
+        diffRemovedColor: "#b4647a",
+      },
+    });
+    const setup = await testRender(
+      <DiffRowView
+        row={{
+          type: "stack-line",
+          key: "dawn:line:contrast",
+          fileId: "dawn",
+          hunkIndex: 0,
+          cell: {
+            kind: "addition",
+            sign: "+",
+            newLineNumber: 1,
+            spans: [
+              { text: "row-orange", fg: "#ea9d34" },
+              { text: "word-orange", fg: "#ea9d34", bg: theme.addedContentBg },
+            ],
+          },
+        }}
+        width={40}
+        lineNumberDigits={1}
+        showLineNumbers={false}
+        showHunkHeaders={true}
+        wrapLines={false}
+        codeHorizontalOffset={0}
+        theme={theme}
+        selected={false}
+      />,
+      { width: 44, height: 2 },
+    );
+
+    try {
+      await act(async () => {
+        await setup.renderOnce();
+      });
+      const spans = setup.captureSpans().lines.flatMap((line) => line.spans);
+      const rowSpan = spans.find((span) => span.text.includes("row-orange"));
+      const wordSpan = spans.find((span) => span.text.includes("word-orange"));
+
+      expect(capturedTestColorToHex(rowSpan?.fg)?.toLowerCase()).toBe("#8a5d1f");
+      expect(capturedTestColorToHex(rowSpan?.bg)?.toLowerCase()).toBe("#dce8de");
+      expect(capturedTestColorToHex(wordSpan?.fg)?.toLowerCase()).toBe("#7e551c");
+      expect(capturedTestColorToHex(wordSpan?.bg)?.toLowerCase()).toBe("#bfddd0");
+    } finally {
+      await act(async () => {
+        setup.renderer.destroy();
+      });
+    }
+  });
+
+  test("DiffRowView selects transparent rows against their opaque counterpart", async () => {
+    const opaqueTheme = resolveTheme("dawn", null, {
+      dawn: {
+        base: "github-light-default",
+        contextBg: "#faf4ed",
+        selectedHunk: "#903341",
+      },
+    });
+    const surfaces = themeRenderSurfaces(opaqueTheme, true);
+    const selectedBackground = selectionHighlightBg(opaqueTheme.contextBg, opaqueTheme);
+    const expectedForeground = ensureMinimumContrast("#ea9d34", selectedBackground);
+    const setup = await testRender(
+      <DiffRowView
+        row={{
+          type: "stack-line",
+          key: "dawn:line:transparent-selection",
+          fileId: "dawn",
+          hunkIndex: 0,
+          cell: {
+            kind: "context",
+            sign: " ",
+            oldLineNumber: 1,
+            newLineNumber: 1,
+            spans: [{ text: "orange", fg: "#ea9d34" }],
+          },
+        }}
+        width={24}
+        lineNumberDigits={1}
+        showLineNumbers={false}
+        showHunkHeaders={true}
+        wrapLines={false}
+        codeHorizontalOffset={0}
+        theme={surfaces.emittedTheme}
+        themeSurfaces={surfaces}
+        selected={false}
+        copySelectedRowRange={{ startCol: 3, endCol: 5 }}
+      />,
+      { width: 28, height: 2 },
+    );
+
+    try {
+      await act(async () => {
+        await setup.renderOnce();
+      });
+      const selectedSpan = setup
+        .captureSpans()
+        .lines.flatMap((line) => line.spans)
+        .find((span) => span.text === "ora");
+
+      expect(capturedTestColorToHex(selectedSpan?.bg)?.toLowerCase()).toBe(selectedBackground);
+      expect(capturedTestColorToHex(selectedSpan?.fg)?.toLowerCase()).toBe(expectedForeground);
+      expect(selectedBackground).not.toBe(selectionHighlightBg("#000000", opaqueTheme));
     } finally {
       await act(async () => {
         setup.renderer.destroy();

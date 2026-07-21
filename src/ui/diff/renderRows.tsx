@@ -1,6 +1,6 @@
 import { memo, type ReactNode } from "react";
 import type { DiffFile, UserNoteLineTarget } from "../../core/types";
-import type { AppTheme } from "../themes";
+import { TRANSPARENT_BACKGROUND, type AppTheme, type ThemeRenderSurfaces } from "../themes";
 import {
   resolveSplitCellGeometry,
   resolveSplitPaneWidths,
@@ -27,6 +27,7 @@ import { wrapText } from "../lib/agentPopover";
 import { sanitizeTerminalLine, sanitizeTerminalSpans } from "../../lib/terminalText";
 import { measureTextWidth, padText as padTextByWidth, sliceTextByWidth } from "../lib/text";
 import type { CopySelectedRowRange } from "../components/panes/copySelection";
+import { resolveSpanColors } from "./spanColors";
 
 /** Clamp a label to one terminal row with an ellipsis. */
 export function fitText(text: string, width: number) {
@@ -124,9 +125,10 @@ function renderInlineSpans(
   width: number,
   fallbackColor: string,
   fallbackBg: string,
+  opaqueFallbackBg: string,
   keyPrefix: string,
   horizontalOffset = 0,
-  selectionTheme?: AppTheme,
+  opaqueTheme: AppTheme,
   selectionColRange?: { start: number; end: number },
 ) {
   const { spans: trimmed, usedWidth } = sliceSpansWindow(
@@ -134,7 +136,16 @@ function renderInlineSpans(
     horizontalOffset,
     width,
   );
-  const needsBlending = selectionTheme && selectionColRange;
+  const selection = selectionColRange;
+  const needsBlending = Boolean(selection);
+
+  /** Resolve one code span against its emitted and retained opaque backgrounds. */
+  const finalColors = (foreground: string, spanBg: string | undefined, selected = false) => {
+    const emittedBaseBg = spanBg ?? fallbackBg;
+    const opaqueBaseBg = !spanBg || spanBg === TRANSPARENT_BACKGROUND ? opaqueFallbackBg : spanBg;
+    const finalBg = selected ? selectionHighlightBg(opaqueBaseBg, opaqueTheme) : emittedBaseBg;
+    return resolveSpanColors(foreground, finalBg, selected ? finalBg : opaqueBaseBg);
+  };
 
   // Build the final element list by splitting spans at selection boundaries so the highlight
   // applies at character-level precision rather than whole-token granularity.
@@ -148,17 +159,14 @@ function renderInlineSpans(
     const spanEnd = colPos + spanWidth;
     colPos = spanEnd;
 
-    if (
-      !needsBlending ||
-      spanEnd <= selectionColRange.start ||
-      spanStart >= selectionColRange.end
-    ) {
+    if (!needsBlending || !selection || spanEnd <= selection.start || spanStart >= selection.end) {
       // Span is entirely outside the selection — render with original styling.
+      const colors = finalColors(span.fg ?? fallbackColor, span.bg);
       elements.push(
         <span
           key={`${keyPrefix}:${elementIndex++}`}
-          fg={span.fg ?? fallbackColor}
-          bg={span.bg ?? fallbackBg}
+          fg={colors.foreground}
+          bg={colors.emittedBackground}
         >
           {span.text}
         </span>,
@@ -167,16 +175,17 @@ function renderInlineSpans(
     }
 
     // Compute the split offsets within this span's text.
-    const localSelStart = Math.max(0, selectionColRange.start - spanStart);
-    const localSelEnd = Math.min(spanWidth, selectionColRange.end - spanStart);
+    const localSelStart = Math.max(0, selection.start - spanStart);
+    const localSelEnd = Math.min(spanWidth, selection.end - spanStart);
 
     if (localSelStart >= localSelEnd) {
       // No overlap after clamping — render original.
+      const colors = finalColors(span.fg ?? fallbackColor, span.bg);
       elements.push(
         <span
           key={`${keyPrefix}:${elementIndex++}`}
-          fg={span.fg ?? fallbackColor}
-          bg={span.bg ?? fallbackBg}
+          fg={colors.foreground}
+          bg={colors.emittedBackground}
         >
           {span.text}
         </span>,
@@ -190,33 +199,36 @@ function renderInlineSpans(
     const suffix = sliceTextByWidth(span.text, localSelEnd, spanWidth - localSelEnd).text;
 
     if (prefix) {
+      const colors = finalColors(span.fg ?? fallbackColor, span.bg);
       elements.push(
         <span
           key={`${keyPrefix}:${elementIndex++}`}
-          fg={span.fg ?? fallbackColor}
-          bg={span.bg ?? fallbackBg}
+          fg={colors.foreground}
+          bg={colors.emittedBackground}
         >
           {prefix}
         </span>,
       );
     }
     if (selected) {
+      const colors = finalColors(span.fg ?? fallbackColor, span.bg, true);
       elements.push(
         <span
           key={`${keyPrefix}:${elementIndex++}`}
-          fg={span.fg ?? fallbackColor}
-          bg={selectionHighlightBg(span.bg ?? fallbackBg, selectionTheme)}
+          fg={colors.foreground}
+          bg={colors.emittedBackground}
         >
           {selected}
         </span>,
       );
     }
     if (suffix) {
+      const colors = finalColors(span.fg ?? fallbackColor, span.bg);
       elements.push(
         <span
           key={`${keyPrefix}:${elementIndex++}`}
-          fg={span.fg ?? fallbackColor}
-          bg={span.bg ?? fallbackBg}
+          fg={colors.foreground}
+          bg={colors.emittedBackground}
         >
           {suffix}
         </span>,
@@ -234,41 +246,48 @@ function renderInlineSpans(
     const paddingAmount = Math.max(0, width - usedWidth);
 
     if (paddingAmount > 0) {
-      if (padStart < selectionColRange.end && padEnd > selectionColRange.start) {
+      if (selection && padStart < selection.end && padEnd > selection.start) {
         // Split padding into outside/before, selected, and after.
-        const beforeSel = Math.max(0, selectionColRange.start - padStart);
-        const inSel =
-          Math.min(paddingAmount, selectionColRange.end - padStart) - Math.max(0, beforeSel);
+        const beforeSel = Math.max(0, selection.start - padStart);
+        const inSel = Math.min(paddingAmount, selection.end - padStart) - Math.max(0, beforeSel);
         const afterSel = paddingAmount - beforeSel - Math.max(0, inSel);
 
         if (beforeSel > 0) {
+          const colors = finalColors(fallbackColor, undefined);
           elements.push(
-            <span key={`${keyPrefix}:pad-before`} fg={fallbackColor} bg={fallbackBg}>
+            <span
+              key={`${keyPrefix}:pad-before`}
+              fg={colors.foreground}
+              bg={colors.emittedBackground}
+            >
               {" ".repeat(beforeSel)}
             </span>,
           );
         }
         if (inSel > 0) {
+          const colors = finalColors(fallbackColor, undefined, true);
           elements.push(
-            <span
-              key={`${keyPrefix}:pad-sel`}
-              fg={fallbackColor}
-              bg={selectionHighlightBg(fallbackBg, selectionTheme)}
-            >
+            <span key={`${keyPrefix}:pad-sel`} fg={colors.foreground} bg={colors.emittedBackground}>
               {" ".repeat(inSel)}
             </span>,
           );
         }
         if (afterSel > 0) {
+          const colors = finalColors(fallbackColor, undefined);
           elements.push(
-            <span key={`${keyPrefix}:pad-after`} fg={fallbackColor} bg={fallbackBg}>
+            <span
+              key={`${keyPrefix}:pad-after`}
+              fg={colors.foreground}
+              bg={colors.emittedBackground}
+            >
               {" ".repeat(afterSel)}
             </span>,
           );
         }
       } else {
+        const colors = finalColors(fallbackColor, undefined);
         elements.push(
-          <span key={`${keyPrefix}:pad`} fg={fallbackColor} bg={fallbackBg}>
+          <span key={`${keyPrefix}:pad`} fg={colors.foreground} bg={colors.emittedBackground}>
             {" ".repeat(paddingAmount)}
           </span>,
         );
@@ -276,8 +295,9 @@ function renderInlineSpans(
     }
   } else if (width - usedWidth > 0) {
     // No blending — always render a separate padding span.
+    const colors = finalColors(fallbackColor, undefined);
     elements.push(
-      <span key={`${keyPrefix}:pad`} fg={fallbackColor} bg={fallbackBg}>
+      <span key={`${keyPrefix}:pad`} fg={colors.foreground} bg={colors.emittedBackground}>
         {" ".repeat(width - usedWidth)}
       </span>,
     );
@@ -833,19 +853,24 @@ function resolvePlainContentWidth(totalWidth: number, prefixWidth: number, gutte
  */
 function applySelectionPalette<P extends { gutterBg: string; contentBg: string }>(
   palette: P,
-  theme: AppTheme,
+  opaquePalette: P,
+  opaqueTheme: AppTheme,
 ): P {
   return {
     ...palette,
-    gutterBg: selectionHighlightBg(palette.gutterBg, theme),
+    gutterBg: selectionHighlightBg(opaquePalette.gutterBg, opaqueTheme),
   };
 }
 
 /** Apply the selection-highlight blend to a prefix descriptor. */
-function applySelectionPrefix<P extends { bg: string }>(prefix: P, theme: AppTheme): P {
+function applySelectionPrefix<P extends { bg: string }>(
+  prefix: P,
+  opaqueBackground: string,
+  opaqueTheme: AppTheme,
+): P {
   return {
     ...prefix,
-    bg: selectionHighlightBg(prefix.bg, theme),
+    bg: selectionHighlightBg(opaqueBackground, opaqueTheme),
   };
 }
 
@@ -856,6 +881,7 @@ function renderSplitCell(
   lineNumberDigits: number,
   showLineNumbers: boolean,
   theme: AppTheme,
+  opaqueTheme: AppTheme,
   keyPrefix: string,
   contentOffset = 0,
   prefix?: {
@@ -868,8 +894,12 @@ function renderSplitCell(
   paneOffset = 0,
 ) {
   const basePalette = splitCellPalette(cell.kind, theme, cell.moveKind);
-  const palette = selected ? applySelectionPalette(basePalette, theme) : basePalette;
-  const resolvedPrefix = selected && prefix ? applySelectionPrefix(prefix, theme) : prefix;
+  const opaquePalette = splitCellPalette(cell.kind, opaqueTheme, cell.moveKind);
+  const palette = selected
+    ? applySelectionPalette(basePalette, opaquePalette, opaqueTheme)
+    : basePalette;
+  const resolvedPrefix =
+    selected && prefix ? applySelectionPrefix(prefix, opaqueTheme.panel, opaqueTheme) : prefix;
   const prefixWidth = resolvedPrefix?.text.length ?? 0;
   const { gutterWidth, contentWidth } = resolveSplitCellGeometry(
     width,
@@ -907,9 +937,10 @@ function renderSplitCell(
         contentWidth,
         theme.syntaxColors.default,
         palette.contentBg,
+        opaquePalette.contentBg,
         `${keyPrefix}:content`,
         contentOffset,
-        selected ? theme : undefined,
+        opaqueTheme,
         localColRange,
       )}
     </>
@@ -923,6 +954,7 @@ function renderStackCell(
   lineNumberDigits: number,
   showLineNumbers: boolean,
   theme: AppTheme,
+  opaqueTheme: AppTheme,
   keyPrefix: string,
   contentOffset = 0,
   prefix?: {
@@ -934,8 +966,12 @@ function renderStackCell(
   selectionColRange?: CopySelectedRowRange,
 ) {
   const basePalette = stackCellPalette(cell.kind, theme, cell.moveKind);
-  const palette = selected ? applySelectionPalette(basePalette, theme) : basePalette;
-  const resolvedPrefix = selected && prefix ? applySelectionPrefix(prefix, theme) : prefix;
+  const opaquePalette = stackCellPalette(cell.kind, opaqueTheme, cell.moveKind);
+  const palette = selected
+    ? applySelectionPalette(basePalette, opaquePalette, opaqueTheme)
+    : basePalette;
+  const resolvedPrefix =
+    selected && prefix ? applySelectionPrefix(prefix, opaqueTheme.panel, opaqueTheme) : prefix;
   const prefixWidth = resolvedPrefix?.text.length ?? 0;
   const { gutterWidth, contentWidth } = resolveStackCellGeometry(
     width,
@@ -972,9 +1008,10 @@ function renderStackCell(
         contentWidth,
         theme.syntaxColors.default,
         palette.contentBg,
+        opaquePalette.contentBg,
         `${keyPrefix}:content`,
         contentOffset,
-        selected ? theme : undefined,
+        opaqueTheme,
         localColRange,
       )}
     </>
@@ -985,8 +1022,10 @@ function renderStackCell(
 function renderWrappedSplitCellLine(
   line: WrappedCellLine,
   palette: ReturnType<typeof splitCellPalette>,
+  opaquePalette: ReturnType<typeof splitCellPalette>,
   contentWidth: number,
   theme: AppTheme,
+  opaqueTheme: AppTheme,
   keyPrefix: string,
   prefix: {
     text: string;
@@ -997,8 +1036,12 @@ function renderWrappedSplitCellLine(
   selectionColRange?: CopySelectedRowRange,
   paneOffset = 0,
 ) {
-  const resolvedPalette = selected ? applySelectionPalette(palette, theme) : palette;
-  const resolvedPrefix = selected ? applySelectionPrefix(prefix, theme) : prefix;
+  const resolvedPalette = selected
+    ? applySelectionPalette(palette, opaquePalette, opaqueTheme)
+    : palette;
+  const resolvedPrefix = selected
+    ? applySelectionPrefix(prefix, opaqueTheme.panel, opaqueTheme)
+    : prefix;
 
   const prefixWidth = prefix.text.length;
   const gutterWidth = line.gutterText.length;
@@ -1031,9 +1074,10 @@ function renderWrappedSplitCellLine(
         contentWidth,
         theme.syntaxColors.default,
         resolvedPalette.contentBg,
+        opaquePalette.contentBg,
         `${keyPrefix}:content`,
         0,
-        selected ? theme : undefined,
+        opaqueTheme,
         localColRange,
       )}
     </>
@@ -1044,8 +1088,10 @@ function renderWrappedSplitCellLine(
 function renderWrappedStackCellLine(
   line: WrappedCellLine,
   palette: ReturnType<typeof stackCellPalette>,
+  opaquePalette: ReturnType<typeof stackCellPalette>,
   contentWidth: number,
   theme: AppTheme,
+  opaqueTheme: AppTheme,
   keyPrefix: string,
   prefix: {
     text: string;
@@ -1055,8 +1101,12 @@ function renderWrappedStackCellLine(
   selected = false,
   selectionColRange?: CopySelectedRowRange,
 ) {
-  const resolvedPalette = selected ? applySelectionPalette(palette, theme) : palette;
-  const resolvedPrefix = selected ? applySelectionPrefix(prefix, theme) : prefix;
+  const resolvedPalette = selected
+    ? applySelectionPalette(palette, opaquePalette, opaqueTheme)
+    : palette;
+  const resolvedPrefix = selected
+    ? applySelectionPrefix(prefix, opaqueTheme.panel, opaqueTheme)
+    : prefix;
 
   const prefixWidth = prefix.text.length;
   const gutterWidth = line.gutterText.length;
@@ -1089,9 +1139,10 @@ function renderWrappedStackCellLine(
         contentWidth,
         theme.syntaxColors.default,
         resolvedPalette.contentBg,
+        opaquePalette.contentBg,
         `${keyPrefix}:content`,
         0,
-        selected ? theme : undefined,
+        opaqueTheme,
         localColRange,
       )}
     </>
@@ -1353,7 +1404,7 @@ function renderRow(
   showHunkHeaders: boolean,
   wrapLines: boolean,
   codeHorizontalOffset: number,
-  theme: AppTheme,
+  themeSurfaces: ThemeRenderSurfaces,
   selected: boolean,
   copySelectedRowRange: CopySelectedRowRange | undefined,
   copySelectedSide: "left" | "right" | undefined,
@@ -1364,6 +1415,7 @@ function renderRow(
   onStartUserNoteAtHunk?: (hunkIndex: number, target?: UserNoteLineTarget) => void,
   onToggleGap?: (gapKey: string) => void,
 ) {
+  const { emittedTheme: theme, opaqueTheme } = themeSurfaces;
   const hasCopySelection = !!copySelectedRowRange;
   const reserveAddNoteColumn = Boolean(onStartUserNoteAtHunk);
 
@@ -1447,6 +1499,7 @@ function renderRow(
                 lineNumberDigits,
                 showLineNumbers,
                 theme,
+                opaqueTheme,
                 `${row.key}:left`,
                 codeHorizontalOffset,
                 leftPrefix,
@@ -1460,6 +1513,7 @@ function renderRow(
                 lineNumberDigits,
                 showLineNumbers,
                 theme,
+                opaqueTheme,
                 `${row.key}:right`,
                 codeHorizontalOffset,
                 rightPrefix,
@@ -1542,8 +1596,10 @@ function renderRow(
                     {renderWrappedSplitCellLine(
                       leftLine,
                       leftLayout.palette,
+                      splitCellPalette(row.left.kind, opaqueTheme, row.left.moveKind),
                       leftContentWidth,
                       theme,
+                      opaqueTheme,
                       `${row.key}:left:${index}`,
                       leftPrefix,
                       hasLeftSelection,
@@ -1553,8 +1609,10 @@ function renderRow(
                     {renderWrappedSplitCellLine(
                       rightLine,
                       rightLayout.palette,
+                      splitCellPalette(row.right.kind, opaqueTheme, row.right.moveKind),
                       rightContentWidth,
                       theme,
+                      opaqueTheme,
                       `${row.key}:right:${index}`,
                       rightPrefix,
                       hasRightSelection,
@@ -1627,6 +1685,7 @@ function renderRow(
                 lineNumberDigits,
                 showLineNumbers,
                 theme,
+                opaqueTheme,
                 `${row.key}:stack`,
                 codeHorizontalOffset,
                 prefix,
@@ -1686,8 +1745,10 @@ function renderRow(
                     {renderWrappedStackCellLine(
                       line,
                       layout.palette,
+                      stackCellPalette(row.cell.kind, opaqueTheme, row.cell.moveKind),
                       wrappedContentWidth,
                       theme,
+                      opaqueTheme,
                       `${row.key}:stack:${index}`,
                       prefix,
                       hasCopySelection,
@@ -1738,7 +1799,7 @@ interface DiffRowViewProps {
   showHunkHeaders: boolean;
   wrapLines: boolean;
   codeHorizontalOffset: number;
-  theme: AppTheme;
+  themeSurfaces: ThemeRenderSurfaces;
   selected: boolean;
   copySelectedRowRange?: CopySelectedRowRange;
   copySelectedSide?: "left" | "right";
@@ -1766,7 +1827,7 @@ export const DiffRowView = memo(
     showHunkHeaders,
     wrapLines,
     codeHorizontalOffset,
-    theme,
+    themeSurfaces,
     selected,
     copySelectedRowRange,
     copySelectedSide,
@@ -1785,7 +1846,7 @@ export const DiffRowView = memo(
       showHunkHeaders,
       wrapLines,
       codeHorizontalOffset,
-      theme,
+      themeSurfaces,
       selected,
       copySelectedRowRange,
       copySelectedSide,
@@ -1806,7 +1867,7 @@ export const DiffRowView = memo(
       previous.showHunkHeaders === next.showHunkHeaders &&
       previous.wrapLines === next.wrapLines &&
       previous.codeHorizontalOffset === next.codeHorizontalOffset &&
-      previous.theme === next.theme &&
+      previous.themeSurfaces === next.themeSurfaces &&
       previous.selected === next.selected &&
       previous.copySelectedRowRange === next.copySelectedRowRange &&
       previous.copySelectedSide === next.copySelectedSide &&

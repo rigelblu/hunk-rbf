@@ -47,3 +47,15 @@ hunk diff test/fixtures/themes/rose-pine/before.ts test/fixtures/themes/rose-pin
 ```
 
 Press `t` to select each named theme, then inspect diff meaning, selection, line numbers, and syntax in light and dark terminal appearances. Keep personal palette values in user configuration rather than copying them into Hunk source or release artifacts.
+
+# 🔵⋯ Derive readable diff surfaces
+Named custom themes can provide semantic add and remove colors instead of hand-tuning every diff surface:
+
+```toml
+[custom_themes.my-light]
+base = "github-light-default"
+diffAddedColor = "#3daa8e"
+diffRemovedColor = "#b4647a"
+```
+
+Hunk derives omitted row and word-highlight backgrounds from those colors. Explicit component values such as `addedBg`, `removedBg`, `addedContentBg`, and `removedContentBg` still take precedence. Before terminal output, syntax foregrounds that would fail Hunk's 4.5:1 readability target are adjusted by the smallest passing amount across row, word, selection, interactive, and static review states.

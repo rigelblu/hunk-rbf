@@ -177,6 +177,33 @@ describe("Pierre diff rows", () => {
     expect(addedWordSpan?.bg).toBe(TRANSPARENT_BACKGROUND);
   });
 
+  test("keeps explicit custom word-diff backgrounds byte-for-byte", async () => {
+    const file = createDiffFile();
+    const theme = resolveTheme("custom", null, {
+      custom: {
+        base: "github-dark-default",
+        addedBg: "#112233",
+        removedBg: "#221133",
+        addedContentBg: "#112234",
+        removedContentBg: "#221134",
+      },
+    });
+    const highlighted = await loadHighlightedDiff(file, theme);
+    const rows = buildSplitRows(file, highlighted, theme);
+    const changedRow = rows.find(
+      (row) =>
+        row.type === "split-line" && row.left.kind === "deletion" && row.right.kind === "addition",
+    );
+
+    expect(changedRow).toBeDefined();
+    if (!changedRow || changedRow.type !== "split-line") {
+      throw new Error("Expected a split-line change row");
+    }
+
+    expect(changedRow.left.spans.find((span) => span.bg)?.bg).toBe("#221134");
+    expect(changedRow.right.spans.find((span) => span.bg)?.bg).toBe("#112234");
+  });
+
   test("builds stacked rows with separate deletion and addition lines", () => {
     const file = createDiffFile();
     const theme = resolveTheme("github-light-default", null);
@@ -675,6 +702,36 @@ describe("Pierre diff rows", () => {
       expect(spans.find((span) => span.text.includes("compute"))?.fg).toBe("#223344");
       expect(spans.find((span) => span.text.includes('"hello"'))?.fg).toBe("#334455");
     }
+  });
+
+  test("maps Pierre plain-text defaults onto a custom syntax default", async () => {
+    const metadata = parseDiffFromFile(
+      { name: "notes.txt", contents: "starting work\n", cacheKey: "plain-before" },
+      { name: "notes.txt", contents: "starting works\n", cacheKey: "plain-after" },
+      { context: 3 },
+      true,
+    );
+    const file: DiffFile = {
+      id: "plain-default",
+      path: "notes.txt",
+      patch: "",
+      language: "text",
+      stats: { additions: 1, deletions: 1 },
+      metadata,
+      agent: null,
+    };
+    const theme = resolveTheme("dawn", null, {
+      dawn: {
+        base: "github-light-default",
+        syntax: { default: "#575279" },
+      },
+    });
+    const highlighted = await loadHighlightedDiff(file, theme.appearance);
+    const spans = buildStackRows(file, highlighted, theme)
+      .filter((row): row is Extract<DiffRow, { type: "stack-line" }> => row.type === "stack-line")
+      .flatMap((row) => row.cell.spans);
+
+    expect(spans.find((span) => span.text.includes("starting"))?.fg).toBe("#575279");
   });
 
   test("uses Shiki's bundled Catppuccin theme for Catppuccin syntax", async () => {

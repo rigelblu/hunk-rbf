@@ -159,6 +159,41 @@ describe("config resolution", () => {
     });
   });
 
+  test("merges semantic diff colors without displacing explicit component overrides", () => {
+    const home = createTempDir("hunk-config-home-");
+    const repo = createTempDir("hunk-config-repo-");
+    createRepo(repo);
+
+    mkdirSync(join(home, ".config", "hunk"), { recursive: true });
+    writeFileSync(
+      join(home, ".config", "hunk", "config.toml"),
+      [
+        "[custom_themes.dawn]",
+        'base = "github-light-default"',
+        'diffAddedColor = "#3DAA8E"',
+        'removedBg = "#112233"',
+      ].join("\n"),
+    );
+
+    mkdirSync(join(repo, ".hunk"), { recursive: true });
+    writeFileSync(
+      join(repo, ".hunk", "config.toml"),
+      ["[custom_themes.dawn]", 'diffRemovedColor = "#B4647A"', 'addedBg = "#445566"'].join("\n"),
+    );
+
+    const resolved = resolveConfiguredCliInput(createPatchPagerInput(), {
+      cwd: repo,
+      env: { HOME: home },
+    });
+
+    expect(resolved.customThemes?.dawn).toMatchObject({
+      diffAddedColor: "#3daa8e",
+      diffRemovedColor: "#b4647a",
+      addedBg: "#445566",
+      removedBg: "#112233",
+    });
+  });
+
   test.each(["github-dark-default", "github-light-default", "dracula", "catppuccin-mocha"])(
     "accepts custom theme base id: %s",
     (base) => {

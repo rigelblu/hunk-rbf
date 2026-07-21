@@ -1,6 +1,12 @@
 import type { ThemeMode } from "@opentui/core";
 import type { CustomThemeConfig, CustomThemeRegistry } from "../core/types";
-import { blendHex, contrastRatio, relativeLuminance } from "./lib/color";
+import {
+  blendHex,
+  contrastRatio,
+  ensureMinimumContrast,
+  hexColorDistance,
+  relativeLuminance,
+} from "./lib/color";
 import {
   BUNDLED_SHIKI_THEME_IDS,
   resolveLegacyThemeId,
@@ -11,9 +17,9 @@ import {
   type BundledShikiThemeId,
 } from "./lib/shikiThemes";
 import { withLazySyntaxStyle } from "./themes/syntax";
-import type { AppTheme, SyntaxColors, ThemeBase } from "./themes/types";
+import type { AppTheme, SyntaxColors, ThemeBase, ThemeRenderSurfaces } from "./themes/types";
 
-export type { AppTheme, SyntaxColors, ThemeBase } from "./themes/types";
+export type { AppTheme, SyntaxColors, ThemeBase, ThemeRenderSurfaces } from "./themes/types";
 
 export const TRANSPARENT_BACKGROUND = "transparent";
 export const DEFAULT_DARK_THEME_ID = "github-dark-default";
@@ -21,6 +27,11 @@ export const DEFAULT_LIGHT_THEME_ID = "github-light-default";
 
 const MIN_GUTTER_CONTRAST = 4.5;
 const MIN_DIFF_SIGN_CONTRAST = 3;
+const MIN_WORD_DIFF_BG_DISTANCE = 28;
+const WORD_DIFF_BLEND_STEP = 0.005;
+const WORD_DIFF_MAX_BLEND = 0.2;
+const SEMANTIC_DIFF_ROW_TINT = { light: 0.16, dark: 0.12 } as const;
+const SEMANTIC_DIFF_CONTENT_TINT = { light: 0.18, dark: 0.28 } as const;
 
 const FALLBACK_DIFF_COLORS = {
   dark: { added: "#5ecc71", removed: "#ff6762", modified: "#69b1ff" },
@@ -49,13 +60,7 @@ function readableDimForeground(preferred: string, background: string) {
 
 /** Return a semantic diff marker color that remains legible on a theme editor surface. */
 function readableDiffSign(preferred: string, background: string) {
-  if (contrastRatio(preferred, background) >= MIN_DIFF_SIGN_CONTRAST) {
-    return preferred;
-  }
-
-  return relativeLuminance(background) > 0.45
-    ? blendHex("#000000", preferred, 0.45)
-    : blendHex("#ffffff", preferred, 0.45);
+  return ensureMinimumContrast(preferred, background, MIN_DIFF_SIGN_CONTRAST);
 }
 
 /** Build Hunk's fallback semantic syntax palette for non-Shiki custom highlighting. */
@@ -90,6 +95,25 @@ function readableTintedBackground(
   }
 
   return background;
+}
+
+/** Strengthen one built-in word-diff surface before it becomes resolved theme data. */
+function readableWordDiffBackground(contentBg: string, lineBg: string, signColor: string) {
+  if (hexColorDistance(contentBg, lineBg) >= MIN_WORD_DIFF_BG_DISTANCE) {
+    return contentBg;
+  }
+
+  let strongestCandidate = lineBg;
+  const maxSteps = Math.floor(WORD_DIFF_MAX_BLEND / WORD_DIFF_BLEND_STEP);
+  for (let step = 1; step <= maxSteps; step += 1) {
+    const candidate = blendHex(signColor, lineBg, step * WORD_DIFF_BLEND_STEP);
+    strongestCandidate = candidate;
+    if (hexColorDistance(candidate, lineBg) >= MIN_WORD_DIFF_BG_DISTANCE) {
+      return candidate;
+    }
+  }
+
+  return strongestCandidate;
 }
 
 /** Keep semantic status colors readable on sidebar and menu surfaces. */
@@ -169,17 +193,15 @@ function buildShikiTheme(themeId: BundledShikiThemeId): AppTheme {
     textForeground,
     rowTint,
   );
-  const addedContentBg = readableTintedBackground(
+  const addedContentBg = readableWordDiffBackground(
+    readableTintedBackground(addedSignColor, editorBackground, textForeground, contentTint),
+    addedBg,
     addedSignColor,
-    editorBackground,
-    textForeground,
-    contentTint,
   );
-  const removedContentBg = readableTintedBackground(
+  const removedContentBg = readableWordDiffBackground(
+    readableTintedBackground(removedSignColor, editorBackground, textForeground, contentTint),
+    removedBg,
     removedSignColor,
-    editorBackground,
-    textForeground,
-    contentTint,
   );
   const accentMuted = readableTintedBackground(
     modifiedColor,
@@ -253,6 +275,19 @@ function fallbackTheme(themeMode?: ThemeMode | null) {
 /** Build one config-defined custom theme by inheriting from a Shiki-backed base palette. */
 function buildCustomTheme(id: string, customTheme: CustomThemeConfig) {
   const baseTheme = builtInThemeById(customTheme.base) ?? fallbackTheme();
+  const contextBg = customTheme.contextBg ?? baseTheme.contextBg;
+  const rowTint = SEMANTIC_DIFF_ROW_TINT[baseTheme.appearance];
+  const contentTint = SEMANTIC_DIFF_CONTENT_TINT[baseTheme.appearance];
+  const addedBg =
+    customTheme.addedBg ??
+    (customTheme.diffAddedColor
+      ? blendHex(customTheme.diffAddedColor, contextBg, rowTint)
+      : baseTheme.addedBg);
+  const removedBg =
+    customTheme.removedBg ??
+    (customTheme.diffRemovedColor
+      ? blendHex(customTheme.diffRemovedColor, contextBg, rowTint)
+      : baseTheme.removedBg);
   const themeBase: ThemeBase = {
     ...baseTheme,
     id,
@@ -265,16 +300,32 @@ function buildCustomTheme(id: string, customTheme: CustomThemeConfig) {
     accentMuted: customTheme.accentMuted ?? baseTheme.accentMuted,
     text: customTheme.text ?? baseTheme.text,
     muted: customTheme.muted ?? baseTheme.muted,
-    addedBg: customTheme.addedBg ?? baseTheme.addedBg,
-    removedBg: customTheme.removedBg ?? baseTheme.removedBg,
+    addedBg,
+    removedBg,
     movedAddedBg: customTheme.movedAddedBg ?? baseTheme.movedAddedBg,
     movedRemovedBg: customTheme.movedRemovedBg ?? baseTheme.movedRemovedBg,
-    contextBg: customTheme.contextBg ?? baseTheme.contextBg,
-    addedContentBg: customTheme.addedContentBg ?? baseTheme.addedContentBg,
-    removedContentBg: customTheme.removedContentBg ?? baseTheme.removedContentBg,
+    contextBg,
+    addedContentBg:
+      customTheme.addedContentBg ??
+      (customTheme.diffAddedColor
+        ? blendHex(customTheme.diffAddedColor, addedBg, contentTint)
+        : baseTheme.addedContentBg),
+    removedContentBg:
+      customTheme.removedContentBg ??
+      (customTheme.diffRemovedColor
+        ? blendHex(customTheme.diffRemovedColor, removedBg, contentTint)
+        : baseTheme.removedContentBg),
     contextContentBg: customTheme.contextContentBg ?? baseTheme.contextContentBg,
-    addedSignColor: customTheme.addedSignColor ?? baseTheme.addedSignColor,
-    removedSignColor: customTheme.removedSignColor ?? baseTheme.removedSignColor,
+    addedSignColor:
+      customTheme.addedSignColor ??
+      (customTheme.diffAddedColor
+        ? readableDiffSign(customTheme.diffAddedColor, addedBg)
+        : baseTheme.addedSignColor),
+    removedSignColor:
+      customTheme.removedSignColor ??
+      (customTheme.diffRemovedColor
+        ? readableDiffSign(customTheme.diffRemovedColor, removedBg)
+        : baseTheme.removedSignColor),
     lineNumberBg: customTheme.lineNumberBg ?? baseTheme.lineNumberBg,
     lineNumberFg: customTheme.lineNumberFg ?? baseTheme.lineNumberFg,
     selectedHunk: customTheme.selectedHunk ?? baseTheme.selectedHunk,
@@ -372,5 +423,16 @@ export function withTransparentSurfaces(theme: AppTheme): AppTheme {
     contextBg: TRANSPARENT_BACKGROUND,
     contextContentBg: TRANSPARENT_BACKGROUND,
     lineNumberBg: TRANSPARENT_BACKGROUND,
+  };
+}
+
+/** Preserve an opaque theme beside the optionally transparent colors emitted to the terminal. */
+export function themeRenderSurfaces(
+  theme: AppTheme,
+  transparentBackground: boolean,
+): ThemeRenderSurfaces {
+  return {
+    emittedTheme: transparentBackground ? withTransparentSurfaces(theme) : theme,
+    opaqueTheme: theme,
   };
 }

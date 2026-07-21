@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { blendHex, contrastRatio, hexColorDistance } from "./lib/color";
+import { blendHex, contrastRatio, ensureMinimumContrast, hexColorDistance } from "./lib/color";
 import { BUNDLED_SHIKI_THEME_IDS } from "./lib/shikiThemes";
 import {
   availableThemeIds,
@@ -10,6 +10,7 @@ import {
   TRANSPARENT_BACKGROUND,
   withTransparentSurfaces,
 } from "./themes";
+import { selectionHighlightBg } from "./diff/rowStyle";
 
 const MIN_READABLE_TEXT_CONTRAST = 4.5;
 const SYNTAX_ROLES = [
@@ -112,16 +113,6 @@ describe("themes", () => {
             background: theme.contextContentBg,
           },
           {
-            label: `${theme.id} text/addedContentBg`,
-            foreground: theme.text,
-            background: theme.addedContentBg,
-          },
-          {
-            label: `${theme.id} text/removedContentBg`,
-            foreground: theme.text,
-            background: theme.removedContentBg,
-          },
-          {
             label: `${theme.id} addedSignColor/addedBg`,
             foreground: theme.addedSignColor,
             background: theme.addedBg,
@@ -169,6 +160,44 @@ describe("themes", () => {
           },
         ]),
       );
+    });
+
+    expect(failures).toEqual([]);
+  });
+
+  test("final highlights keep every bundled syntax role at 4.5:1", () => {
+    const failures = BUNDLED_SHIKI_THEME_IDS.flatMap((themeId) => {
+      const theme = resolveTheme(themeId, null);
+      const backgrounds = [
+        ["context", theme.contextBg],
+        ["added row", theme.addedBg],
+        ["removed row", theme.removedBg],
+        ["added word", theme.addedContentBg],
+        ["removed word", theme.removedContentBg],
+      ] as const;
+
+      return SYNTAX_ROLES.flatMap((role) => {
+        const foreground = theme.syntaxColors[role] ?? theme.syntaxColors.default;
+        return backgrounds.flatMap(([surface, background]) => {
+          const states = [
+            [surface, background],
+            [`${surface} selected`, selectionHighlightBg(background, theme)],
+          ] as const;
+
+          return states.flatMap(([state, finalBackground]) => {
+            const adjusted = ensureMinimumContrast(foreground, finalBackground);
+            const ratio = contrastRatio(adjusted, finalBackground);
+            const changedPassingColor =
+              contrastRatio(foreground, finalBackground) >= MIN_READABLE_TEXT_CONTRAST &&
+              adjusted !== foreground;
+            return ratio + 0.005 < MIN_READABLE_TEXT_CONTRAST || changedPassingColor
+              ? [
+                  `${theme.id} syntax.${role}/${state}: ${ratio.toFixed(2)} (${adjusted} on ${finalBackground})`,
+                ]
+              : [];
+          });
+        });
+      });
     });
 
     expect(failures).toEqual([]);
@@ -248,6 +277,74 @@ describe("themes", () => {
     expect(custom.text).toBe("#ffffff");
     expect(custom.syntaxTheme).toBeUndefined();
     expect(custom.syntaxColors.keyword).toBe("#ff00ff");
+  });
+
+  test("derives omitted Dawn and Moon diff components from semantic colors", () => {
+    const dawn = resolveTheme("dawn", null, {
+      dawn: {
+        base: "github-light-default",
+        contextBg: "#faf4ed",
+        diffAddedColor: "#3daa8e",
+        diffRemovedColor: "#b4647a",
+      },
+    });
+    const moon = resolveTheme("moon", null, {
+      moon: {
+        base: "rose-pine-moon",
+        contextBg: "#232136",
+        diffAddedColor: "#5cc1a3",
+        diffRemovedColor: "#ea6e92",
+      },
+    });
+
+    expect(dawn).toMatchObject({
+      addedBg: "#dce8de",
+      removedBg: "#efdddb",
+      addedContentBg: "#bfddd0",
+      removedContentBg: "#e4c7ca",
+    });
+    expect(moon).toMatchObject({
+      addedBg: "#2a3443",
+      removedBg: "#3b2a41",
+      addedContentBg: "#385b5e",
+      removedContentBg: "#6c3d58",
+    });
+  });
+
+  test("keeps explicit diff components ahead of semantic derivation", () => {
+    const base = resolveTheme("github-light-default", null);
+    const custom = resolveTheme("custom", null, {
+      custom: {
+        base: "github-light-default",
+        contextBg: "#faf4ed",
+        diffAddedColor: "#3daa8e",
+        diffRemovedColor: "#b4647a",
+        addedBg: "#112233",
+        removedContentBg: "#445566",
+        addedSignColor: "#778899",
+      },
+    });
+
+    expect(custom.addedBg).toBe("#112233");
+    expect(custom.removedBg).toBe("#efdddb");
+    expect(custom.addedContentBg).toBe(blendHex("#3daa8e", "#112233", 0.18));
+    expect(custom.removedContentBg).toBe("#445566");
+    expect(custom.addedSignColor).toBe("#778899");
+    expect(custom.movedAddedBg).toBe(base.movedAddedBg);
+  });
+
+  test("keeps derived semantic signs at or above their 3:1 floor", () => {
+    const custom = resolveTheme("custom", null, {
+      custom: {
+        base: "github-light-default",
+        contextBg: "#777777",
+        diffAddedColor: "#777777",
+        diffRemovedColor: "#123456",
+      },
+    });
+
+    expect(contrastRatio(custom.addedSignColor, custom.addedBg)).toBeGreaterThanOrEqual(3);
+    expect(contrastRatio(custom.removedSignColor, custom.removedBg)).toBeGreaterThanOrEqual(3);
   });
 
   test("appends named custom themes in registry order and defaults labels to ids", () => {

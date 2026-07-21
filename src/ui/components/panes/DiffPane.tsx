@@ -53,7 +53,7 @@ import {
   resolveViewportRowAnchorTop,
   type ViewportRowAnchor,
 } from "../../lib/viewportAnchor";
-import type { AppTheme } from "../../themes";
+import type { ThemeRenderSurfaces } from "../../themes";
 import { DiffSection } from "./DiffSection";
 import { DiffFileHeaderRow } from "./DiffFileHeaderRow";
 import { VerticalScrollbar, type VerticalScrollbarHandle } from "../scrollbar/VerticalScrollbar";
@@ -202,7 +202,7 @@ export function DiffPane({
   layoutToggleRequestId = 0,
   selectedFileTopAlignRequestId = 0,
   selectedHunkRevealRequestId,
-  theme,
+  themeSurfaces,
   width,
   cancelCopySelectionRef,
   onActiveAddNoteAffordanceChange,
@@ -249,7 +249,7 @@ export function DiffPane({
   layoutToggleRequestId?: number;
   selectedFileTopAlignRequestId?: number;
   selectedHunkRevealRequestId?: number;
-  theme: AppTheme;
+  themeSurfaces: ThemeRenderSurfaces;
   width: number;
   cancelCopySelectionRef?: RefObject<(() => void) | null>;
   onActiveAddNoteAffordanceChange?: (
@@ -269,6 +269,7 @@ export function DiffPane({
   onToggleGap?: (fileId: string, gapKey: string) => void;
   onViewportCenteredHunkChange?: (fileId: string, hunkIndex: number) => void;
 }) {
+  const theme = themeSurfaces.emittedTheme;
   const renderTopChrome = showTopChrome ?? !pagerMode;
   const renderer = useRenderer();
   const mouseWheelScrollAcceleration = useMemo(
@@ -1817,7 +1818,7 @@ export function DiffPane({
                       showHunkHeaders={showHunkHeaders}
                       sourceStatus={sourceStatusByFileId[file.id]}
                       wrapLines={wrapLines}
-                      theme={theme}
+                      themeSurfaces={themeSurfaces}
                       hoverActive={hoveredFileId === null || hoveredFileId === file.id}
                       hoverClearSignal={
                         addNoteHoverClearFileId === file.id ? addNoteHoverClearSignal : 0

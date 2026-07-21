@@ -3,7 +3,7 @@ import { findMaxLineNumber } from "../ui/diff/codeColumns";
 import { buildSplitRows, buildStackRows } from "../ui/diff/pierre";
 import { diffMessage, DiffRowView, fitText } from "../ui/diff/renderRows";
 import { useHighlightedDiff } from "../ui/diff/useHighlightedDiff";
-import { resolveTheme } from "../ui/themes";
+import { resolveTheme, themeRenderSurfaces } from "../ui/themes";
 import { toInternalDiffFile } from "./model";
 import type { HunkDiffBodyProps } from "./types";
 
@@ -21,6 +21,7 @@ export function HunkDiffBody({
   selectedHunkIndex = 0,
 }: HunkDiffBodyProps) {
   const resolvedTheme = resolveTheme(theme, null);
+  const renderSurfaces = useMemo(() => themeRenderSurfaces(resolvedTheme, false), [resolvedTheme]);
   const internalFile = useMemo(() => (file ? toInternalDiffFile(file) : undefined), [file]);
   const resolvedHighlighted = useHighlightedDiff({
     file: internalFile,
@@ -71,7 +72,7 @@ export function HunkDiffBody({
             showHunkHeaders={showHunkHeaders}
             wrapLines={wrapLines}
             codeHorizontalOffset={horizontalOffset}
-            theme={resolvedTheme}
+            themeSurfaces={renderSurfaces}
             selected={row.hunkIndex === selectedHunkIndex}
           />
         </box>
