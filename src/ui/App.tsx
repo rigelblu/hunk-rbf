@@ -138,7 +138,7 @@ import { verifyWorkspaceWriteTarget } from "./lib/workspaceWriteGuard";
 import { openSelectedFileInEditor } from "./lib/openInEditor";
 import { resolveResponsiveLayout } from "./lib/responsive";
 import { resizeSidebarWidth } from "./lib/sidebar";
-import { availableThemes, resolveTheme, withTransparentSurfaces } from "./themes";
+import { availableThemes, resolveTheme, themeRenderSurfaces } from "./themes";
 
 type FocusArea = "files" | "filter" | "note";
 type ActiveAddNoteTarget = ActiveAddNoteAffordance & { fileId: string };
@@ -400,13 +400,11 @@ export function App({
     () => resolveTheme(effectiveThemeId, detectedThemeMode ?? null, bootstrap.customThemes),
     [effectiveThemeId, detectedThemeMode, bootstrap.customThemes],
   );
-  const activeTheme = useMemo(
-    () =>
-      bootstrap.input.options.transparentBackground
-        ? withTransparentSurfaces(baseTheme)
-        : baseTheme,
+  const renderSurfaces = useMemo(
+    () => themeRenderSurfaces(baseTheme, Boolean(bootstrap.input.options.transparentBackground)),
     [baseTheme, bootstrap.input.options.transparentBackground],
   );
+  const activeTheme = renderSurfaces.emittedTheme;
 
   const themeSelectorItems = useMemo(
     () =>
@@ -2399,6 +2397,7 @@ export function App({
             lineCursorRevealRequest={review.lineCursorRevealRequest}
             lineCursorAlignmentRequest={lineCursorAlignmentRequest}
             theme={activeTheme}
+            themeSurfaces={renderSurfaces}
             width={diffPaneWidth}
             height={diffPaneHeight}
             onActiveAddNoteAffordanceChange={setActiveAddNoteTarget}

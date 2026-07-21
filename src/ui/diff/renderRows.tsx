@@ -2,7 +2,11 @@ import { Fragment, isValidElement, memo, type ReactNode } from "react";
 import { parseColor, StyledText, type TextChunk } from "@opentui/core";
 import type { DiffFile } from "../../core/changeset/model";
 import type { UserNoteLineTarget } from "../../core/liveComments";
-import type { AppTheme } from "../themes";
+import {
+  TRANSPARENT_BACKGROUND,
+  type AppTheme,
+  type ThemeRenderSurfaces,
+} from "../themes";
 import {
   resolveSplitCellGeometry,
   resolveSplitPaneWidths,
@@ -48,6 +52,7 @@ import {
 } from "../lib/text";
 import type { CopySelectedRowRange } from "../lib/diffSpatial";
 import type { CursorLine } from "../../core/run/commandInputs";
+import { resolveSpanColors } from "./spanColors";
 
 export interface CursorHighlight {
   /** The render plan anchor of the row the cursor rests on, shared with reveal lookups. */
@@ -293,11 +298,10 @@ function appendFixedInlineChunks(
   width: number,
   fallbackColor: string,
   fallbackBg: string,
+  opaqueFallbackBg: string,
   highlightBg?: (baseBg: string) => string,
 ) {
   const { spans: trimmed, usedWidth } = sliceSpansWindow(spans, 0, width);
-  const renderedBackground = (background: string) =>
-    highlightBg ? highlightBg(background) : background;
   const paddingAmount = Math.max(0, width - usedWidth);
   const lastSpan = trimmed.at(-1);
   let paddingMerged = false;
@@ -312,19 +316,34 @@ function appendFixedInlineChunks(
   }
 
   for (const span of trimmed) {
+    const emittedBackground = span.bg ?? fallbackBg;
+    const opaqueBackground =
+      !span.bg || span.bg === TRANSPARENT_BACKGROUND ? opaqueFallbackBg : span.bg;
+    const renderedBg = highlightBg ? highlightBg(opaqueBackground) : emittedBackground;
+    const colors = resolveSpanColors(
+      span.fg ?? fallbackColor,
+      renderedBg,
+      highlightBg ? renderedBg : opaqueBackground,
+    );
     chunks.push({
       __isChunk: true,
       text: span.text,
-      fg: styledTextColor(span.fg ?? fallbackColor),
-      bg: styledTextColor(renderedBackground(span.bg ?? fallbackBg)),
+      fg: styledTextColor(colors.foreground),
+      bg: styledTextColor(colors.emittedBackground),
     });
   }
   if (!paddingMerged && paddingAmount > 0) {
+    const renderedBg = highlightBg ? highlightBg(opaqueFallbackBg) : fallbackBg;
+    const colors = resolveSpanColors(
+      fallbackColor,
+      renderedBg,
+      highlightBg ? renderedBg : opaqueFallbackBg,
+    );
     chunks.push({
       __isChunk: true,
       text: " ".repeat(paddingAmount),
-      fg: styledTextColor(fallbackColor),
-      bg: styledTextColor(renderedBackground(fallbackBg)),
+      fg: styledTextColor(colors.foreground),
+      bg: styledTextColor(colors.emittedBackground),
     });
   }
 }
@@ -337,6 +356,7 @@ function appendPlainInlineChunks(
   horizontalOffset: number,
   fallbackColor: string,
   fallbackBg: string,
+  opaqueFallbackBg: string,
 ) {
   const { spans: trimmed, usedWidth } = sliceSpansWindow(
     sanitizeTerminalSpans(spans),
@@ -357,19 +377,28 @@ function appendPlainInlineChunks(
   }
 
   for (const span of trimmed) {
+    const emittedBackground = span.bg ?? fallbackBg;
+    const opaqueBackground =
+      !span.bg || span.bg === TRANSPARENT_BACKGROUND ? opaqueFallbackBg : span.bg;
+    const colors = resolveSpanColors(
+      span.fg ?? fallbackColor,
+      emittedBackground,
+      opaqueBackground,
+    );
     chunks.push({
       __isChunk: true,
       text: span.text,
-      fg: styledTextColor(span.fg ?? fallbackColor),
-      bg: styledTextColor(span.bg ?? fallbackBg),
+      fg: styledTextColor(colors.foreground),
+      bg: styledTextColor(colors.emittedBackground),
     });
   }
   if (!paddingMerged && paddingAmount > 0) {
+    const colors = resolveSpanColors(fallbackColor, fallbackBg, opaqueFallbackBg);
     chunks.push({
       __isChunk: true,
       text: " ".repeat(paddingAmount),
-      fg: styledTextColor(fallbackColor),
-      bg: styledTextColor(fallbackBg),
+      fg: styledTextColor(colors.foreground),
+      bg: styledTextColor(colors.emittedBackground),
     });
   }
 }
@@ -381,11 +410,13 @@ function appendPlainSplitCellChunks(
   width: number,
   lineNumberDigits: number,
   showLineNumbers: boolean,
-  theme: AppTheme,
+  themeSurfaces: ThemeRenderSurfaces,
   contentOffset: number,
   prefix: CellPrefix,
 ) {
+  const { emittedTheme: theme, opaqueTheme } = themeSurfaces;
   const palette = splitCellPalette(cell.kind, theme, cell.moveKind);
+  const opaquePalette = splitCellPalette(cell.kind, opaqueTheme, cell.moveKind);
   const { gutterWidth, contentWidth } = resolveSplitCellGeometry(
     width,
     lineNumberDigits,
@@ -413,6 +444,7 @@ function appendPlainSplitCellChunks(
     contentOffset,
     theme.syntaxColors.default,
     palette.contentBg,
+    opaquePalette.contentBg,
   );
 }
 
@@ -423,11 +455,13 @@ function appendPlainStackCellChunks(
   width: number,
   lineNumberDigits: number,
   showLineNumbers: boolean,
-  theme: AppTheme,
+  themeSurfaces: ThemeRenderSurfaces,
   contentOffset: number,
   prefix: CellPrefix,
 ) {
+  const { emittedTheme: theme, opaqueTheme } = themeSurfaces;
   const palette = stackCellPalette(cell.kind, theme, cell.moveKind);
+  const opaquePalette = stackCellPalette(cell.kind, opaqueTheme, cell.moveKind);
   const { gutterWidth, contentWidth } = resolveStackCellGeometry(
     width,
     lineNumberDigits,
@@ -455,6 +489,7 @@ function appendPlainStackCellChunks(
     contentOffset,
     theme.syntaxColors.default,
     palette.contentBg,
+    opaquePalette.contentBg,
   );
 }
 
@@ -470,6 +505,7 @@ function appendWrappedCellChunks(
   palette: { numberColor: string; gutterBg: string; contentBg: string },
   contentWidth: number,
   theme: AppTheme,
+  opaqueContentBg: string,
   prefix: { text: string; fg: string; bg: string },
   highlight?: RowHighlight,
 ) {
@@ -496,6 +532,7 @@ function appendWrappedCellChunks(
     contentWidth,
     theme.syntaxColors.default,
     palette.contentBg,
+    opaqueContentBg,
     contentHighlightBg,
   );
 }
@@ -511,6 +548,7 @@ function renderInlineSpans(
   width: number,
   fallbackColor: string,
   fallbackBg: string,
+  opaqueFallbackBg: string,
   keyPrefix: string,
   horizontalOffset = 0,
   highlightBg?: (baseBg: string) => string,
@@ -533,8 +571,20 @@ function renderInlineSpans(
       ? highlightBg
       : undefined;
   const needsBlending = !fullHighlightBg && highlightBg && selectionColRange;
-  const renderedBackground = (background: string) =>
-    fullHighlightBg ? fullHighlightBg(background) : background;
+  const finalColors = (foreground: string, spanBg: string | undefined, highlighted = false) => {
+    const emittedBaseBg = spanBg ?? fallbackBg;
+    const opaqueBaseBg =
+      !spanBg || spanBg === TRANSPARENT_BACKGROUND ? opaqueFallbackBg : spanBg;
+    const emittedBackground =
+      highlighted || fullHighlightBg
+        ? (highlighted ? highlightBg : fullHighlightBg)!(opaqueBaseBg)
+        : emittedBaseBg;
+    return resolveSpanColors(
+      foreground,
+      emittedBackground,
+      highlighted || fullHighlightBg ? emittedBackground : opaqueBaseBg,
+    );
+  };
   const paddingAmount = Math.max(0, width - usedWidth);
   let paddingMerged = false;
   const lastSpan = trimmed.at(-1);
@@ -558,11 +608,12 @@ function renderInlineSpans(
 
   for (const span of trimmed) {
     if (!needsBlending) {
+      const colors = finalColors(span.fg ?? fallbackColor, span.bg);
       elements.push(
         <span
           key={`${keyPrefix}:${elementIndex++}`}
-          fg={span.fg ?? fallbackColor}
-          bg={renderedBackground(span.bg ?? fallbackBg)}
+          fg={colors.foreground}
+          bg={colors.emittedBackground}
         >
           {span.text}
         </span>,
@@ -577,11 +628,12 @@ function renderInlineSpans(
 
     if (spanEnd <= selectionColRange.start || spanStart >= selectionColRange.end) {
       // Span is entirely outside the selection — render with original styling.
+      const colors = finalColors(span.fg ?? fallbackColor, span.bg);
       elements.push(
         <span
           key={`${keyPrefix}:${elementIndex++}`}
-          fg={span.fg ?? fallbackColor}
-          bg={span.bg ?? fallbackBg}
+          fg={colors.foreground}
+          bg={colors.emittedBackground}
         >
           {span.text}
         </span>,
@@ -595,11 +647,12 @@ function renderInlineSpans(
 
     if (localSelStart >= localSelEnd) {
       // No overlap after clamping — render original.
+      const colors = finalColors(span.fg ?? fallbackColor, span.bg);
       elements.push(
         <span
           key={`${keyPrefix}:${elementIndex++}`}
-          fg={span.fg ?? fallbackColor}
-          bg={span.bg ?? fallbackBg}
+          fg={colors.foreground}
+          bg={colors.emittedBackground}
         >
           {span.text}
         </span>,
@@ -613,33 +666,36 @@ function renderInlineSpans(
     const suffix = sliceTextByWidth(span.text, localSelEnd, spanWidth - localSelEnd).text;
 
     if (prefix) {
+      const colors = finalColors(span.fg ?? fallbackColor, span.bg);
       elements.push(
         <span
           key={`${keyPrefix}:${elementIndex++}`}
-          fg={span.fg ?? fallbackColor}
-          bg={span.bg ?? fallbackBg}
+          fg={colors.foreground}
+          bg={colors.emittedBackground}
         >
           {prefix}
         </span>,
       );
     }
     if (selected) {
+      const colors = finalColors(span.fg ?? fallbackColor, span.bg, true);
       elements.push(
         <span
           key={`${keyPrefix}:${elementIndex++}`}
-          fg={span.fg ?? fallbackColor}
-          bg={highlightBg(span.bg ?? fallbackBg)}
+          fg={colors.foreground}
+          bg={colors.emittedBackground}
         >
           {selected}
         </span>,
       );
     }
     if (suffix) {
+      const colors = finalColors(span.fg ?? fallbackColor, span.bg);
       elements.push(
         <span
           key={`${keyPrefix}:${elementIndex++}`}
-          fg={span.fg ?? fallbackColor}
-          bg={span.bg ?? fallbackBg}
+          fg={colors.foreground}
+          bg={colors.emittedBackground}
         >
           {suffix}
         </span>,
@@ -663,29 +719,45 @@ function renderInlineSpans(
         const afterSel = paddingAmount - beforeSel - Math.max(0, inSel);
 
         if (beforeSel > 0) {
+          const colors = finalColors(fallbackColor, undefined);
           elements.push(
-            <span key={`${keyPrefix}:pad-before`} fg={fallbackColor} bg={fallbackBg}>
+            <span
+              key={`${keyPrefix}:pad-before`}
+              fg={colors.foreground}
+              bg={colors.emittedBackground}
+            >
               {" ".repeat(beforeSel)}
             </span>,
           );
         }
         if (inSel > 0) {
+          const colors = finalColors(fallbackColor, undefined, true);
           elements.push(
-            <span key={`${keyPrefix}:pad-sel`} fg={fallbackColor} bg={highlightBg(fallbackBg)}>
+            <span
+              key={`${keyPrefix}:pad-sel`}
+              fg={colors.foreground}
+              bg={colors.emittedBackground}
+            >
               {" ".repeat(inSel)}
             </span>,
           );
         }
         if (afterSel > 0) {
+          const colors = finalColors(fallbackColor, undefined);
           elements.push(
-            <span key={`${keyPrefix}:pad-after`} fg={fallbackColor} bg={fallbackBg}>
+            <span
+              key={`${keyPrefix}:pad-after`}
+              fg={colors.foreground}
+              bg={colors.emittedBackground}
+            >
               {" ".repeat(afterSel)}
             </span>,
           );
         }
       } else {
+        const colors = finalColors(fallbackColor, undefined);
         elements.push(
-          <span key={`${keyPrefix}:pad`} fg={fallbackColor} bg={fallbackBg}>
+          <span key={`${keyPrefix}:pad`} fg={colors.foreground} bg={colors.emittedBackground}>
             {" ".repeat(paddingAmount)}
           </span>,
         );
@@ -693,8 +765,9 @@ function renderInlineSpans(
     }
   } else if (!paddingMerged && paddingAmount > 0) {
     // Keep a separate padding span when the final content style differs from the cell fallback.
+    const colors = finalColors(fallbackColor, undefined);
     elements.push(
-      <span key={`${keyPrefix}:pad`} fg={fallbackColor} bg={renderedBackground(fallbackBg)}>
+      <span key={`${keyPrefix}:pad`} fg={colors.foreground} bg={colors.emittedBackground}>
         {" ".repeat(paddingAmount)}
       </span>,
     );
@@ -1328,11 +1401,12 @@ function resolvePlainContentWidth(totalWidth: number, prefixWidth: number, gutte
  */
 function applyHighlightPalette<P extends { gutterBg: string; contentBg: string }>(
   palette: P,
+  opaquePalette: P,
   highlightBg: (baseBg: string) => string,
 ): P {
   return {
     ...palette,
-    gutterBg: highlightBg(palette.gutterBg),
+    gutterBg: highlightBg(opaquePalette.gutterBg),
   };
 }
 
@@ -1356,11 +1430,12 @@ function pickRowHighlight(
 /** Apply a highlight blend to a prefix descriptor. */
 function applyHighlightPrefix<P extends { bg: string }>(
   prefix: P,
+  opaqueBackground: string,
   highlightBg: (baseBg: string) => string,
 ): P {
   return {
     ...prefix,
-    bg: highlightBg(prefix.bg),
+    bg: highlightBg(opaqueBackground),
   };
 }
 
@@ -1370,7 +1445,7 @@ const SplitCellContent = memo(function SplitCellContent({
   width,
   lineNumberDigits,
   showLineNumbers,
-  theme,
+  themeSurfaces,
   keyPrefix,
   contentOffset,
   prefixWidth,
@@ -1381,15 +1456,19 @@ const SplitCellContent = memo(function SplitCellContent({
   width: number;
   lineNumberDigits: number;
   showLineNumbers: boolean;
-  theme: AppTheme;
+  themeSurfaces: ThemeRenderSurfaces;
   keyPrefix: string;
   contentOffset: number;
   prefixWidth: number;
   highlight?: RowHighlight;
   paneOffset: number;
 }) {
+  const { emittedTheme: theme, opaqueTheme } = themeSurfaces;
   const basePalette = splitCellPalette(cell.kind, theme, cell.moveKind);
-  const palette = highlight ? applyHighlightPalette(basePalette, highlight.bg) : basePalette;
+  const opaquePalette = splitCellPalette(cell.kind, opaqueTheme, cell.moveKind);
+  const palette = highlight
+    ? applyHighlightPalette(basePalette, opaquePalette, highlight.bg)
+    : basePalette;
   const { gutterWidth, contentWidth } = resolveSplitCellGeometry(
     width,
     lineNumberDigits,
@@ -1417,6 +1496,7 @@ const SplitCellContent = memo(function SplitCellContent({
         contentWidth,
         theme.syntaxColors.default,
         palette.contentBg,
+        opaquePalette.contentBg,
         `${keyPrefix}:content`,
         contentOffset,
         highlight?.bg,
@@ -1432,7 +1512,7 @@ function renderSplitCell(
   width: number,
   lineNumberDigits: number,
   showLineNumbers: boolean,
-  theme: AppTheme,
+  themeSurfaces: ThemeRenderSurfaces,
   keyPrefix: string,
   contentOffset = 0,
   prefix?: {
@@ -1443,7 +1523,9 @@ function renderSplitCell(
   highlight?: RowHighlight,
   paneOffset = 0,
 ) {
-  const resolvedPrefix = highlight && prefix ? applyHighlightPrefix(prefix, highlight.bg) : prefix;
+  const { opaqueTheme } = themeSurfaces;
+  const resolvedPrefix =
+    highlight && prefix ? applyHighlightPrefix(prefix, opaqueTheme.panel, highlight.bg) : prefix;
   const prefixWidth = resolvedPrefix?.text.length ?? 0;
 
   return (
@@ -1459,7 +1541,7 @@ function renderSplitCell(
         width={width}
         lineNumberDigits={lineNumberDigits}
         showLineNumbers={showLineNumbers}
-        theme={theme}
+        themeSurfaces={themeSurfaces}
         keyPrefix={keyPrefix}
         contentOffset={contentOffset}
         prefixWidth={prefixWidth}
@@ -1476,7 +1558,7 @@ const StackCellContent = memo(function StackCellContent({
   width,
   lineNumberDigits,
   showLineNumbers,
-  theme,
+  themeSurfaces,
   keyPrefix,
   contentOffset,
   prefixWidth,
@@ -1486,14 +1568,18 @@ const StackCellContent = memo(function StackCellContent({
   width: number;
   lineNumberDigits: number;
   showLineNumbers: boolean;
-  theme: AppTheme;
+  themeSurfaces: ThemeRenderSurfaces;
   keyPrefix: string;
   contentOffset: number;
   prefixWidth: number;
   highlight?: RowHighlight;
 }) {
+  const { emittedTheme: theme, opaqueTheme } = themeSurfaces;
   const basePalette = stackCellPalette(cell.kind, theme, cell.moveKind);
-  const palette = highlight ? applyHighlightPalette(basePalette, highlight.bg) : basePalette;
+  const opaquePalette = stackCellPalette(cell.kind, opaqueTheme, cell.moveKind);
+  const palette = highlight
+    ? applyHighlightPalette(basePalette, opaquePalette, highlight.bg)
+    : basePalette;
   const { gutterWidth, contentWidth } = resolveStackCellGeometry(
     width,
     lineNumberDigits,
@@ -1520,6 +1606,7 @@ const StackCellContent = memo(function StackCellContent({
         contentWidth,
         theme.syntaxColors.default,
         palette.contentBg,
+        opaquePalette.contentBg,
         `${keyPrefix}:content`,
         contentOffset,
         highlight?.bg,
@@ -1535,7 +1622,7 @@ function renderStackCell(
   width: number,
   lineNumberDigits: number,
   showLineNumbers: boolean,
-  theme: AppTheme,
+  themeSurfaces: ThemeRenderSurfaces,
   keyPrefix: string,
   contentOffset = 0,
   prefix?: {
@@ -1545,7 +1632,9 @@ function renderStackCell(
   },
   highlight?: RowHighlight,
 ) {
-  const resolvedPrefix = highlight && prefix ? applyHighlightPrefix(prefix, highlight.bg) : prefix;
+  const { opaqueTheme } = themeSurfaces;
+  const resolvedPrefix =
+    highlight && prefix ? applyHighlightPrefix(prefix, opaqueTheme.panel, highlight.bg) : prefix;
   const prefixWidth = resolvedPrefix?.text.length ?? 0;
 
   return (
@@ -1561,7 +1650,7 @@ function renderStackCell(
         width={width}
         lineNumberDigits={lineNumberDigits}
         showLineNumbers={showLineNumbers}
-        theme={theme}
+        themeSurfaces={themeSurfaces}
         keyPrefix={keyPrefix}
         contentOffset={contentOffset}
         prefixWidth={prefixWidth}
@@ -1575,8 +1664,9 @@ function renderStackCell(
 function renderWrappedSplitCellLine(
   line: WrappedCellLine,
   palette: ReturnType<typeof splitCellPalette>,
+  opaquePalette: ReturnType<typeof splitCellPalette>,
   contentWidth: number,
-  theme: AppTheme,
+  themeSurfaces: ThemeRenderSurfaces,
   keyPrefix: string,
   prefix: {
     text: string;
@@ -1586,8 +1676,13 @@ function renderWrappedSplitCellLine(
   highlight?: RowHighlight,
   paneOffset = 0,
 ) {
-  const resolvedPalette = highlight ? applyHighlightPalette(palette, highlight.bg) : palette;
-  const resolvedPrefix = highlight ? applyHighlightPrefix(prefix, highlight.bg) : prefix;
+  const { emittedTheme: theme, opaqueTheme } = themeSurfaces;
+  const resolvedPalette = highlight
+    ? applyHighlightPalette(palette, opaquePalette, highlight.bg)
+    : palette;
+  const resolvedPrefix = highlight
+    ? applyHighlightPrefix(prefix, opaqueTheme.panel, highlight.bg)
+    : prefix;
 
   const prefixWidth = prefix.text.length;
   const gutterWidth = line.gutterText.length;
@@ -1618,6 +1713,7 @@ function renderWrappedSplitCellLine(
         contentWidth,
         theme.syntaxColors.default,
         resolvedPalette.contentBg,
+        opaquePalette.contentBg,
         `${keyPrefix}:content`,
         0,
         highlight?.bg,
@@ -1632,8 +1728,9 @@ function renderWrappedSplitCellLine(
 function renderWrappedStackCellLine(
   line: WrappedCellLine,
   palette: ReturnType<typeof stackCellPalette>,
+  opaquePalette: ReturnType<typeof stackCellPalette>,
   contentWidth: number,
-  theme: AppTheme,
+  themeSurfaces: ThemeRenderSurfaces,
   keyPrefix: string,
   prefix: {
     text: string;
@@ -1642,8 +1739,13 @@ function renderWrappedStackCellLine(
   },
   highlight?: RowHighlight,
 ) {
-  const resolvedPalette = highlight ? applyHighlightPalette(palette, highlight.bg) : palette;
-  const resolvedPrefix = highlight ? applyHighlightPrefix(prefix, highlight.bg) : prefix;
+  const { emittedTheme: theme, opaqueTheme } = themeSurfaces;
+  const resolvedPalette = highlight
+    ? applyHighlightPalette(palette, opaquePalette, highlight.bg)
+    : palette;
+  const resolvedPrefix = highlight
+    ? applyHighlightPrefix(prefix, opaqueTheme.panel, highlight.bg)
+    : prefix;
 
   const prefixWidth = prefix.text.length;
   const gutterWidth = line.gutterText.length;
@@ -1674,6 +1776,7 @@ function renderWrappedStackCellLine(
         contentWidth,
         theme.syntaxColors.default,
         resolvedPalette.contentBg,
+        opaquePalette.contentBg,
         `${keyPrefix}:content`,
         0,
         highlight?.bg,
@@ -2017,7 +2120,7 @@ function renderRow(
   showHunkHeaders: boolean,
   wrapLines: boolean,
   codeHorizontalOffset: number,
-  theme: AppTheme,
+  themeSurfaces: ThemeRenderSurfaces,
   selected: boolean,
   copySelectedRowRange: CopySelectedRowRange | undefined,
   copySelectedSide: "left" | "right" | undefined,
@@ -2030,6 +2133,7 @@ function renderRow(
   onStartUserNoteAtHunk?: (hunkIndex: number, target?: UserNoteLineTarget) => void,
   onToggleGap?: (gapKey: string) => void,
 ) {
+  const { emittedTheme: theme, opaqueTheme } = themeSurfaces;
   // Extension marks repaint span backgrounds only; geometry inputs keep using the source row.
   const row = withRowLineHighlights(sourceRow, lineHighlights, theme);
   const hasCopySelection = !!copySelectedRowRange;
@@ -2140,7 +2244,7 @@ function renderRow(
                 leftWidth,
                 lineNumberDigits,
                 showLineNumbers,
-                theme,
+                themeSurfaces,
                 codeHorizontalOffset,
                 leftPrefix,
               );
@@ -2150,7 +2254,7 @@ function renderRow(
                 rightRenderWidth,
                 lineNumberDigits,
                 showLineNumbers,
-                theme,
+                themeSurfaces,
                 codeHorizontalOffset,
                 rightPrefix,
               );
@@ -2185,7 +2289,7 @@ function renderRow(
                   leftWidth,
                   lineNumberDigits,
                   showLineNumbers,
-                  theme,
+                  themeSurfaces,
                   `${row.key}:left`,
                   codeHorizontalOffset,
                   leftPrefix,
@@ -2197,7 +2301,7 @@ function renderRow(
                   rightRenderWidth,
                   lineNumberDigits,
                   showLineNumbers,
-                  theme,
+                  themeSurfaces,
                   `${row.key}:right`,
                   codeHorizontalOffset,
                   rightPrefix,
@@ -2272,8 +2376,9 @@ function renderRow(
                 renderWrappedSplitCellLine(
                   leftLine,
                   leftLayout.palette,
+                  splitCellPalette(row.left.kind, opaqueTheme, row.left.moveKind),
                   leftContentWidth,
-                  theme,
+                  themeSurfaces,
                   `${row.key}:left:${index}`,
                   leftPrefix,
                   leftHighlight,
@@ -2282,8 +2387,9 @@ function renderRow(
                 renderWrappedSplitCellLine(
                   rightLine,
                   rightLayout.palette,
+                  splitCellPalette(row.right.kind, opaqueTheme, row.right.moveKind),
                   rightContentWidth,
-                  theme,
+                  themeSurfaces,
                   `${row.key}:right:${index}`,
                   rightPrefix,
                   rightHighlight,
@@ -2303,6 +2409,7 @@ function renderRow(
                 leftLayout.palette,
                 leftContentWidth,
                 theme,
+                splitCellPalette(row.left.kind, opaqueTheme, row.left.moveKind).contentBg,
                 leftPrefix,
                 leftHighlight,
               );
@@ -2312,6 +2419,7 @@ function renderRow(
                 rightLayout.palette,
                 rightContentWidth,
                 theme,
+                splitCellPalette(row.right.kind, opaqueTheme, row.right.moveKind).contentBg,
                 rightPrefix,
                 rightHighlight,
               );
@@ -2393,7 +2501,7 @@ function renderRow(
               contentWidth,
               lineNumberDigits,
               showLineNumbers,
-              theme,
+              themeSurfaces,
               codeHorizontalOffset,
               prefix,
             );
@@ -2428,7 +2536,7 @@ function renderRow(
                   contentWidth,
                   lineNumberDigits,
                   showLineNumbers,
-                  theme,
+                  themeSurfaces,
                   `${row.key}:stack`,
                   codeHorizontalOffset,
                   prefix,
@@ -2480,6 +2588,7 @@ function renderRow(
                 layout.palette,
                 wrappedContentWidth,
                 theme,
+                stackCellPalette(row.cell.kind, opaqueTheme, row.cell.moveKind).contentBg,
                 prefix,
                 cellHighlight,
               );
@@ -2496,8 +2605,9 @@ function renderRow(
                 renderWrappedStackCellLine(
                   line,
                   layout.palette,
+                  stackCellPalette(row.cell.kind, opaqueTheme, row.cell.moveKind),
                   wrappedContentWidth,
-                  theme,
+                  themeSurfaces,
                   `${row.key}:stack:${index}`,
                   prefix,
                   cellHighlight,
@@ -2562,7 +2672,9 @@ interface DiffRowViewProps {
   showHunkHeaders: boolean;
   wrapLines: boolean;
   codeHorizontalOffset: number;
-  theme: AppTheme;
+  /** Single-surface input retained for direct component consumers. */
+  theme?: AppTheme;
+  themeSurfaces?: ThemeRenderSurfaces;
   selected: boolean;
   copySelectedRowRange?: CopySelectedRowRange;
   copySelectedSide?: "left" | "right";
@@ -2594,6 +2706,7 @@ export const DiffRowView = memo(
     wrapLines,
     codeHorizontalOffset,
     theme,
+    themeSurfaces,
     selected,
     copySelectedRowRange,
     copySelectedSide,
@@ -2606,6 +2719,8 @@ export const DiffRowView = memo(
     onStartUserNoteAtHunk,
     onToggleGap,
   }: DiffRowViewProps) {
+    const resolvedThemeSurfaces =
+      themeSurfaces ?? { emittedTheme: theme!, opaqueTheme: theme! };
     return renderRow(
       row,
       width,
@@ -2614,7 +2729,7 @@ export const DiffRowView = memo(
       showHunkHeaders,
       wrapLines,
       codeHorizontalOffset,
-      theme,
+      resolvedThemeSurfaces,
       selected,
       copySelectedRowRange,
       copySelectedSide,
@@ -2638,6 +2753,7 @@ export const DiffRowView = memo(
       previous.wrapLines === next.wrapLines &&
       previous.codeHorizontalOffset === next.codeHorizontalOffset &&
       previous.theme === next.theme &&
+      previous.themeSurfaces === next.themeSurfaces &&
       previous.selected === next.selected &&
       previous.copySelectedRowRange === next.copySelectedRowRange &&
       previous.copySelectedSide === next.copySelectedSide &&

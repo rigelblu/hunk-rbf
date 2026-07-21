@@ -9,6 +9,15 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 
 ---
 
+# 🔵⋯ v0.3.0 (2026-07-22)
+## 🟠⋯ Improved for End Users
+- 2026-07-22 - feat (ux) | keep custom-theme syntax readable across derived row, word, and selection highlights (#hk-6)
+
+## 🟠⋯ Added for Technical Users
+- 2026-07-22 - config (technical) | derive omitted add and remove surfaces from semantic theme colors while preserving explicit overrides (#hk-6)
+
+---
+
 # 🔵⋯ v0.2.1 (2026-07-22)
 ## 🟠⋯ Added for Builders
 - 2026-07-22 - data (ux) | compare a personal light/dark theme pair against the same focused review fixture (#hk-5)

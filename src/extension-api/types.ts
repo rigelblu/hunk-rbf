@@ -573,6 +573,10 @@ export interface CustomThemeConfig {
   accentMuted?: string;
   text?: string;
   muted?: string;
+  /** Semantic add color used to derive omitted row and word-highlight surfaces. */
+  diffAddedColor?: string;
+  /** Semantic remove color used to derive omitted row and word-highlight surfaces. */
+  diffRemovedColor?: string;
   addedBg?: string;
   removedBg?: string;
   movedAddedBg?: string;

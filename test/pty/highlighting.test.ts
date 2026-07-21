@@ -75,17 +75,39 @@ describe("PTY syntax highlighting", () => {
 
       let keywords = "";
       let comments = "";
+      let editedCommentLine = session.getTerminalData().lines.find((line) =>
+        line.spans
+          .map((span) => span.text)
+          .join("")
+          .includes("Line five, edited."),
+      );
       for (let iteration = 0; iteration < 200; iteration += 1) {
         await session.waitIdle({ timeout: 50 });
         keywords = await session.text({ immediate: true, only: { foreground: "#ff7b72" } });
         comments = await session.text({ immediate: true, only: { foreground: "#8b949e" } });
-        if (keywords.includes("def") && comments.includes("Line five, edited.")) {
+        editedCommentLine = session.getTerminalData().lines.find((line) =>
+          line.spans
+            .map((span) => span.text)
+            .join("")
+            .includes("Line five, edited."),
+        );
+        if (keywords.includes("def") && editedCommentLine) {
           break;
         }
       }
 
       expect(keywords).toContain("def");
-      expect(comments).toContain("Line five, edited.");
+      expect(editedCommentLine).toBeDefined();
+      expect(
+        editedCommentLine?.spans.some(
+          (span) => span.text.includes("Line five") && span.fg === "#8c959f",
+        ),
+      ).toBe(true);
+      expect(
+        editedCommentLine?.spans.some(
+          (span) => span.text.includes(", edited") && span.fg === "#a0a7af",
+        ),
+      ).toBe(true);
       expect(comments).toContain('"""');
       expect(
         await session.text({ immediate: true, only: { foreground: "#a5d6ff" } }),

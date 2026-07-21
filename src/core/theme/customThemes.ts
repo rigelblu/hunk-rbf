@@ -61,6 +61,8 @@ export const CUSTOM_THEME_COLOR_KEYS = [
   "accentMuted",
   "text",
   "muted",
+  "diffAddedColor",
+  "diffRemovedColor",
   "addedBg",
   "removedBg",
   "movedAddedBg",

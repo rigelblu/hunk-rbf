@@ -8,6 +8,7 @@ import {
   DEFAULT_DARK_THEME_ID,
   DEFAULT_LIGHT_THEME_ID,
   resolveTheme,
+  themeRenderSurfaces,
   TRANSPARENT_BACKGROUND,
   withTransparentSurfaces,
 } from "./themes";
@@ -254,6 +255,48 @@ describe("themes", () => {
     expect(custom.syntaxColors).toBe(resolveTheme("catppuccin-mocha", null).syntaxColors);
   });
 
+  test("derives omitted diff surfaces from semantic custom-theme colors", () => {
+    const base = resolveTheme("github-light-default", null);
+    const custom = resolveTheme(
+      "review",
+      null,
+      createTestCustomThemes(
+        {
+          base: "github-light-default",
+          diffAddedColor: "#3daa8e",
+          diffRemovedColor: "#b4647a",
+        },
+        "review",
+      ),
+    );
+
+    expect(custom.addedBg).not.toBe(base.addedBg);
+    expect(custom.removedBg).not.toBe(base.removedBg);
+    expect(hexColorDistance(custom.addedContentBg, custom.addedBg)).toBeGreaterThan(0);
+    expect(hexColorDistance(custom.removedContentBg, custom.removedBg)).toBeGreaterThan(0);
+  });
+
+  test("explicit diff surfaces override semantic derivation", () => {
+    const custom = resolveTheme(
+      "review",
+      null,
+      createTestCustomThemes(
+        {
+          base: "github-dark-default",
+          diffAddedColor: "#3daa8e",
+          addedBg: "#112233",
+          addedContentBg: "#223344",
+          addedSignColor: "#334455",
+        },
+        "review",
+      ),
+    );
+
+    expect(custom.addedBg).toBe("#112233");
+    expect(custom.addedContentBg).toBe("#223344");
+    expect(custom.addedSignColor).toBe("#334455");
+  });
+
   test("lists custom themes after the bundled themes in declaration order", () => {
     const customThemes = [
       { id: "custom", base: "nord" },
@@ -318,5 +361,13 @@ describe("themes", () => {
     expect(transparent.addedContentBg).toBe(theme.addedContentBg);
     expect(transparent.removedContentBg).toBe(theme.removedContentBg);
     expect(transparent.syntaxColors).toBe(theme.syntaxColors);
+  });
+
+  test("themeRenderSurfaces retains opaque contrast colors for transparent output", () => {
+    const theme = resolveTheme("github-dark-default", null);
+    const surfaces = themeRenderSurfaces(theme, true);
+
+    expect(surfaces.emittedTheme.background).toBe(TRANSPARENT_BACKGROUND);
+    expect(surfaces.opaqueTheme).toBe(theme);
   });
 });

@@ -75,7 +75,7 @@ import {
   resolveViewportRowAnchorTop,
   type ViewportRowAnchor,
 } from "../../lib/viewportAnchor";
-import type { AppTheme } from "../../themes";
+import type { AppTheme, ThemeRenderSurfaces } from "../../themes";
 import { DiffSection } from "./DiffSection";
 import type { FileViewRowFailure } from "../../fileViews/types";
 import type { ValidatedLineHighlight } from "../../highlights/validate";
@@ -261,6 +261,7 @@ export function DiffPane({
   selectedFileTopAlignRequestId = 0,
   selectedHunkRevealRequestId,
   theme,
+  themeSurfaces,
   width,
   height,
   cancelCopySelectionRef,
@@ -325,6 +326,7 @@ export function DiffPane({
   selectedFileTopAlignRequestId?: number;
   selectedHunkRevealRequestId?: number;
   theme: AppTheme;
+  themeSurfaces?: ThemeRenderSurfaces;
   width: number;
   height?: number;
   cancelCopySelectionRef?: RefObject<(() => void) | null>;
@@ -2427,6 +2429,7 @@ export function DiffPane({
                         tabWidth={tabWidth}
                         wrapLines={wrapLines}
                         theme={theme}
+                        themeSurfaces={themeSurfaces}
                         hoverActive={hoveredFileId === null || hoveredFileId === file.id}
                         hoverClearSignal={
                           addNoteHoverClearFileId === file.id ? addNoteHoverClearSignal : 0

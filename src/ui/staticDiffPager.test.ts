@@ -151,7 +151,7 @@ describe("static diff pager", () => {
     );
 
     expect(stripAnsi(output)).toContain("// visible comment");
-    expect(output).toContain("\x1b[38;2;255;0;255m");
+    expect(output).toContain("\x1b[38;2;255;156;255m");
   });
 
   test("applies raw Shiki comment scopes in static pager output", async () => {
@@ -176,7 +176,7 @@ describe("static diff pager", () => {
     );
 
     expect(stripAnsi(output)).toContain("// visible comment");
-    expect(output).toContain("\x1b[38;2;255;0;255m");
+    expect(output).toContain("\x1b[38;2;255;156;255m");
   });
 
   test("keeps only added/removed backgrounds when transparent background is requested", async () => {
