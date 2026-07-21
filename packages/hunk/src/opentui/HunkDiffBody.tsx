@@ -9,7 +9,7 @@ import { buildReviewRenderPlan } from "../ui/diff/reviewRenderPlan";
 import { plannedReviewRowVisible } from "../ui/diff/reviewRowGeometry";
 import { useHighlightedDiff } from "../ui/diff/useHighlightedDiff";
 import { reviewRowId } from "../ui/lib/ids";
-import { resolveTheme } from "../ui/themes";
+import { resolveTheme, themeRenderSurfaces } from "../ui/themes";
 import { normalizeHunkDiffLayout } from "./layout";
 import { toInternalDiffFile } from "./model";
 import type { HunkDiffBodyProps } from "./types";
@@ -32,6 +32,7 @@ export function HunkDiffBody({
 }: HunkDiffBodyProps) {
   const resolvedLayout = canonicalLayout ?? normalizeHunkDiffLayout(layout);
   const resolvedTheme = resolveTheme(theme, null);
+  const renderSurfaces = useMemo(() => themeRenderSurfaces(resolvedTheme, false), [resolvedTheme]);
   const internalFile = useMemo(() => (file ? toInternalDiffFile(file) : undefined), [file]);
   const resolvedHighlighted = useHighlightedDiff({
     file: internalFile,
@@ -128,6 +129,7 @@ export function HunkDiffBody({
               wrapLines={wrapLines}
               codeHorizontalOffset={horizontalOffset}
               theme={resolvedTheme}
+              themeSurfaces={renderSurfaces}
               selected={plannedRow.row.hunkIndex === selectedHunkIndex}
             />
           </box>

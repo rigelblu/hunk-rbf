@@ -47,7 +47,14 @@ import {
   sanitizeTerminalLine,
   sanitizeTerminalText,
 } from "../lib/terminalText";
-import { resolveTheme, withTransparentSurfaces, type AppTheme } from "./themes";
+import {
+  resolveTheme,
+  themeRenderSurfaces,
+  TRANSPARENT_BACKGROUND,
+  type AppTheme,
+  type ThemeRenderSurfaces,
+} from "./themes";
+import { resolveSpanColors } from "./diff/spanColors";
 
 const DEFAULT_STATIC_WIDTH = 120;
 const MIN_STATIC_WIDTH = 20;
@@ -84,14 +91,38 @@ function fillRemainingLine(bg: string) {
 }
 
 /** Serialize highlighted code spans into ANSI text, preserving a row background when present. */
-function serializeSpans(spans: RenderSpan[], rowBg: string) {
-  return spans.map((span) => colorText(span.text, span.fg, span.bg ?? rowBg)).join("");
+function staticSpanColors(
+  span: RenderSpan,
+  fallbackForeground: string,
+  rowBg: string,
+  opaqueRowBg: string,
+) {
+  const emittedBackground = span.bg ?? rowBg;
+  const contrastBackground = !span.bg || span.bg === TRANSPARENT_BACKGROUND ? opaqueRowBg : span.bg;
+  return resolveSpanColors(span.fg ?? fallbackForeground, emittedBackground, contrastBackground);
+}
+
+/** Serialize highlighted spans against both emitted and opaque row backgrounds. */
+function serializeSpans(
+  spans: RenderSpan[],
+  rowBg: string,
+  opaqueRowBg: string,
+  fallbackForeground: string,
+) {
+  return spans
+    .map((span) => {
+      const colors = staticSpanColors(span, fallbackForeground, rowBg, opaqueRowBg);
+      return colorText(span.text, colors.foreground, colors.emittedBackground);
+    })
+    .join("");
 }
 
 /** Serialize one split pane, clipping for terminal hosts but preserving redirected source lines. */
 function serializeSplitSpans(
   spans: RenderSpan[],
   rowBg: string,
+  opaqueRowBg: string,
+  fallbackForeground: string,
   width: number,
   preserveFullLines: boolean,
 ) {
@@ -108,7 +139,8 @@ function serializeSplitSpans(
       ? { text: span.text, width: measureTextWidth(span.text) }
       : sliceTextByWidth(span.text, 0, remaining);
     if (visible.text) {
-      output += colorText(visible.text, span.fg, span.bg ?? rowBg);
+      const colors = staticSpanColors(span, fallbackForeground, rowBg, opaqueRowBg);
+      output += colorText(visible.text, colors.foreground, colors.emittedBackground);
       usedWidth += visible.width;
       remaining -= visible.width;
     }
@@ -155,10 +187,11 @@ function staticSplitGutterText(
 /** Render one non-interactive unified diff row as ANSI text. */
 function renderStaticUnifiedRow(
   row: DiffRow,
-  theme: AppTheme,
+  surfaces: ThemeRenderSurfaces,
   lineNumberWidth: number,
   options: CommonOptions,
 ) {
+  const { emittedTheme: theme, opaqueTheme } = surfaces;
   if (row.type === "collapsed") {
     return renderHeaderLikeRow(`··· ${row.text} ···`, theme.muted, theme.panelAlt, theme);
   }
@@ -175,23 +208,26 @@ function renderStaticUnifiedRow(
 
   const { cell } = row;
   const palette = unifiedCellPalette(cell.kind, theme, cell.moveKind);
+  const opaquePalette = unifiedCellPalette(cell.kind, opaqueTheme, cell.moveKind);
   return `${colorText(marker(), unifiedRailColor(cell.kind, theme, true), theme.panel)}${colorText(
     staticUnifiedGutterText(cell, lineNumberWidth, options.lineNumbers !== false),
     palette.numberColor,
     palette.gutterBg,
-  )}${serializeSpans(cell.spans, palette.contentBg)}${fillRemainingLine(palette.contentBg)}`;
+  )}${serializeSpans(cell.spans, palette.contentBg, opaquePalette.contentBg, theme.syntaxColors.default)}${fillRemainingLine(palette.contentBg)}`;
 }
 
 function renderStaticSplitCell(
   cell: SplitLineCell,
   side: "left" | "right",
   width: number,
-  theme: AppTheme,
+  surfaces: ThemeRenderSurfaces,
   lineNumberWidth: number,
   options: CommonOptions,
   preserveFullLines: boolean,
 ) {
+  const { emittedTheme: theme, opaqueTheme } = surfaces;
   const palette = splitCellPalette(cell.kind, theme, cell.moveKind);
+  const opaquePalette = splitCellPalette(cell.kind, opaqueTheme, cell.moveKind);
   const { gutterWidth, contentWidth } = resolveSplitCellGeometry(
     width,
     lineNumberWidth,
@@ -211,18 +247,26 @@ function renderStaticSplitCell(
     gutterText,
     palette.numberColor,
     palette.gutterBg,
-  )}${serializeSplitSpans(cell.spans, palette.contentBg, contentWidth, preserveFullLines)}`;
+  )}${serializeSplitSpans(
+    cell.spans,
+    palette.contentBg,
+    opaquePalette.contentBg,
+    theme.syntaxColors.default,
+    contentWidth,
+    preserveFullLines,
+  )}`;
 }
 
 /** Render one non-interactive split diff row as ANSI text. */
 function renderStaticSplitRow(
   row: DiffRow,
-  theme: AppTheme,
+  surfaces: ThemeRenderSurfaces,
   lineNumberWidth: number,
   options: CommonOptions,
   width: number,
   preserveFullLines: boolean,
 ) {
+  const theme = surfaces.emittedTheme;
   if (row.type === "collapsed") {
     return renderHeaderLikeRow(`··· ${row.text} ···`, theme.muted, theme.panelAlt, theme);
   }
@@ -242,7 +286,7 @@ function renderStaticSplitRow(
     row.left,
     "left",
     leftWidth,
-    theme,
+    surfaces,
     lineNumberWidth,
     options,
     preserveFullLines,
@@ -250,7 +294,7 @@ function renderStaticSplitRow(
     row.right,
     "right",
     rightWidth,
-    theme,
+    surfaces,
     lineNumberWidth,
     options,
     preserveFullLines,
@@ -368,11 +412,12 @@ function resolveStaticLayout(options: CommonOptions) {
 /** Format one parsed diff file for static pager hosts like LazyGit's diff panel. */
 async function renderStaticFile(
   file: DiffFile,
-  theme: AppTheme,
+  surfaces: ThemeRenderSurfaces,
   options: CommonOptions,
   width: number,
   preserveFullLines: boolean,
 ) {
+  const theme = surfaces.emittedTheme;
   const highlighted =
     file.isBinary || file.isTooLarge ? null : await loadHighlightedDiff(file, theme);
   const layout = resolveStaticLayout(options);
@@ -395,8 +440,8 @@ async function renderStaticFile(
     ...rows
       .map((row) =>
         layout === "split"
-          ? renderStaticSplitRow(row, theme, lineNumberWidth, options, width, preserveFullLines)
-          : renderStaticUnifiedRow(row, theme, lineNumberWidth, options),
+          ? renderStaticSplitRow(row, surfaces, lineNumberWidth, options, width, preserveFullLines)
+          : renderStaticUnifiedRow(row, surfaces, lineNumberWidth, options),
       )
       .filter(Boolean),
   ].join("\n");
@@ -438,13 +483,11 @@ export async function renderStaticDiff(
   deps: StaticDiffPagerDeps = {},
 ) {
   const resolvedTheme = resolveTheme(options.theme, null, deps.customThemes);
-  const theme = options.transparentBackground
-    ? withTransparentSurfaces(resolvedTheme)
-    : resolvedTheme;
+  const surfaces = themeRenderSurfaces(resolvedTheme, Boolean(options.transparentBackground));
   const width = resolveStaticWidth(deps);
   const rendered = await Promise.all(
     changeset.files.map((file) =>
-      renderStaticFile(file, theme, options, width, deps.preserveFullLines === true),
+      renderStaticFile(file, surfaces, options, width, deps.preserveFullLines === true),
     ),
   );
   const output = rendered.length > 0 ? `${rendered.join("\n\n")}\n` : "";

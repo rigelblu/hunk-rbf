@@ -3,7 +3,7 @@ import type { DiffRow, SplitLineCell, UnifiedLineCell } from "../diff/diffRows";
 import { RawDiffRowView } from "../diff/RawDiffRowView";
 import type { DiffSectionRowPlan } from "../diff/diffSectionRowPlan";
 import type { LineCursor } from "./lineCursors";
-import type { AppTheme } from "../themes";
+import type { AppTheme, ThemeRenderSurfaces } from "../themes";
 
 type SplitLineRow = Extract<DiffRow, { type: "split-line" }>;
 type UnifiedLineRow = Extract<DiffRow, { type: "unified-line" }>;
@@ -76,12 +76,15 @@ export function createExtensionCurrentLinePaint({
   showLineNumbers,
   codeHorizontalOffset,
   theme,
+  themeSurfaces,
 }: {
   cursor: LineCursor;
   rowPlan: DiffSectionRowPlan;
   showLineNumbers: boolean;
   codeHorizontalOffset: number;
   theme: AppTheme;
+  /** The review's surface pair, so the row's contrast clamp measures the opaque theme. */
+  themeSurfaces?: ThemeRenderSurfaces;
 }): ExtensionCurrentLinePaint | null {
   let splitRow: SplitLineRow | undefined;
   for (const planned of rowPlan.plannedRows) {
@@ -114,6 +117,7 @@ export function createExtensionCurrentLinePaint({
           wrapLines={false}
           codeHorizontalOffset={codeHorizontalOffset}
           theme={theme}
+          themeSurfaces={themeSurfaces}
           selected={false}
         />
       );

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPtyHarness } from "./harness";
+import { contrastRatio } from "../../packages/hunk/src/ui/lib/color";
 
 const harness = createPtyHarness();
 
@@ -113,17 +114,44 @@ describe("PTY syntax highlighting", () => {
 
       let keywords = "";
       let comments = "";
+      let editedCommentLine = session.getTerminalData().lines.find((line) =>
+        line.spans
+          .map((span) => span.text)
+          .join("")
+          .includes("Line five, edited."),
+      );
       for (let iteration = 0; iteration < 200; iteration += 1) {
         await session.waitIdle({ timeout: 50 });
         keywords = await session.text({ immediate: true, only: { foreground: "#ff7b72" } });
         comments = await session.text({ immediate: true, only: { foreground: "#8b949e" } });
-        if (keywords.includes("def") && comments.includes("Line five, edited.")) {
+        editedCommentLine = session.getTerminalData().lines.find((line) =>
+          line.spans
+            .map((span) => span.text)
+            .join("")
+            .includes("Line five, edited."),
+        );
+        if (keywords.includes("def") && editedCommentLine) {
           break;
         }
       }
 
       expect(keywords).toContain("def");
-      expect(comments).toContain("Line five, edited.");
+      expect(editedCommentLine).toBeDefined();
+      expect(
+        editedCommentLine?.spans.some(
+          (span) =>
+            span.text.includes("Line five") && span.fg === "#8b949e" && span.bg === "#12251d",
+        ),
+      ).toBe(true);
+      expect(
+        editedCommentLine?.spans.some(
+          (span) =>
+            span.text.includes(", edited") && span.fg === "#939ba5" && span.bg === "#163923",
+        ),
+      ).toBe(true);
+      // Upstream moved github-dark's added row and word highlight; both pinned pairs clear 4.5:1.
+      expect(contrastRatio("#8b949e", "#12251d")).toBeGreaterThanOrEqual(4.5);
+      expect(contrastRatio("#939ba5", "#163923")).toBeGreaterThanOrEqual(4.5);
       expect(comments).toContain('"""');
       expect(
         await session.text({ immediate: true, only: { foreground: "#a5d6ff" } }),

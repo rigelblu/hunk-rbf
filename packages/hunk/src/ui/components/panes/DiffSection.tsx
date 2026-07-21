@@ -13,7 +13,7 @@ import type { ValidatedLineHighlight } from "../../highlights/validate";
 import type { CopySelectedRowRange } from "../../lib/diffSpatial";
 import { diffSectionId } from "../../lib/ids";
 import { fitText } from "../../lib/text";
-import type { AppTheme } from "../../themes";
+import type { AppTheme, ThemeRenderSurfaces } from "../../themes";
 import { DiffFileHeaderRow } from "./DiffFileHeaderRow";
 import { FileView } from "./FileView";
 import type { FileViewRowFailure } from "../../fileViews/types";
@@ -46,6 +46,7 @@ interface DiffSectionProps {
   showHeader: boolean;
   separatorHeight: number;
   theme: AppTheme;
+  themeSurfaces?: ThemeRenderSurfaces;
   visibleAgentNotes: VisibleAgentNote[];
   visibleBodyBounds?: VisibleBodyBounds;
   viewWidth: number;
@@ -88,6 +89,7 @@ function DiffSectionComponent({
   showHeader,
   separatorHeight,
   theme,
+  themeSurfaces,
   visibleAgentNotes,
   visibleBodyBounds,
   viewWidth,
@@ -200,6 +202,7 @@ function DiffSectionComponent({
           copySelectedSide={copySelectedSide}
           cursorHighlight={cursorHighlight}
           theme={theme}
+          themeSurfaces={themeSurfaces}
           width={viewWidth}
           visibleAgentNotes={visibleAgentNotes}
           hoverActive={hoverActive}
@@ -259,6 +262,7 @@ export const DiffSection = memo(DiffSectionComponent, (previous, next) => {
     previous.onStartUserNoteAtHunk === next.onStartUserNoteAtHunk &&
     previous.onRowPlanChange === next.onRowPlanChange &&
     previous.theme === next.theme &&
+    previous.themeSurfaces === next.themeSurfaces &&
     previous.visibleAgentNotes === next.visibleAgentNotes &&
     previous.visibleBodyBounds === next.visibleBodyBounds &&
     previous.viewWidth === next.viewWidth

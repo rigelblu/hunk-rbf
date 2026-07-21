@@ -301,6 +301,7 @@ export function App({
   const {
     activeTheme,
     baseTheme,
+    renderSurfaces,
     themeId,
     themeSelectorItems,
     themeSelectorOpen,
@@ -1668,6 +1669,7 @@ export function App({
             lineCursorRevealRequest={review.lineCursorRevealRequest}
             lineCursorAlignmentRequest={lineCursorAlignmentRequest}
             theme={activeTheme}
+            themeSurfaces={renderSurfaces}
             width={diffPaneWidth}
             height={diffPaneHeight}
             onActiveAddNoteAffordanceChange={onActiveAddNoteAffordanceChange}

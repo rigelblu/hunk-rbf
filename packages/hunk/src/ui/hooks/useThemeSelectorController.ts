@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ThemeSelectorItem } from "../components/chrome/ThemeSelectorDialog";
 import type { ThemeController } from "../theme/controller";
-import { availableThemes, resolveTheme, withTransparentSurfaces } from "../themes";
+import { availableThemes, resolveTheme, themeRenderSurfaces } from "../themes";
 
 interface ThemeSelectorControllerState {
   open: boolean;
@@ -54,10 +54,11 @@ export function useThemeSelectorController({
         : committedTheme,
     [committedTheme, customThemes, previewThemeId, themeController.themeMode],
   );
-  const activeTheme = useMemo(
-    () => (transparentBackground ? withTransparentSurfaces(baseTheme) : baseTheme),
+  const renderSurfaces = useMemo(
+    () => themeRenderSurfaces(baseTheme, transparentBackground),
     [baseTheme, transparentBackground],
   );
+  const activeTheme = renderSurfaces.emittedTheme;
   const items = useMemo<ThemeSelectorItem[]>(
     () =>
       themeOptions.map((theme) => ({
@@ -194,6 +195,7 @@ export function useThemeSelectorController({
   return {
     activeTheme,
     baseTheme,
+    renderSurfaces,
     themeId: committedThemeId,
     themeSelectorItems: items,
     themeSelectorOpen: state.open,

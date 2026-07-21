@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { contrastRatio } from "./lib/color";
 import { renderStaticDiffPager } from "./staticDiffPager";
 
 function stripAnsi(text: string) {
@@ -176,7 +177,9 @@ describe("static diff pager", () => {
     );
 
     expect(stripAnsi(output)).toContain("// visible comment");
-    expect(output).toContain("\x1b[38;2;255;0;255m");
+    // Upstream moved nord's added row to #434d4e; the magenta comment clamps to 4.5:1 on it.
+    expect(output).toContain("\x1b[38;2;255;148;255m\x1b[48;2;67;77;78m// visible comment");
+    expect(contrastRatio("#ff94ff", "#434d4e")).toBeGreaterThanOrEqual(4.5);
   });
 
   test("applies raw Shiki comment scopes in static pager output", async () => {
@@ -201,7 +204,9 @@ describe("static diff pager", () => {
     );
 
     expect(stripAnsi(output)).toContain("// visible comment");
-    expect(output).toContain("\x1b[38;2;255;0;255m");
+    // Upstream moved nord's added row to #434d4e; the magenta comment clamps to 4.5:1 on it.
+    expect(output).toContain("\x1b[38;2;255;148;255m\x1b[48;2;67;77;78m// visible comment");
+    expect(contrastRatio("#ff94ff", "#434d4e")).toBeGreaterThanOrEqual(4.5);
   });
 
   test("keeps only added/removed backgrounds when transparent background is requested", async () => {

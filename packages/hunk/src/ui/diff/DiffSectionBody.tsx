@@ -16,7 +16,7 @@ import type { VisibleAgentNote } from "../lib/agentAnnotations";
 import type { CopySelectedRowRange } from "../lib/diffSpatial";
 import type { DiffSectionGeometry } from "./diffSectionGeometry";
 import { reviewRowId } from "../lib/ids";
-import type { AppTheme } from "../themes";
+import type { AppTheme, ThemeRenderSurfaces } from "../themes";
 import { type FileSourceStatus } from "./expandCollapsedRows";
 import { buildLineHighlightPaintIndex } from "./lineHighlightPaint";
 import type { ValidatedLineHighlight } from "../highlights/validate";
@@ -77,6 +77,7 @@ export function DiffSectionBody({
   hunkGap = DEFAULT_HUNK_GAP,
   wrapLines = false,
   theme,
+  themeSurfaces,
   visibleAgentNotes = EMPTY_VISIBLE_AGENT_NOTES,
   hoverActive = true,
   hoverClearSignal = 0,
@@ -110,6 +111,7 @@ export function DiffSectionBody({
   hunkGap?: number;
   wrapLines?: boolean;
   theme: AppTheme;
+  themeSurfaces?: ThemeRenderSurfaces;
   visibleAgentNotes?: VisibleAgentNote[];
   hoverActive?: boolean;
   hoverClearSignal?: number;
@@ -441,6 +443,7 @@ export function DiffSectionBody({
               wrapLines={wrapLines}
               codeHorizontalOffset={codeHorizontalOffset}
               theme={theme}
+              themeSurfaces={themeSurfaces}
               selected={plannedRow.row.hunkIndex === selectedHunkIndex}
               copySelectedRowRange={copySelectedRowRanges?.get(plannedRow.key)}
               copySelectedSide={copySelectedSide}

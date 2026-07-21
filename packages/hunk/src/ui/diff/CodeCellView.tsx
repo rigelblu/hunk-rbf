@@ -4,7 +4,7 @@
  */
 import { Fragment, isValidElement, memo, type ReactNode } from "react";
 import { parseColor, StyledText, type TextChunk } from "@opentui/core";
-import type { AppTheme } from "../themes";
+import { TRANSPARENT_BACKGROUND, type AppTheme, type ThemeRenderSurfaces } from "../themes";
 import type { CodeCellLayoutPlan, CodeRowLayoutPlan } from "./codeRowLayout";
 import type { DiffRow, RenderSpan, SplitLineCell, UnifiedLineCell } from "./diffRows";
 import {
@@ -19,6 +19,7 @@ import {
   unifiedCellPalette,
   unifiedGutterText,
 } from "./rowStyle";
+import { resolveSpanColors } from "./spanColors";
 import { sanitizeTerminalSpans } from "../../lib/terminalText";
 import { measureTextWidth, sliceTextByWidth } from "../lib/text";
 import { sliceSpansWindow, wrapSpans } from "./styledSpanLayout";
@@ -43,6 +44,12 @@ interface CellPrefix {
   bg: string;
 }
 
+/** The span fields that decide painted colors. */
+type SpanPaint = Pick<RenderSpan, "fg" | "bg" | "transformFg">;
+
+/** Padding carries no colors of its own, so it paints with the cell fallbacks. */
+const PADDING_PAINT: SpanPaint = {};
+
 const styledTextColorCache = new Map<string, ReturnType<typeof parseColor>>();
 const addNoteSpacerContentCache = new Map<string, StyledText>();
 
@@ -59,10 +66,30 @@ function styledTextColor(value: string | undefined) {
   return parsed;
 }
 
-/** Resolve paint-only foreground effects against the background the terminal will draw. */
-function renderedSpanForeground(span: RenderSpan, fallbackColor: string, renderedBg: string) {
-  const sourceFg = span.fg ?? fallbackColor;
-  return span.transformFg ? span.transformFg(sourceFg, renderedBg) : sourceFg;
+/**
+ * Resolve one span's final colors against the background the terminal will draw.
+ *
+ * Highlights blend over the opaque surface, so a transparent row never blends through black, and
+ * syntax text is measured against that opaque background before paint-only effects apply.
+ */
+function finalSpanColors(
+  span: SpanPaint,
+  fallbackColor: string,
+  fallbackBg: string,
+  opaqueFallbackBg: string,
+  highlightBg?: (baseBg: string) => string,
+) {
+  const opaqueBaseBg = !span.bg || span.bg === TRANSPARENT_BACKGROUND ? opaqueFallbackBg : span.bg;
+  const emittedBackground = highlightBg ? highlightBg(opaqueBaseBg) : (span.bg ?? fallbackBg);
+  const colors = resolveSpanColors(
+    span.fg ?? fallbackColor,
+    emittedBackground,
+    highlightBg ? emittedBackground : opaqueBaseBg,
+  );
+  // Clamp before dimming, so an extension's dim mark may fall below 4.5:1.
+  return span.transformFg
+    ? { ...colors, foreground: span.transformFg(colors.foreground, emittedBackground) }
+    : colors;
 }
 
 /** Convert a React span fragment into OpenTUI's direct styled-text run list. */
@@ -110,11 +137,10 @@ function appendFixedInlineChunks(
   width: number,
   fallbackColor: string,
   fallbackBg: string,
+  opaqueFallbackBg: string,
   highlightBg?: (baseBg: string) => string,
 ) {
   const { spans: trimmed, usedWidth } = sliceSpansWindow(spans, 0, width);
-  const renderedBackground = (background: string) =>
-    highlightBg ? highlightBg(background) : background;
   const paddingAmount = Math.max(0, width - usedWidth);
   const lastSpan = trimmed.at(-1);
   let paddingMerged = false;
@@ -129,20 +155,27 @@ function appendFixedInlineChunks(
   }
 
   for (const span of trimmed) {
-    const background = renderedBackground(span.bg ?? fallbackBg);
+    const colors = finalSpanColors(span, fallbackColor, fallbackBg, opaqueFallbackBg, highlightBg);
     chunks.push({
       __isChunk: true,
       text: span.text,
-      fg: styledTextColor(renderedSpanForeground(span, fallbackColor, background)),
-      bg: styledTextColor(background),
+      fg: styledTextColor(colors.foreground),
+      bg: styledTextColor(colors.emittedBackground),
     });
   }
   if (!paddingMerged && paddingAmount > 0) {
+    const colors = finalSpanColors(
+      PADDING_PAINT,
+      fallbackColor,
+      fallbackBg,
+      opaqueFallbackBg,
+      highlightBg,
+    );
     chunks.push({
       __isChunk: true,
       text: " ".repeat(paddingAmount),
-      fg: styledTextColor(fallbackColor),
-      bg: styledTextColor(renderedBackground(fallbackBg)),
+      fg: styledTextColor(colors.foreground),
+      bg: styledTextColor(colors.emittedBackground),
     });
   }
 }
@@ -155,6 +188,7 @@ function appendPlainInlineChunks(
   horizontalOffset: number,
   fallbackColor: string,
   fallbackBg: string,
+  opaqueFallbackBg: string,
 ) {
   const { spans: trimmed, usedWidth } = sliceSpansWindow(
     sanitizeTerminalSpans(spans),
@@ -175,20 +209,21 @@ function appendPlainInlineChunks(
   }
 
   for (const span of trimmed) {
-    const background = span.bg ?? fallbackBg;
+    const colors = finalSpanColors(span, fallbackColor, fallbackBg, opaqueFallbackBg);
     chunks.push({
       __isChunk: true,
       text: span.text,
-      fg: styledTextColor(renderedSpanForeground(span, fallbackColor, background)),
-      bg: styledTextColor(background),
+      fg: styledTextColor(colors.foreground),
+      bg: styledTextColor(colors.emittedBackground),
     });
   }
   if (!paddingMerged && paddingAmount > 0) {
+    const colors = finalSpanColors(PADDING_PAINT, fallbackColor, fallbackBg, opaqueFallbackBg);
     chunks.push({
       __isChunk: true,
       text: " ".repeat(paddingAmount),
-      fg: styledTextColor(fallbackColor),
-      bg: styledTextColor(fallbackBg),
+      fg: styledTextColor(colors.foreground),
+      bg: styledTextColor(colors.emittedBackground),
     });
   }
 }
@@ -200,11 +235,13 @@ function appendPlainSplitCellChunks(
   geometry: CodeCellLayoutPlan,
   lineNumberDigits: number,
   showLineNumbers: boolean,
-  theme: AppTheme,
+  themeSurfaces: ThemeRenderSurfaces,
   contentOffset: number,
   prefix: CellPrefix,
 ) {
+  const { emittedTheme: theme, opaqueTheme } = themeSurfaces;
   const palette = splitCellPalette(cell.kind, theme, cell.moveKind);
+  const opaquePalette = splitCellPalette(cell.kind, opaqueTheme, cell.moveKind);
   chunks.push(
     {
       __isChunk: true,
@@ -226,6 +263,7 @@ function appendPlainSplitCellChunks(
     contentOffset,
     theme.syntaxColors.default,
     palette.contentBg,
+    opaquePalette.contentBg,
   );
 }
 
@@ -236,11 +274,13 @@ function appendPlainUnifiedCellChunks(
   geometry: CodeCellLayoutPlan,
   lineNumberDigits: number,
   showLineNumbers: boolean,
-  theme: AppTheme,
+  themeSurfaces: ThemeRenderSurfaces,
   contentOffset: number,
   prefix: CellPrefix,
 ) {
+  const { emittedTheme: theme, opaqueTheme } = themeSurfaces;
   const palette = unifiedCellPalette(cell.kind, theme, cell.moveKind);
+  const opaquePalette = unifiedCellPalette(cell.kind, opaqueTheme, cell.moveKind);
   chunks.push(
     {
       __isChunk: true,
@@ -262,6 +302,7 @@ function appendPlainUnifiedCellChunks(
     contentOffset,
     theme.syntaxColors.default,
     palette.contentBg,
+    opaquePalette.contentBg,
   );
 }
 
@@ -282,13 +323,13 @@ function appendWrappedCellChunks(
   chunks: TextChunk[],
   line: WrappedCellLine,
   palette: { numberColor: string; gutterBg: string; contentBg: string },
+  opaquePalette: { gutterBg: string; contentBg: string },
   contentWidth: number,
-  theme: AppTheme,
+  themeSurfaces: ThemeRenderSurfaces,
   prefix: { text: string; fg: string; bg: string },
   highlight?: CodeCellHighlight,
 ) {
-  const renderedBackground = (background: string) =>
-    highlight ? highlight.bg(background) : background;
+  const { emittedTheme: theme, opaqueTheme } = themeSurfaces;
   const contentHighlightBg =
     highlight?.colRange === FULL_CODE_CELL_COL_RANGE ? highlight.bg : undefined;
   chunks.push(
@@ -296,13 +337,13 @@ function appendWrappedCellChunks(
       __isChunk: true,
       text: prefix.text,
       fg: styledTextColor(prefix.fg),
-      bg: styledTextColor(renderedBackground(prefix.bg)),
+      bg: styledTextColor(highlight ? highlight.bg(opaqueTheme.panel) : prefix.bg),
     },
     {
       __isChunk: true,
       text: line.gutterText,
       fg: styledTextColor(palette.numberColor),
-      bg: styledTextColor(renderedBackground(palette.gutterBg)),
+      bg: styledTextColor(highlight ? highlight.bg(opaquePalette.gutterBg) : palette.gutterBg),
     },
   );
   appendFixedInlineChunks(
@@ -311,6 +352,7 @@ function appendWrappedCellChunks(
     contentWidth,
     theme.syntaxColors.default,
     palette.contentBg,
+    opaquePalette.contentBg,
     contentHighlightBg,
   );
 }
@@ -321,6 +363,7 @@ function renderInlineSpans(
   width: number,
   fallbackColor: string,
   fallbackBg: string,
+  opaqueFallbackBg: string,
   keyPrefix: string,
   horizontalOffset = 0,
   highlightBg?: (baseBg: string) => string,
@@ -343,8 +386,6 @@ function renderInlineSpans(
       ? highlightBg
       : undefined;
   const needsBlending = !fullHighlightBg && highlightBg && selectionColRange;
-  const renderedBackground = (background: string) =>
-    fullHighlightBg ? fullHighlightBg(background) : background;
   const paddingAmount = Math.max(0, width - usedWidth);
   let paddingMerged = false;
   const lastSpan = trimmed.at(-1);
@@ -367,14 +408,19 @@ function renderInlineSpans(
   let elementIndex = 0;
 
   for (const span of trimmed) {
-    const baseBackground = span.bg ?? fallbackBg;
     if (!needsBlending) {
-      const background = renderedBackground(baseBackground);
+      const colors = finalSpanColors(
+        span,
+        fallbackColor,
+        fallbackBg,
+        opaqueFallbackBg,
+        fullHighlightBg,
+      );
       elements.push(
         <span
           key={`${keyPrefix}:${elementIndex++}`}
-          fg={renderedSpanForeground(span, fallbackColor, background)}
-          bg={background}
+          fg={colors.foreground}
+          bg={colors.emittedBackground}
         >
           {span.text}
         </span>,
@@ -386,14 +432,15 @@ function renderInlineSpans(
     const spanStart = colPos;
     const spanEnd = colPos + spanWidth;
     colPos = spanEnd;
+    const baseColors = finalSpanColors(span, fallbackColor, fallbackBg, opaqueFallbackBg);
 
     if (spanEnd <= selectionColRange.start || spanStart >= selectionColRange.end) {
       // Span is entirely outside the selection — render with original styling.
       elements.push(
         <span
           key={`${keyPrefix}:${elementIndex++}`}
-          fg={renderedSpanForeground(span, fallbackColor, baseBackground)}
-          bg={baseBackground}
+          fg={baseColors.foreground}
+          bg={baseColors.emittedBackground}
         >
           {span.text}
         </span>,
@@ -410,8 +457,8 @@ function renderInlineSpans(
       elements.push(
         <span
           key={`${keyPrefix}:${elementIndex++}`}
-          fg={renderedSpanForeground(span, fallbackColor, baseBackground)}
-          bg={baseBackground}
+          fg={baseColors.foreground}
+          bg={baseColors.emittedBackground}
         >
           {span.text}
         </span>,
@@ -428,20 +475,26 @@ function renderInlineSpans(
       elements.push(
         <span
           key={`${keyPrefix}:${elementIndex++}`}
-          fg={renderedSpanForeground(span, fallbackColor, baseBackground)}
-          bg={baseBackground}
+          fg={baseColors.foreground}
+          bg={baseColors.emittedBackground}
         >
           {prefix}
         </span>,
       );
     }
     if (selected) {
-      const selectedBackground = highlightBg(baseBackground);
+      const selectedColors = finalSpanColors(
+        span,
+        fallbackColor,
+        fallbackBg,
+        opaqueFallbackBg,
+        highlightBg,
+      );
       elements.push(
         <span
           key={`${keyPrefix}:${elementIndex++}`}
-          fg={renderedSpanForeground(span, fallbackColor, selectedBackground)}
-          bg={selectedBackground}
+          fg={selectedColors.foreground}
+          bg={selectedColors.emittedBackground}
         >
           {selected}
         </span>,
@@ -451,8 +504,8 @@ function renderInlineSpans(
       elements.push(
         <span
           key={`${keyPrefix}:${elementIndex++}`}
-          fg={renderedSpanForeground(span, fallbackColor, baseBackground)}
-          bg={baseBackground}
+          fg={baseColors.foreground}
+          bg={baseColors.emittedBackground}
         >
           {suffix}
         </span>,
@@ -468,6 +521,12 @@ function renderInlineSpans(
     const padStart = colPos;
     const padEnd = colPos + Math.max(0, width - usedWidth);
     if (paddingAmount > 0) {
+      const paddingColors = finalSpanColors(
+        PADDING_PAINT,
+        fallbackColor,
+        fallbackBg,
+        opaqueFallbackBg,
+      );
       if (padStart < selectionColRange.end && padEnd > selectionColRange.start) {
         // Split padding into outside/before, selected, and after.
         const beforeSel = Math.max(0, selectionColRange.start - padStart);
@@ -477,28 +536,51 @@ function renderInlineSpans(
 
         if (beforeSel > 0) {
           elements.push(
-            <span key={`${keyPrefix}:pad-before`} fg={fallbackColor} bg={fallbackBg}>
+            <span
+              key={`${keyPrefix}:pad-before`}
+              fg={paddingColors.foreground}
+              bg={paddingColors.emittedBackground}
+            >
               {" ".repeat(beforeSel)}
             </span>,
           );
         }
         if (inSel > 0) {
+          const selectedPaddingColors = finalSpanColors(
+            PADDING_PAINT,
+            fallbackColor,
+            fallbackBg,
+            opaqueFallbackBg,
+            highlightBg,
+          );
           elements.push(
-            <span key={`${keyPrefix}:pad-sel`} fg={fallbackColor} bg={highlightBg(fallbackBg)}>
+            <span
+              key={`${keyPrefix}:pad-sel`}
+              fg={selectedPaddingColors.foreground}
+              bg={selectedPaddingColors.emittedBackground}
+            >
               {" ".repeat(inSel)}
             </span>,
           );
         }
         if (afterSel > 0) {
           elements.push(
-            <span key={`${keyPrefix}:pad-after`} fg={fallbackColor} bg={fallbackBg}>
+            <span
+              key={`${keyPrefix}:pad-after`}
+              fg={paddingColors.foreground}
+              bg={paddingColors.emittedBackground}
+            >
               {" ".repeat(afterSel)}
             </span>,
           );
         }
       } else {
         elements.push(
-          <span key={`${keyPrefix}:pad`} fg={fallbackColor} bg={fallbackBg}>
+          <span
+            key={`${keyPrefix}:pad`}
+            fg={paddingColors.foreground}
+            bg={paddingColors.emittedBackground}
+          >
             {" ".repeat(paddingAmount)}
           </span>,
         );
@@ -506,8 +588,19 @@ function renderInlineSpans(
     }
   } else if (!paddingMerged && paddingAmount > 0) {
     // Keep a separate padding span when the final content style differs from the cell fallback.
+    const paddingColors = finalSpanColors(
+      PADDING_PAINT,
+      fallbackColor,
+      fallbackBg,
+      opaqueFallbackBg,
+      fullHighlightBg,
+    );
     elements.push(
-      <span key={`${keyPrefix}:pad`} fg={fallbackColor} bg={renderedBackground(fallbackBg)}>
+      <span
+        key={`${keyPrefix}:pad`}
+        fg={paddingColors.foreground}
+        bg={paddingColors.emittedBackground}
+      >
         {" ".repeat(paddingAmount)}
       </span>,
     );
@@ -525,6 +618,8 @@ interface WrappedCellLayout {
   gutterWidth: number;
   contentWidth: number;
   palette: ReturnType<typeof splitCellPalette> | ReturnType<typeof unifiedCellPalette>;
+  /** The same palette on opaque surfaces, where highlight blends and contrast start. */
+  opaquePalette: ReturnType<typeof splitCellPalette> | ReturnType<typeof unifiedCellPalette>;
   lines: WrappedCellLine[];
 }
 
@@ -534,9 +629,10 @@ function buildWrappedSplitCell(
   geometry: CodeCellLayoutPlan,
   lineNumberDigits: number,
   showLineNumbers: boolean,
-  theme: AppTheme,
+  themeSurfaces: ThemeRenderSurfaces,
 ) {
-  const palette = splitCellPalette(cell.kind, theme, cell.moveKind);
+  const palette = splitCellPalette(cell.kind, themeSurfaces.emittedTheme, cell.moveKind);
+  const opaquePalette = splitCellPalette(cell.kind, themeSurfaces.opaqueTheme, cell.moveKind);
   const firstGutterText = splitGutterText(cell, lineNumberDigits, showLineNumbers).padEnd(
     geometry.gutterWidth,
   );
@@ -546,6 +642,7 @@ function buildWrappedSplitCell(
     gutterWidth: geometry.gutterWidth,
     contentWidth: geometry.contentWidth,
     palette,
+    opaquePalette,
     lines: wrappedSpans.map((spans, index) => ({
       gutterText: index === 0 ? firstGutterText : " ".repeat(geometry.gutterWidth),
       spans,
@@ -559,9 +656,10 @@ function buildWrappedUnifiedCell(
   geometry: CodeCellLayoutPlan,
   lineNumberDigits: number,
   showLineNumbers: boolean,
-  theme: AppTheme,
+  themeSurfaces: ThemeRenderSurfaces,
 ) {
-  const palette = unifiedCellPalette(cell.kind, theme, cell.moveKind);
+  const palette = unifiedCellPalette(cell.kind, themeSurfaces.emittedTheme, cell.moveKind);
+  const opaquePalette = unifiedCellPalette(cell.kind, themeSurfaces.opaqueTheme, cell.moveKind);
   const firstGutterText = unifiedGutterText(cell, lineNumberDigits, showLineNumbers).padEnd(
     geometry.gutterWidth,
   );
@@ -571,6 +669,7 @@ function buildWrappedUnifiedCell(
     gutterWidth: geometry.gutterWidth,
     contentWidth: geometry.contentWidth,
     palette,
+    opaquePalette,
     lines: wrappedSpans.map((spans, index) => ({
       gutterText: index === 0 ? firstGutterText : " ".repeat(geometry.gutterWidth),
       spans,
@@ -587,22 +686,24 @@ function buildWrappedUnifiedCell(
  */
 function applyHighlightPalette<P extends { gutterBg: string; contentBg: string }>(
   palette: P,
+  opaquePalette: P,
   highlightBg: (baseBg: string) => string,
 ): P {
   return {
     ...palette,
-    gutterBg: highlightBg(palette.gutterBg),
+    gutterBg: highlightBg(opaquePalette.gutterBg),
   };
 }
 
 /** Apply a highlight blend to a prefix descriptor. */
 function applyHighlightPrefix<P extends { bg: string }>(
   prefix: P,
+  opaqueBackground: string,
   highlightBg: (baseBg: string) => string,
 ): P {
   return {
     ...prefix,
-    bg: highlightBg(prefix.bg),
+    bg: highlightBg(opaqueBackground),
   };
 }
 
@@ -625,7 +726,7 @@ const SplitCellContent = memo(function SplitCellContent({
   contentWidth,
   lineNumberDigits,
   showLineNumbers,
-  theme,
+  themeSurfaces,
   keyPrefix,
   contentOffset,
   prefixWidth,
@@ -637,16 +738,18 @@ const SplitCellContent = memo(function SplitCellContent({
   contentWidth: number;
   lineNumberDigits: number;
   showLineNumbers: boolean;
-  theme: AppTheme;
+  themeSurfaces: ThemeRenderSurfaces;
   keyPrefix: string;
   contentOffset: number;
   prefixWidth: number;
   highlight?: CodeCellHighlight;
   paneOffset: number;
 }) {
+  const { emittedTheme: theme, opaqueTheme } = themeSurfaces;
   const basePalette = splitCellPalette(cell.kind, theme, cell.moveKind);
+  const opaquePalette = splitCellPalette(cell.kind, opaqueTheme, cell.moveKind);
   const palette = highlightsWholeCell(highlight)
-    ? applyHighlightPalette(basePalette, highlight!.bg)
+    ? applyHighlightPalette(basePalette, opaquePalette, highlight!.bg)
     : basePalette;
   const gutterText = splitGutterText(cell, lineNumberDigits, showLineNumbers).padEnd(gutterWidth);
   const globalContentStart = paneOffset + prefixWidth + gutterWidth;
@@ -666,6 +769,7 @@ const SplitCellContent = memo(function SplitCellContent({
         contentWidth,
         theme.syntaxColors.default,
         palette.contentBg,
+        opaquePalette.contentBg,
         `${keyPrefix}:content`,
         contentOffset,
         highlight?.bg,
@@ -681,7 +785,7 @@ function renderSplitCell(
   geometry: CodeCellLayoutPlan,
   lineNumberDigits: number,
   showLineNumbers: boolean,
-  theme: AppTheme,
+  themeSurfaces: ThemeRenderSurfaces,
   keyPrefix: string,
   contentOffset = 0,
   prefix?: {
@@ -693,7 +797,9 @@ function renderSplitCell(
   paneOffset = 0,
 ) {
   const resolvedPrefix =
-    highlightsWholeCell(highlight) && prefix ? applyHighlightPrefix(prefix, highlight!.bg) : prefix;
+    highlightsWholeCell(highlight) && prefix
+      ? applyHighlightPrefix(prefix, themeSurfaces.opaqueTheme.panel, highlight!.bg)
+      : prefix;
   const prefixWidth = resolvedPrefix?.text.length ?? 0;
 
   return (
@@ -710,7 +816,7 @@ function renderSplitCell(
         contentWidth={geometry.contentWidth}
         lineNumberDigits={lineNumberDigits}
         showLineNumbers={showLineNumbers}
-        theme={theme}
+        themeSurfaces={themeSurfaces}
         keyPrefix={keyPrefix}
         contentOffset={contentOffset}
         prefixWidth={prefixWidth}
@@ -728,7 +834,7 @@ const UnifiedCellContent = memo(function UnifiedCellContent({
   contentWidth,
   lineNumberDigits,
   showLineNumbers,
-  theme,
+  themeSurfaces,
   keyPrefix,
   contentOffset,
   prefixWidth,
@@ -739,15 +845,17 @@ const UnifiedCellContent = memo(function UnifiedCellContent({
   contentWidth: number;
   lineNumberDigits: number;
   showLineNumbers: boolean;
-  theme: AppTheme;
+  themeSurfaces: ThemeRenderSurfaces;
   keyPrefix: string;
   contentOffset: number;
   prefixWidth: number;
   highlight?: CodeCellHighlight;
 }) {
+  const { emittedTheme: theme, opaqueTheme } = themeSurfaces;
   const basePalette = unifiedCellPalette(cell.kind, theme, cell.moveKind);
+  const opaquePalette = unifiedCellPalette(cell.kind, opaqueTheme, cell.moveKind);
   const palette = highlightsWholeCell(highlight)
-    ? applyHighlightPalette(basePalette, highlight!.bg)
+    ? applyHighlightPalette(basePalette, opaquePalette, highlight!.bg)
     : basePalette;
   const globalContentStart = prefixWidth + gutterWidth;
   const localColRange = contentLocalHighlightRange(
@@ -766,6 +874,7 @@ const UnifiedCellContent = memo(function UnifiedCellContent({
         contentWidth,
         theme.syntaxColors.default,
         palette.contentBg,
+        opaquePalette.contentBg,
         `${keyPrefix}:content`,
         contentOffset,
         highlight?.bg,
@@ -781,7 +890,7 @@ function renderUnifiedCell(
   geometry: CodeCellLayoutPlan,
   lineNumberDigits: number,
   showLineNumbers: boolean,
-  theme: AppTheme,
+  themeSurfaces: ThemeRenderSurfaces,
   keyPrefix: string,
   contentOffset = 0,
   prefix?: {
@@ -792,7 +901,9 @@ function renderUnifiedCell(
   highlight?: CodeCellHighlight,
 ) {
   const resolvedPrefix =
-    highlightsWholeCell(highlight) && prefix ? applyHighlightPrefix(prefix, highlight!.bg) : prefix;
+    highlightsWholeCell(highlight) && prefix
+      ? applyHighlightPrefix(prefix, themeSurfaces.opaqueTheme.panel, highlight!.bg)
+      : prefix;
   const prefixWidth = resolvedPrefix?.text.length ?? 0;
 
   return (
@@ -809,7 +920,7 @@ function renderUnifiedCell(
         contentWidth={geometry.contentWidth}
         lineNumberDigits={lineNumberDigits}
         showLineNumbers={showLineNumbers}
-        theme={theme}
+        themeSurfaces={themeSurfaces}
         keyPrefix={keyPrefix}
         contentOffset={contentOffset}
         prefixWidth={prefixWidth}
@@ -823,8 +934,9 @@ function renderUnifiedCell(
 function renderWrappedSplitCellLine(
   line: WrappedCellLine,
   palette: ReturnType<typeof splitCellPalette>,
+  opaquePalette: ReturnType<typeof splitCellPalette>,
   contentWidth: number,
-  theme: AppTheme,
+  themeSurfaces: ThemeRenderSurfaces,
   keyPrefix: string,
   prefix: {
     text: string;
@@ -834,11 +946,14 @@ function renderWrappedSplitCellLine(
   highlight?: CodeCellHighlight,
   paneOffset = 0,
 ) {
+  const { emittedTheme: theme, opaqueTheme } = themeSurfaces;
   const wholeCellHighlight = highlightsWholeCell(highlight);
   const resolvedPalette = wholeCellHighlight
-    ? applyHighlightPalette(palette, highlight!.bg)
+    ? applyHighlightPalette(palette, opaquePalette, highlight!.bg)
     : palette;
-  const resolvedPrefix = wholeCellHighlight ? applyHighlightPrefix(prefix, highlight!.bg) : prefix;
+  const resolvedPrefix = wholeCellHighlight
+    ? applyHighlightPrefix(prefix, opaqueTheme.panel, highlight!.bg)
+    : prefix;
 
   const prefixWidth = prefix.text.length;
   const gutterWidth = line.gutterText.length;
@@ -866,6 +981,7 @@ function renderWrappedSplitCellLine(
         contentWidth,
         theme.syntaxColors.default,
         resolvedPalette.contentBg,
+        opaquePalette.contentBg,
         `${keyPrefix}:content`,
         0,
         highlight?.bg,
@@ -880,8 +996,9 @@ function renderWrappedSplitCellLine(
 function renderWrappedUnifiedCellLine(
   line: WrappedCellLine,
   palette: ReturnType<typeof unifiedCellPalette>,
+  opaquePalette: ReturnType<typeof unifiedCellPalette>,
   contentWidth: number,
-  theme: AppTheme,
+  themeSurfaces: ThemeRenderSurfaces,
   keyPrefix: string,
   prefix: {
     text: string;
@@ -890,11 +1007,14 @@ function renderWrappedUnifiedCellLine(
   },
   highlight?: CodeCellHighlight,
 ) {
+  const { emittedTheme: theme, opaqueTheme } = themeSurfaces;
   const wholeCellHighlight = highlightsWholeCell(highlight);
   const resolvedPalette = wholeCellHighlight
-    ? applyHighlightPalette(palette, highlight!.bg)
+    ? applyHighlightPalette(palette, opaquePalette, highlight!.bg)
     : palette;
-  const resolvedPrefix = wholeCellHighlight ? applyHighlightPrefix(prefix, highlight!.bg) : prefix;
+  const resolvedPrefix = wholeCellHighlight
+    ? applyHighlightPrefix(prefix, opaqueTheme.panel, highlight!.bg)
+    : prefix;
 
   const prefixWidth = prefix.text.length;
   const gutterWidth = line.gutterText.length;
@@ -922,6 +1042,7 @@ function renderWrappedUnifiedCellLine(
         contentWidth,
         theme.syntaxColors.default,
         resolvedPalette.contentBg,
+        opaquePalette.contentBg,
         `${keyPrefix}:content`,
         0,
         highlight?.bg,
@@ -1012,7 +1133,7 @@ interface NowrapSplitCodeCellsOptions {
   layout: Extract<CodeRowLayoutPlan, { kind: "split" }>;
   lineNumberDigits: number;
   showLineNumbers: boolean;
-  theme: AppTheme;
+  themeSurfaces: ThemeRenderSurfaces;
   horizontalOffset: number;
   leftPrefix: CellPrefix;
   rightPrefix: CellPrefix;
@@ -1027,7 +1148,7 @@ function renderNowrapSplitCodeCells({
   layout,
   lineNumberDigits,
   showLineNumbers,
-  theme,
+  themeSurfaces,
   horizontalOffset,
   leftPrefix,
   rightPrefix,
@@ -1035,6 +1156,7 @@ function renderNowrapSplitCodeCells({
   rightHighlight,
   guideOnNewSide,
 }: NowrapSplitCodeCellsOptions) {
+  const theme = themeSurfaces.emittedTheme;
   if (!leftHighlight && !rightHighlight) {
     const chunks: TextChunk[] = [];
     appendPlainSplitCellChunks(
@@ -1043,7 +1165,7 @@ function renderNowrapSplitCodeCells({
       layout.left,
       lineNumberDigits,
       showLineNumbers,
-      theme,
+      themeSurfaces,
       horizontalOffset,
       leftPrefix,
     );
@@ -1053,7 +1175,7 @@ function renderNowrapSplitCodeCells({
       layout.right,
       lineNumberDigits,
       showLineNumbers,
-      theme,
+      themeSurfaces,
       horizontalOffset,
       rightPrefix,
     );
@@ -1068,7 +1190,7 @@ function renderNowrapSplitCodeCells({
         layout.left,
         lineNumberDigits,
         showLineNumbers,
-        theme,
+        themeSurfaces,
         `${row.key}:left`,
         horizontalOffset,
         leftPrefix,
@@ -1080,7 +1202,7 @@ function renderNowrapSplitCodeCells({
         layout.right,
         lineNumberDigits,
         showLineNumbers,
-        theme,
+        themeSurfaces,
         `${row.key}:right`,
         horizontalOffset,
         rightPrefix,
@@ -1101,7 +1223,7 @@ interface NowrapUnifiedCodeCellOptions {
   layout: Extract<CodeRowLayoutPlan, { kind: "unified" }>;
   lineNumberDigits: number;
   showLineNumbers: boolean;
-  theme: AppTheme;
+  themeSurfaces: ThemeRenderSurfaces;
   horizontalOffset: number;
   prefix: CellPrefix;
   highlight?: CodeCellHighlight;
@@ -1114,12 +1236,13 @@ function renderNowrapUnifiedCodeCell({
   layout,
   lineNumberDigits,
   showLineNumbers,
-  theme,
+  themeSurfaces,
   horizontalOffset,
   prefix,
   highlight,
   guideOnNewSide,
 }: NowrapUnifiedCodeCellOptions) {
+  const theme = themeSurfaces.emittedTheme;
   if (!highlight) {
     const chunks: TextChunk[] = [];
     appendPlainUnifiedCellChunks(
@@ -1128,7 +1251,7 @@ function renderNowrapUnifiedCodeCell({
       layout.cell,
       lineNumberDigits,
       showLineNumbers,
-      theme,
+      themeSurfaces,
       horizontalOffset,
       prefix,
     );
@@ -1143,7 +1266,7 @@ function renderNowrapUnifiedCodeCell({
         layout.cell,
         lineNumberDigits,
         showLineNumbers,
-        theme,
+        themeSurfaces,
         `${row.key}:unified`,
         horizontalOffset,
         prefix,
@@ -1194,26 +1317,27 @@ function createWrappedSplitCodeCells({
   layout,
   lineNumberDigits,
   showLineNumbers,
-  theme,
+  themeSurfaces,
   leftPrefix,
   rightPrefix,
   leftHighlight,
   rightHighlight,
   guideOnNewSide,
 }: WrappedSplitCodeCellsOptions): WrappedCodeCells {
+  const theme = themeSurfaces.emittedTheme;
   const leftLayout = buildWrappedSplitCell(
     row.left,
     layout.left,
     lineNumberDigits,
     showLineNumbers,
-    theme,
+    themeSurfaces,
   );
   const rightLayout = buildWrappedSplitCell(
     row.right,
     layout.right,
     lineNumberDigits,
     showLineNumbers,
-    theme,
+    themeSurfaces,
   );
   const lineCount = Math.max(leftLayout.lines.length, rightLayout.lines.length);
 
@@ -1240,8 +1364,9 @@ function createWrappedSplitCodeCells({
           renderWrappedSplitCellLine(
             leftLine,
             leftLayout.palette,
+            leftLayout.opaquePalette,
             layout.left.contentWidth,
-            theme,
+            themeSurfaces,
             `${row.key}:left:${index}`,
             leftPrefix,
             resolvedLeftHighlight,
@@ -1250,8 +1375,9 @@ function createWrappedSplitCodeCells({
           renderWrappedSplitCellLine(
             rightLine,
             rightLayout.palette,
+            rightLayout.opaquePalette,
             layout.right.contentWidth,
-            theme,
+            themeSurfaces,
             `${row.key}:right:${index}`,
             rightPrefix,
             resolvedRightHighlight,
@@ -1269,8 +1395,9 @@ function createWrappedSplitCodeCells({
           chunks,
           leftLine,
           leftLayout.palette,
+          leftLayout.opaquePalette,
           layout.left.contentWidth,
-          theme,
+          themeSurfaces,
           leftPrefix,
           resolvedLeftHighlight,
         );
@@ -1278,8 +1405,9 @@ function createWrappedSplitCodeCells({
           chunks,
           rightLine,
           rightLayout.palette,
+          rightLayout.opaquePalette,
           layout.right.contentWidth,
-          theme,
+          themeSurfaces,
           rightPrefix,
           resolvedRightHighlight,
         );
@@ -1303,17 +1431,18 @@ function createWrappedUnifiedCodeCell({
   layout,
   lineNumberDigits,
   showLineNumbers,
-  theme,
+  themeSurfaces,
   prefix,
   highlight,
   guideOnNewSide,
 }: WrappedUnifiedCodeCellOptions): WrappedCodeCells {
+  const theme = themeSurfaces.emittedTheme;
   const wrapped = buildWrappedUnifiedCell(
     row.cell,
     layout.cell,
     lineNumberDigits,
     showLineNumbers,
-    theme,
+    themeSurfaces,
   );
 
   return {
@@ -1329,8 +1458,9 @@ function createWrappedUnifiedCodeCell({
           chunks,
           line,
           wrapped.palette,
+          wrapped.opaquePalette,
           layout.cell.contentWidth,
-          theme,
+          themeSurfaces,
           prefix,
           resolvedHighlight,
         );
@@ -1341,8 +1471,9 @@ function createWrappedUnifiedCodeCell({
           renderWrappedUnifiedCellLine(
             line,
             wrapped.palette,
+            wrapped.opaquePalette,
             layout.cell.contentWidth,
-            theme,
+            themeSurfaces,
             `${row.key}:unified:${index}`,
             prefix,
             resolvedHighlight,

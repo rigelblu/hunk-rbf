@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createTestDiffFile } from "../../../../../test/helpers/diff-helpers";
 import { buildDiffSectionRowPlan } from "../diff/diffSectionRowPlan";
-import { resolveTheme } from "../themes";
+import { resolveTheme, themeRenderSurfaces } from "../themes";
 import {
   applyExtensionCurrentLinePaintUpdate,
   createExtensionCurrentLinePaint,
@@ -78,6 +78,22 @@ describe("extension current-line paint", () => {
     expect(oldPaint.props.width).toBe(60);
     expect(oldPaint.props.showLineNumbers).toBe(true);
     expect(oldPaint.props.codeHorizontalOffset).toBe(0);
+  });
+
+  test("hands the review's render surfaces to the painted row", () => {
+    const fixture = splitPlanFixture();
+    const themeSurfaces = themeRenderSurfaces(fixture.theme, true);
+    const paint = createExtensionCurrentLinePaint({
+      ...fixture,
+      showLineNumbers: true,
+      codeHorizontalOffset: 0,
+      themeSurfaces,
+    });
+
+    // Under a transparent background the emitted theme has no opaque surface, so the row needs the
+    // surface pair the 4.5:1 contrast clamp measures against.
+    const painted = paint!.render("new", 60) as { props: { themeSurfaces?: unknown } };
+    expect(painted.props.themeSurfaces).toBe(themeSurfaces);
   });
 
   test("preserves move paint and turns an absent side into an explicit blank row", () => {

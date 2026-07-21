@@ -16,6 +16,7 @@ import {
   MIN_EMPHASIS_SEPARATION,
   readableDiffSign,
   resolveTheme,
+  themeRenderSurfaces,
   TRANSPARENT_BACKGROUND,
   withTransparentSurfaces,
 } from "./themes";
@@ -329,19 +330,24 @@ describe("themes", () => {
         if (contrastRatio(source, background) >= MIN_DIFF_SIGN_CONTRAST) {
           return [];
         }
-        const minimalRescues = ["#000000", "#ffffff"].flatMap((anchor) => {
-          for (let amount = 0.02; amount < 1; amount += 0.02) {
-            const candidate = blendHex(anchor, source, amount);
-            if (contrastRatio(candidate, background) >= MIN_DIFF_SIGN_CONTRAST) {
-              return [candidate];
-            }
+        // Step one percent at a time toward black and white. The first step that clears the floor
+        // wins; black wins when it clears the floor with at least white's contrast.
+        let minimalRescue: string | undefined;
+        for (let step = 1; step <= 100 && minimalRescue === undefined; step += 1) {
+          const towardBlack = blendHex("#000000", source, step / 100);
+          const towardWhite = blendHex("#ffffff", source, step / 100);
+          const blackContrast = contrastRatio(towardBlack, background);
+          const whiteContrast = contrastRatio(towardWhite, background);
+          if (blackContrast >= MIN_DIFF_SIGN_CONTRAST && blackContrast >= whiteContrast) {
+            minimalRescue = towardBlack;
+          } else if (whiteContrast >= MIN_DIFF_SIGN_CONTRAST) {
+            minimalRescue = towardWhite;
           }
-          return [];
-        });
-        return minimalRescues.includes(derived)
+        }
+        return derived === minimalRescue
           ? []
           : [
-              `${themeId} ${slot}: ${source} rescued to ${derived}, expected a minimal rescue (${minimalRescues.join(", ")})`,
+              `${themeId} ${slot}: ${source} rescued to ${derived}, expected a minimal rescue (${minimalRescue ?? "none"})`,
             ];
       });
     });
@@ -350,7 +356,7 @@ describe("themes", () => {
   });
 
   test("nudges catppuccin-latte's near-miss green instead of washing it out", () => {
-    expect(resolveTheme("catppuccin-latte", null).addedSignColor).toBe("#3f9d2a");
+    expect(resolveTheme("catppuccin-latte", null).addedSignColor).toBe("#3f9e2b");
   });
 
   test("readableDiffSign upholds the contrast floor on mid-luminance backgrounds", () => {
@@ -406,6 +412,87 @@ describe("themes", () => {
     expect(custom.syntaxTheme).toBe("catppuccin-mocha");
     expect(custom.syntaxScopeOverrides).toEqual({ "keyword.control": "#ff00ff" });
     expect(custom.syntaxColors).toBe(resolveTheme("catppuccin-mocha", null).syntaxColors);
+  });
+
+  test("derives omitted diff surfaces from semantic custom-theme colors", () => {
+    const base = resolveTheme("github-light-default", null);
+    const custom = resolveTheme(
+      "review",
+      null,
+      createTestCustomThemes(
+        {
+          base: "github-light-default",
+          diffAddedColor: "#3daa8e",
+          diffRemovedColor: "#b4647a",
+        },
+        "review",
+      ),
+    );
+
+    expect(custom.addedBg).not.toBe(base.addedBg);
+    expect(custom.removedBg).not.toBe(base.removedBg);
+    expect(hexColorDistance(custom.addedContentBg, custom.addedBg)).toBeGreaterThan(0);
+    expect(hexColorDistance(custom.removedContentBg, custom.removedBg)).toBeGreaterThan(0);
+  });
+
+  test("explicit diff surfaces override semantic derivation", () => {
+    const custom = resolveTheme(
+      "review",
+      null,
+      createTestCustomThemes(
+        {
+          base: "github-dark-default",
+          diffAddedColor: "#3daa8e",
+          addedBg: "#112233",
+          addedContentBg: "#223344",
+          addedSignColor: "#334455",
+        },
+        "review",
+      ),
+    );
+
+    expect(custom.addedBg).toBe("#112233");
+    expect(custom.addedContentBg).toBe("#223344");
+    expect(custom.addedSignColor).toBe("#334455");
+  });
+
+  test("word-highlight backgrounds resolve explicit, then source colors, then upstream tint", () => {
+    const explicit = resolveTheme(
+      "review",
+      null,
+      createTestCustomThemes(
+        {
+          base: "rose-pine-dawn",
+          diffAddedColor: "#3daa8e",
+          diffRemovedColor: "#b4647a",
+          addedContentBg: "#223344",
+          removedContentBg: "#443322",
+        },
+        "review",
+      ),
+    );
+    const derived = resolveTheme(
+      "review",
+      null,
+      createTestCustomThemes(
+        { base: "rose-pine-dawn", diffAddedColor: "#3daa8e", diffRemovedColor: "#b4647a" },
+        "review",
+      ),
+    );
+    const inherited = resolveTheme(
+      "review",
+      null,
+      createTestCustomThemes({ base: "rose-pine-dawn" }, "review"),
+    );
+
+    expect(explicit.addedContentBg).toBe("#223344");
+    expect(explicit.removedContentBg).toBe("#443322");
+    // hk-6's Dawn rows, #dce8de and #efdddb, blended at the 18% light word tint.
+    expect(derived.addedContentBg).toBe("#bfddd0");
+    expect(derived.removedContentBg).toBe("#e4c7ca");
+    // Read from pure upstream ee556ac8: the bundled rose-pine-dawn base's own word tints.
+    expect(inherited.addedContentBg).toBe("#dce3df");
+    expect(inherited.removedContentBg).toBe("#eddad8");
   });
 
   test("lists custom themes after the bundled themes in declaration order", () => {
@@ -472,5 +559,13 @@ describe("themes", () => {
     expect(transparent.addedContentBg).toBe(theme.addedContentBg);
     expect(transparent.removedContentBg).toBe(theme.removedContentBg);
     expect(transparent.syntaxColors).toBe(theme.syntaxColors);
+  });
+
+  test("themeRenderSurfaces retains opaque contrast colors for transparent output", () => {
+    const theme = resolveTheme("github-dark-default", null);
+    const surfaces = themeRenderSurfaces(theme, true);
+
+    expect(surfaces.emittedTheme.background).toBe(TRANSPARENT_BACKGROUND);
+    expect(surfaces.opaqueTheme).toBe(theme);
   });
 });

@@ -1,7 +1,7 @@
 /** Mounts split and unified code rows from the canonical code-row layout and paint plans. */
 import type { UserNoteLineTarget } from "../../core/liveComments";
 import { copySelectedRangeAtVisualLine, type CopySelectedRowRange } from "../lib/diffSpatial";
-import type { AppTheme } from "../themes";
+import { themeRenderSurfaces, type AppTheme, type ThemeRenderSurfaces } from "../themes";
 import {
   CODE_ROW_ADD_NOTE_BADGE_TEXT,
   CODE_ROW_ADD_NOTE_BADGE_WIDTH,
@@ -30,6 +30,8 @@ export interface CodeRowViewProps {
   wrapLines: boolean;
   codeHorizontalOffset: number;
   theme: AppTheme;
+  /** Emitted and opaque surfaces for code spans; both default to `theme`. */
+  themeSurfaces?: ThemeRenderSurfaces;
   selected: boolean;
   copySelectedRowRange?: CopySelectedRowRange;
   copySelectedSide?: "left" | "right";
@@ -106,6 +108,18 @@ function renderAddNoteSpacer(key: string, width: number, bg: string) {
   );
 }
 
+const singleThemeSurfaces = new WeakMap<AppTheme, ThemeRenderSurfaces>();
+
+/** Reuse one surface pair per theme, keeping memoized cells stable without React hooks. */
+function themeSurfacesFor(theme: AppTheme) {
+  let surfaces = singleThemeSurfaces.get(theme);
+  if (!surfaces) {
+    surfaces = themeRenderSurfaces(theme, false);
+    singleThemeSurfaces.set(theme, surfaces);
+  }
+  return surfaces;
+}
+
 /** Mount one split or unified code row with selection, cursor, guide, and affordance paint. */
 export function CodeRowView({
   plannedRow,
@@ -115,6 +129,7 @@ export function CodeRowView({
   wrapLines,
   codeHorizontalOffset,
   theme,
+  themeSurfaces,
   selected,
   copySelectedRowRange,
   copySelectedSide,
@@ -124,6 +139,7 @@ export function CodeRowView({
   onHoverRow,
   onStartUserNoteAtHunk,
 }: CodeRowViewProps) {
+  const renderSurfaces = themeSurfaces ?? themeSurfacesFor(theme);
   // Extension marks repaint span backgrounds only; geometry inputs keep using the source row.
   const row = codeCellView.applyLineHighlights(
     plannedRow.row,
@@ -235,7 +251,7 @@ export function CodeRowView({
               layout: splitLayout,
               lineNumberDigits,
               showLineNumbers,
-              theme,
+              themeSurfaces: renderSurfaces,
               horizontalOffset: codeHorizontalOffset,
               leftPrefix,
               rightPrefix,
@@ -264,7 +280,7 @@ export function CodeRowView({
       layout: splitLayout,
       lineNumberDigits,
       showLineNumbers,
-      theme,
+      themeSurfaces: renderSurfaces,
       leftPrefix,
       rightPrefix,
       leftHighlight,
@@ -357,7 +373,7 @@ export function CodeRowView({
             layout: unifiedLayout,
             lineNumberDigits,
             showLineNumbers,
-            theme,
+            themeSurfaces: renderSurfaces,
             horizontalOffset: codeHorizontalOffset,
             prefix,
             highlight: cellHighlight,
@@ -384,7 +400,7 @@ export function CodeRowView({
     layout: unifiedLayout,
     lineNumberDigits,
     showLineNumbers,
-    theme,
+    themeSurfaces: renderSurfaces,
     prefix,
     highlight: cellHighlight,
     guideOnNewSide: false,

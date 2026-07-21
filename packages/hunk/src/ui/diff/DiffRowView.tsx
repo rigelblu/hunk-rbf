@@ -2,7 +2,7 @@
 import { memo } from "react";
 import type { UserNoteLineTarget } from "../../core/liveComments";
 import type { CopySelectedRowRange } from "../lib/diffSpatial";
-import type { AppTheme } from "../themes";
+import type { AppTheme, ThemeRenderSurfaces } from "../themes";
 import { CodeRowView } from "./CodeRowView";
 import type { CursorHighlight } from "./cursorHighlight";
 import { DiffMetaRowView } from "./DiffMetaRowView";
@@ -24,6 +24,8 @@ export interface DiffRowViewProps {
   wrapLines: boolean;
   codeHorizontalOffset: number;
   theme: AppTheme;
+  /** Emitted and opaque surfaces for code spans; both default to `theme`. */
+  themeSurfaces?: ThemeRenderSurfaces;
   selected: boolean;
   copySelectedRowRange?: CopySelectedRowRange;
   copySelectedSide?: "left" | "right";
@@ -57,6 +59,7 @@ export const DiffRowView = memo(function DiffRowViewComponent({
   wrapLines,
   codeHorizontalOffset,
   theme,
+  themeSurfaces,
   selected,
   copySelectedRowRange,
   copySelectedSide,
@@ -93,6 +96,7 @@ export const DiffRowView = memo(function DiffRowViewComponent({
         wrapLines={wrapLines}
         codeHorizontalOffset={codeHorizontalOffset}
         theme={theme}
+        themeSurfaces={themeSurfaces}
         selected={selected}
         copySelectedRowRange={copySelectedRowRange}
         copySelectedSide={copySelectedSide}
