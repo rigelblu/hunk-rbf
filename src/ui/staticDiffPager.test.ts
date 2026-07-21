@@ -109,6 +109,53 @@ describe("static diff pager", () => {
     expect(output).toContain("\x1b[38;2;18;52;86m");
   });
 
+  test("applies the shared contrast policy to semantic custom-theme rows", async () => {
+    const patchText =
+      "diff --git a/notes.txt b/notes.txt\n--- a/notes.txt\n+++ b/notes.txt\n@@ -1 +1 @@\n-starting work\n+starting works\n";
+    const output = await renderStaticDiffPager(
+      patchText,
+      { theme: "dawn" },
+      {
+        customThemes: {
+          dawn: {
+            base: "github-light-default",
+            background: "#faf4ed",
+            contextBg: "#faf4ed",
+            diffAddedColor: "#3daa8e",
+            diffRemovedColor: "#b4647a",
+            syntax: { default: "#ea9d34" },
+          },
+        },
+      },
+    );
+
+    expect(output).toContain("\x1b[38;2;138;93;31m\x1b[48;2;220;232;222mstarting");
+    expect(output).toContain("\x1b[38;2;126;85;28m\x1b[48;2;191;221;208mworks");
+  });
+
+  test("emits explicit custom word-diff backgrounds without strengthening them", async () => {
+    const patchText =
+      "diff --git a/notes.txt b/notes.txt\n--- a/notes.txt\n+++ b/notes.txt\n@@ -1 +1 @@\n-starting work\n+starting works\n";
+    const output = await renderStaticDiffPager(
+      patchText,
+      { theme: "exact" },
+      {
+        customThemes: {
+          exact: {
+            base: "github-dark-default",
+            addedBg: "#112233",
+            removedBg: "#221133",
+            addedContentBg: "#112234",
+            removedContentBg: "#221134",
+          },
+        },
+      },
+    );
+
+    expect(output).toContain("\x1b[48;2;17;34;52mworks");
+    expect(output).toContain("\x1b[48;2;34;17;52mwork");
+  });
+
   test("keeps only added/removed backgrounds when transparent background is requested", async () => {
     const patchText =
       "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1,3 +1,3 @@\n const a = 1;\n-const value = 1;\n+const value = 2;\n const z = 3;\n";
@@ -124,6 +171,30 @@ describe("static diff pager", () => {
     expect(lineWith("const z = 3;")).not.toContain("\x1b[48;2;");
     expect(lineWith("const value = 1;")).toContain("\x1b[48;2;");
     expect(lineWith("const value = 2;")).toContain("\x1b[48;2;");
+  });
+
+  test("uses opaque theme surfaces to contrast transparent static context rows", async () => {
+    const patchText =
+      "diff --git a/notes.txt b/notes.txt\n--- a/notes.txt\n+++ b/notes.txt\n@@ -1,3 +1,3 @@\n plain prose\n-starting work\n+starting works\n trailing prose\n";
+    const output = await renderStaticDiffPager(
+      patchText,
+      { theme: "dawn", transparentBackground: true },
+      {
+        customThemes: {
+          dawn: {
+            base: "github-light-default",
+            background: "#faf4ed",
+            contextBg: "#faf4ed",
+            syntax: { default: "#ea9d34" },
+          },
+        },
+      },
+    );
+    const contextLine =
+      output.split("\n").find((line) => stripAnsi(line).includes("plain prose")) ?? "";
+
+    expect(contextLine).toContain("\x1b[38;2;152;102;34mplain prose");
+    expect(contextLine).not.toContain("\x1b[48;2;");
   });
 
   test("shows semantic file metadata without raw patch headers", async () => {

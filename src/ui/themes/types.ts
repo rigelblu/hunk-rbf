@@ -43,6 +43,12 @@ export interface AppTheme {
   syntaxStyle: SyntaxStyle;
 }
 
+/** Pair the colors emitted to the terminal with their resolved opaque contrast counterparts. */
+export interface ThemeRenderSurfaces {
+  emittedTheme: AppTheme;
+  opaqueTheme: AppTheme;
+}
+
 export type SyntaxColors = {
   default: string;
   keyword: string;

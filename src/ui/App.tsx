@@ -28,7 +28,7 @@ import { fileRowId } from "./lib/ids";
 import { openSelectedFileInEditor } from "./lib/openInEditor";
 import { resolveResponsiveLayout } from "./lib/responsive";
 import { resizeSidebarWidth } from "./lib/sidebar";
-import { availableThemes, resolveTheme, withTransparentSurfaces } from "./themes";
+import { availableThemes, resolveTheme, themeRenderSurfaces } from "./themes";
 
 type FocusArea = "files" | "filter" | "note";
 type ActiveAddNoteTarget = ActiveAddNoteAffordance & { fileId: string };
@@ -170,13 +170,11 @@ export function App({
       ),
     [effectiveThemeId, detectedThemeMode, renderer.themeMode, bootstrap.customThemes],
   );
-  const activeTheme = useMemo(
-    () =>
-      bootstrap.input.options.transparentBackground
-        ? withTransparentSurfaces(baseTheme)
-        : baseTheme,
+  const renderSurfaces = useMemo(
+    () => themeRenderSurfaces(baseTheme, Boolean(bootstrap.input.options.transparentBackground)),
     [baseTheme, bootstrap.input.options.transparentBackground],
   );
+  const activeTheme = renderSurfaces.emittedTheme;
 
   const themeSelectorItems = useMemo(
     () =>
@@ -1036,7 +1034,7 @@ export function App({
           layoutToggleRequestId={layoutToggleRequestId}
           selectedFileTopAlignRequestId={review.selectedFileTopAlignRequestId}
           selectedHunkRevealRequestId={review.selectedHunkRevealRequestId}
-          theme={activeTheme}
+          themeSurfaces={renderSurfaces}
           width={diffPaneWidth}
           onActiveAddNoteAffordanceChange={setActiveAddNoteTarget}
           onRemoveUserNote={review.removeUserNote}

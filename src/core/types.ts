@@ -129,6 +129,10 @@ export interface CustomThemeConfig {
   accentMuted?: string;
   text?: string;
   muted?: string;
+  /** Semantic add color used to derive omitted diff component colors. */
+  diffAddedColor?: string;
+  /** Semantic remove color used to derive omitted diff component colors. */
+  diffRemovedColor?: string;
   addedBg?: string;
   removedBg?: string;
   movedAddedBg?: string;

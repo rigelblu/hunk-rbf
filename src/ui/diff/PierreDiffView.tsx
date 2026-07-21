@@ -6,7 +6,7 @@ import type { VisibleAgentNote } from "../lib/agentAnnotations";
 import type { CopySelectedRowRange } from "../components/panes/copySelection";
 import type { DiffSectionGeometry } from "./diffSectionGeometry";
 import { reviewRowId } from "../lib/ids";
-import type { AppTheme } from "../themes";
+import type { ThemeRenderSurfaces } from "../themes";
 import { type FileSourceStatus } from "./expandCollapsedRows";
 import { spansForHighlightedSourceLine, type DiffRow } from "./pierre";
 import { plannedReviewRowVisible } from "./plannedReviewRows";
@@ -73,7 +73,7 @@ export function PierreDiffView({
   showHunkHeaders = true,
   sourceStatus,
   wrapLines = false,
-  theme,
+  themeSurfaces,
   visibleAgentNotes = EMPTY_VISIBLE_AGENT_NOTES,
   hoverActive = true,
   hoverClearSignal = 0,
@@ -98,7 +98,7 @@ export function PierreDiffView({
   showHunkHeaders?: boolean;
   sourceStatus?: FileSourceStatus | undefined;
   wrapLines?: boolean;
-  theme: AppTheme;
+  themeSurfaces: ThemeRenderSurfaces;
   visibleAgentNotes?: VisibleAgentNote[];
   hoverActive?: boolean;
   hoverClearSignal?: number;
@@ -109,6 +109,7 @@ export function PierreDiffView({
   scrollable?: boolean;
   visibleBodyBounds?: VisibleBodyBounds;
 }) {
+  const theme = themeSurfaces.emittedTheme;
   const renderer = useRenderer();
   const [hoveredRowKey, setHoveredRowKey] = useState<string | null>(null);
   const hoverIdleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -375,7 +376,7 @@ export function PierreDiffView({
               showHunkHeaders={showHunkHeaders}
               wrapLines={wrapLines}
               codeHorizontalOffset={codeHorizontalOffset}
-              theme={theme}
+              themeSurfaces={themeSurfaces}
               selected={plannedRow.row.hunkIndex === selectedHunkIndex}
               copySelectedRowRange={copySelectedRowRanges?.get(plannedRow.key)}
               copySelectedSide={copySelectedSide}

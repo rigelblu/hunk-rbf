@@ -9,9 +9,8 @@ import {
 } from "@pierre/diffs";
 import { formatHunkHeader } from "../../core/hunkHeader";
 import type { DiffFile, DiffLineMoveKind } from "../../core/types";
-import { blendHex, hexColorDistance } from "../lib/color";
 import { sanitizeTerminalLine } from "../../lib/terminalText";
-import { TRANSPARENT_BACKGROUND, type AppTheme } from "../themes";
+import type { AppTheme } from "../themes";
 import { expandDiffTabs } from "./codeColumns";
 
 const PIERRE_THEME = {
@@ -55,7 +54,7 @@ const highlighterOptionsByKey = new Map<string, HighlightOptions>();
 let queuedHighlightWork = Promise.resolve();
 
 /** Build a cache key for theme-dependent terminal colors, not just the stable UI theme id. */
-function themeRenderCacheKey(theme: AppTheme) {
+export function themeRenderCacheKey(theme: AppTheme) {
   return [
     theme.id,
     theme.syntaxTheme ?? "",
@@ -63,12 +62,14 @@ function themeRenderCacheKey(theme: AppTheme) {
     theme.background,
     theme.panelAlt,
     theme.contextBg,
+    theme.contextContentBg,
     theme.addedBg,
     theme.removedBg,
     theme.addedContentBg,
     theme.removedContentBg,
     theme.addedSignColor,
     theme.removedSignColor,
+    theme.selectedHunk,
     theme.syntaxColors.default,
     theme.syntaxColors.keyword,
     theme.syntaxColors.string,
@@ -216,6 +217,7 @@ function parseStyleValue(styleValue: unknown) {
 
 const RESERVED_PIERRE_TOKEN_COLORS = {
   dark: {
+    "#fafafa": "default",
     "#ff6762": "keyword",
     "#ff855e": "keyword",
     "#ff678d": "keyword",
@@ -231,6 +233,7 @@ const RESERVED_PIERRE_TOKEN_COLORS = {
     "#636363": "punctuation",
   },
   light: {
+    "#0a0a0a": "default",
     "#d52c36": "keyword",
     "#d5512f": "keyword",
     "#d32a61": "keyword",
@@ -257,75 +260,14 @@ const normalizedColorCache = new Map<string, Map<string, string>>();
 // into terminal spans. The same highlighted line objects are reused when files remount or when
 // we build both split and stack rows, so memoize flattened spans by line node + theme/background.
 const flattenedHighlightedLineCache = new WeakMap<HastNode, Map<string, RenderSpan[]>>();
-const MIN_WORD_DIFF_BG_DISTANCE = 28;
-const WORD_DIFF_BLEND_STEP = 0.005;
-const WORD_DIFF_MAX_BLEND = 0.2;
-const wordDiffBackgroundCache = new Map<string, Record<SplitLineCell["kind"], string>>();
-
-/** Blend toward the semantic sign color just enough to hit the minimum visible contrast. */
-function strengthenWordDiffBg(lineBg: string, signColor: string) {
-  let strongestCandidate = lineBg;
-  const maxSteps = Math.floor(WORD_DIFF_MAX_BLEND / WORD_DIFF_BLEND_STEP);
-
-  for (let step = 1; step <= maxSteps; step += 1) {
-    const blendRatio = step * WORD_DIFF_BLEND_STEP;
-    const candidate = blendHex(signColor, lineBg, blendRatio);
-    strongestCandidate = candidate;
-
-    if (hexColorDistance(candidate, lineBg) >= MIN_WORD_DIFF_BG_DISTANCE) {
-      return candidate;
-    }
-  }
-
-  return strongestCandidate;
-}
-
-/** Return whether a theme color can safely participate in RGB distance and blend math. */
-function isHexThemeColor(color: string) {
-  return /^#[0-9a-f]{6}$/i.test(color);
-}
-
-/** Resolve one word-diff background without turning transparent surfaces into black blends. */
-function resolveWordDiffHighlightBg(contentBg: string, lineBg: string, signColor: string) {
-  if (contentBg === TRANSPARENT_BACKGROUND || lineBg === TRANSPARENT_BACKGROUND) {
-    return contentBg;
-  }
-
-  if (!isHexThemeColor(contentBg) || !isHexThemeColor(lineBg)) {
-    return contentBg;
-  }
-
-  return hexColorDistance(contentBg, lineBg) >= MIN_WORD_DIFF_BG_DISTANCE
-    ? contentBg
-    : strengthenWordDiffBg(lineBg, signColor);
-}
-
-/** Resolve the inline word-diff background, strengthening theme colors that are too subtle to see. */
+/** Resolve one word-diff background from the final component colors owned by theme resolution. */
 function wordDiffHighlightBg(kind: SplitLineCell["kind"], theme: AppTheme) {
-  const cacheKey = [themeRenderCacheKey(theme), theme.contextContentBg, theme.panelAlt].join(":");
-  let cached = wordDiffBackgroundCache.get(cacheKey);
-  if (!cached) {
-    const addition = resolveWordDiffHighlightBg(
-      theme.addedContentBg,
-      theme.addedBg,
-      theme.addedSignColor,
-    );
-    const deletion = resolveWordDiffHighlightBg(
-      theme.removedContentBg,
-      theme.removedBg,
-      theme.removedSignColor,
-    );
-
-    cached = {
-      addition,
-      context: theme.contextContentBg,
-      deletion,
-      empty: theme.panelAlt,
-    };
-    wordDiffBackgroundCache.set(cacheKey, cached);
-  }
-
-  return cached[kind];
+  return {
+    addition: theme.addedContentBg,
+    context: theme.contextContentBg,
+    deletion: theme.removedContentBg,
+    empty: theme.panelAlt,
+  }[kind];
 }
 
 /** Remap Pierre token hues that collide with diff add/remove semantics into theme-safe syntax colors. */
@@ -427,7 +369,7 @@ function flattenHighlightedLine(node: HastNode | undefined, theme: AppTheme, emp
     }
   };
 
-  visit(node, {});
+  visit(node, { fg: theme.syntaxColors.default });
 
   const nextCachedByTheme = cachedByTheme ?? new Map<string, RenderSpan[]>();
   nextCachedByTheme.set(cacheKey, spans);

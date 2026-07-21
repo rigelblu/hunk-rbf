@@ -8,7 +8,7 @@ import type { VisibleAgentNote } from "../../lib/agentAnnotations";
 import type { CopySelectedRowRange } from "./copySelection";
 import { diffSectionId } from "../../lib/ids";
 import { fitText } from "../../lib/text";
-import type { AppTheme } from "../../themes";
+import type { ThemeRenderSurfaces } from "../../themes";
 import { DiffFileHeaderRow } from "./DiffFileHeaderRow";
 
 interface DiffSectionProps {
@@ -30,7 +30,7 @@ interface DiffSectionProps {
   wrapLines: boolean;
   showHeader: boolean;
   showSeparator: boolean;
-  theme: AppTheme;
+  themeSurfaces: ThemeRenderSurfaces;
   visibleAgentNotes: VisibleAgentNote[];
   visibleBodyBounds?: VisibleBodyBounds;
   viewWidth: number;
@@ -64,7 +64,7 @@ function DiffSectionComponent({
   wrapLines,
   showHeader,
   showSeparator,
-  theme,
+  themeSurfaces,
   visibleAgentNotes,
   visibleBodyBounds,
   viewWidth,
@@ -77,6 +77,7 @@ function DiffSectionComponent({
   onSelect,
   onToggleGap,
 }: DiffSectionProps) {
+  const theme = themeSurfaces.emittedTheme;
   return (
     <box
       id={diffSectionId(file.id)}
@@ -124,7 +125,7 @@ function DiffSectionComponent({
         codeHorizontalOffset={codeHorizontalOffset}
         copySelectedRowRanges={copySelectedRowRanges}
         copySelectedSide={copySelectedSide}
-        theme={theme}
+        themeSurfaces={themeSurfaces}
         width={viewWidth}
         visibleAgentNotes={visibleAgentNotes}
         hoverActive={hoverActive}
@@ -173,7 +174,7 @@ export const DiffSection = memo(DiffSectionComponent, (previous, next) => {
     previous.onMouseScroll === next.onMouseScroll &&
     previous.onActiveAddNoteAffordanceChange === next.onActiveAddNoteAffordanceChange &&
     previous.onStartUserNoteAtHunk === next.onStartUserNoteAtHunk &&
-    previous.theme === next.theme &&
+    previous.themeSurfaces === next.themeSurfaces &&
     previous.visibleAgentNotes === next.visibleAgentNotes &&
     previous.visibleBodyBounds === next.visibleBodyBounds &&
     previous.viewWidth === next.viewWidth
