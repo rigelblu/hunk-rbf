@@ -19,6 +19,10 @@ export interface AppTheme {
   contextBg: string;
   addedContentBg: string;
   removedContentBg: string;
+  /** Optional alpha-last added-word overlay resolved against the actual row at render time. */
+  addedContentOverlay?: string;
+  /** Optional alpha-last removed-word overlay resolved against the actual row at render time. */
+  removedContentOverlay?: string;
   contextContentBg: string;
   addedSignColor: string;
   removedSignColor: string;

@@ -29,7 +29,12 @@ const SYNTAX_ROLES = [
 
 /** Return a compact failure list for semantic theme foreground/background pairs. */
 function themeContrastFailures(
-  pairs: Array<{ label: string; foreground: string; background: string; minimum?: number }>,
+  pairs: Array<{
+    label: string;
+    foreground: string;
+    background: string;
+    minimum?: number;
+  }>,
 ) {
   return pairs.flatMap(
     ({ label, foreground, background, minimum = MIN_READABLE_TEXT_CONTRAST }) => {
@@ -101,7 +106,11 @@ describe("themes", () => {
             foreground: theme.text,
             background: theme.contextBg,
           },
-          { label: `${theme.id} text/addedBg`, foreground: theme.text, background: theme.addedBg },
+          {
+            label: `${theme.id} text/addedBg`,
+            foreground: theme.text,
+            background: theme.addedBg,
+          },
           {
             label: `${theme.id} text/removedBg`,
             foreground: theme.text,
@@ -217,14 +226,34 @@ describe("themes", () => {
         ["fileUntracked", theme.fileUntracked],
       ] as const;
       const sidebarPairs = sidebarForegrounds.flatMap(([field, foreground]) => [
-        { label: `${theme.id} ${field}/panel`, foreground, background: theme.panel },
-        { label: `${theme.id} ${field}/panelAlt`, foreground, background: theme.panelAlt },
+        {
+          label: `${theme.id} ${field}/panel`,
+          foreground,
+          background: theme.panel,
+        },
+        {
+          label: `${theme.id} ${field}/panelAlt`,
+          foreground,
+          background: theme.panelAlt,
+        },
       ]);
 
       return themeContrastFailures([
-        { label: `${theme.id} text/panel`, foreground: theme.text, background: theme.panel },
-        { label: `${theme.id} text/panelAlt`, foreground: theme.text, background: theme.panelAlt },
-        { label: `${theme.id} muted/panel`, foreground: theme.muted, background: theme.panel },
+        {
+          label: `${theme.id} text/panel`,
+          foreground: theme.text,
+          background: theme.panel,
+        },
+        {
+          label: `${theme.id} text/panelAlt`,
+          foreground: theme.text,
+          background: theme.panelAlt,
+        },
+        {
+          label: `${theme.id} muted/panel`,
+          foreground: theme.muted,
+          background: theme.panel,
+        },
         {
           label: `${theme.id} muted/panelAlt`,
           foreground: theme.muted,
@@ -308,6 +337,40 @@ describe("themes", () => {
       removedBg: "#3b2a41",
       addedContentBg: "#385b5e",
       removedContentBg: "#6c3d58",
+    });
+  });
+
+  test("preserves word overlays while resolving opaque Dawn and Moon fallbacks", () => {
+    const dawn = resolveTheme("dawn-alpha", null, {
+      "dawn-alpha": {
+        base: "rose-pine-dawn",
+        addedBg: "#dce8de",
+        removedBg: "#efdddb",
+        addedContentBg: "#2e9e4859",
+        removedContentBg: "#78081acc",
+      },
+    });
+    const moon = resolveTheme("moon-alpha", null, {
+      "moon-alpha": {
+        base: "rose-pine-moon",
+        addedBg: "#182d23",
+        removedBg: "#431720",
+        addedContentBg: "#2e9e4859",
+        removedContentBg: "#78081acc",
+      },
+    });
+
+    expect(dawn).toMatchObject({
+      addedContentBg: "#9fceaa",
+      removedContentBg: "#903341",
+      addedContentOverlay: "#2e9e4859",
+      removedContentOverlay: "#78081acc",
+    });
+    expect(moon).toMatchObject({
+      addedContentBg: "#205430",
+      removedContentBg: "#6d0b1b",
+      addedContentOverlay: "#2e9e4859",
+      removedContentOverlay: "#78081acc",
     });
   });
 

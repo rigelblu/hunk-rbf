@@ -9,6 +9,15 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 
 ---
 
+# 🔵⋯ v0.4.0 (2026-07-22)
+## 🟠⋯ Added for End Users
+- 2026-07-22 - feat (ux) | reuse editor alpha-last colors for added and removed word highlights without manually flattening them (#hk-7)
+
+## 🟠⋯ Improved for Technical Users
+- 2026-07-22 - config (technical) | accept opaque eight-digit colors across custom themes and role-aware partial alpha for word highlights (#hk-7)
+
+---
+
 # 🔵⋯ v0.3.0 (2026-07-22)
 ## 🟠⋯ Improved for End Users
 - 2026-07-22 - feat (ux) | keep custom-theme syntax readable across derived row, word, and selection highlights (#hk-6)

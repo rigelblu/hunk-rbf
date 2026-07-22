@@ -194,6 +194,54 @@ describe("config resolution", () => {
     });
   });
 
+  test("accepts partial alpha for word highlights and opaque editor colors elsewhere", () => {
+    const home = createTempDir("hunk-config-home-");
+    mkdirSync(join(home, ".config", "hunk"), { recursive: true });
+    writeFileSync(
+      join(home, ".config", "hunk", "config.toml"),
+      [
+        "[custom_themes.dawn]",
+        'accent = "#AABBCCFF"',
+        'addedContentBg = "#2E9E4859"',
+        'removedContentBg = "#78081ACC"',
+        "",
+        "[custom_themes.dawn.syntax]",
+        'keyword = "#DDEEFFff"',
+      ].join("\n"),
+    );
+
+    const resolved = resolveConfiguredCliInput(createPatchPagerInput(), {
+      cwd: createTempDir("hunk-config-cwd-"),
+      env: { HOME: home },
+    });
+
+    expect(resolved.customThemes?.dawn).toMatchObject({
+      accent: "#aabbcc",
+      addedContentBg: "#2e9e4859",
+      removedContentBg: "#78081acc",
+      syntax: { keyword: "#ddeeff" },
+    });
+  });
+
+  test.each([
+    ["accent", 'accent = "#11223380"'],
+    ["syntax.keyword", '[custom_theme.syntax]\nkeyword = "#11223380"'],
+  ])("rejects partial alpha for unsupported custom color role: %s", (role, source) => {
+    const home = createTempDir("hunk-config-home-");
+    mkdirSync(join(home, ".config", "hunk"), { recursive: true });
+    writeFileSync(
+      join(home, ".config", "hunk", "config.toml"),
+      ["[custom_theme]", source].join("\n"),
+    );
+
+    expect(() =>
+      resolveConfiguredCliInput(createPatchPagerInput(), {
+        cwd: createTempDir("hunk-config-cwd-"),
+        env: { HOME: home },
+      }),
+    ).toThrow(`Expected custom_theme.${role} to be a hex color like #112233.`);
+  });
+
   test.each(["github-dark-default", "github-light-default", "dracula", "catppuccin-mocha"])(
     "accepts custom theme base id: %s",
     (base) => {
@@ -226,7 +274,9 @@ describe("config resolution", () => {
       env: { HOME: home },
     });
 
-    expect(resolved.customThemes).toEqual({ custom: { base: "github-dark-default" } });
+    expect(resolved.customThemes).toEqual({
+      custom: { base: "github-dark-default" },
+    });
   });
 
   test("loads, merges, orders, and pairs named custom themes", () => {
@@ -270,7 +320,10 @@ describe("config resolution", () => {
       env: { HOME: home },
     });
 
-    expect(resolved.input.options.theme).toEqual({ light: "my-light", dark: "my-dark" });
+    expect(resolved.input.options.theme).toEqual({
+      light: "my-light",
+      dark: "my-dark",
+    });
     expect(Object.keys(resolved.customThemes ?? {})).toEqual([
       "my-light",
       "my-dark",
@@ -322,7 +375,9 @@ describe("config resolution", () => {
     });
 
     expect(Object.hasOwn(resolved.customThemes ?? {}, "constructor")).toBe(true);
-    expect(resolved.customThemes?.["constructor"]).toEqual({ base: "github-dark-default" });
+    expect(resolved.customThemes?.["constructor"]).toEqual({
+      base: "github-dark-default",
+    });
   });
 
   test("rejects dotted named custom headers instead of silently creating nested tables", () => {
@@ -660,15 +715,19 @@ describe("config resolution", () => {
       resolveConfiguredCliInput(input, { cwd: jjRepo, env: { HOME: home } }).input.options.vcs,
     ).toBe("jj");
     expect(
-      resolveConfiguredCliInput(input, { cwd: colocatedRepo, env: { HOME: home } }).input.options
-        .vcs,
+      resolveConfiguredCliInput(input, {
+        cwd: colocatedRepo,
+        env: { HOME: home },
+      }).input.options.vcs,
     ).toBe("jj");
     expect(
       resolveConfiguredCliInput(input, { cwd: gitRepo, env: { HOME: home } }).input.options.vcs,
     ).toBe("git");
     expect(
-      resolveConfiguredCliInput(input, { cwd: gitRepoInsideParentJj, env: { HOME: home } }).input
-        .options.vcs,
+      resolveConfiguredCliInput(input, {
+        cwd: gitRepoInsideParentJj,
+        env: { HOME: home },
+      }).input.options.vcs,
     ).toBe("git");
     expect(
       resolveConfiguredCliInput(input, { cwd: plainDir, env: { HOME: home } }).input.options.vcs,
