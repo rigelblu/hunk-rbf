@@ -59,3 +59,15 @@ diffRemovedColor = "#b4647a"
 ```
 
 Hunk derives omitted row and word-highlight backgrounds from those colors. Explicit component values such as `addedBg`, `removedBg`, `addedContentBg`, and `removedContentBg` still take precedence. Before terminal output, syntax foregrounds that would fail Hunk's 4.5:1 readability target are adjusted by the smallest passing amount across row, word, selection, interactive, and static review states.
+
+# 🔵⋯ Reuse alpha word-highlight colors
+Custom themes accept alpha-last `#RRGGBBAA` values for added and removed word highlights:
+
+```toml
+[custom_themes.my-dark]
+base = "github-dark-default"
+addedContentBg = "#2e9e4859"
+removedContentBg = "#78081acc"
+```
+
+Hunk composites partial alpha over the actual ordinary or moved diff row, then applies selection and readable foreground contrast. Existing six-digit colors remain exact, and opaque eight-digit colors are accepted anywhere a custom-theme color is valid. Partial alpha is intentionally limited to `addedContentBg` and `removedContentBg`; validation errors name any unsupported key.

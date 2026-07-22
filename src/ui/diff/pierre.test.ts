@@ -7,11 +7,13 @@ import {
   loadHighlightedDiff,
   loadHighlightedSourceLines,
   spansForHighlightedSourceLine,
+  themeRenderCacheKey,
   type DiffRow,
 } from "./pierre";
 import { resolveSplitPaneWidths } from "./codeColumns";
 import { renderCodeOnlyPlannedRowText, renderDecoratedPlannedRowText } from "./renderRows";
 import { stackCellPalette } from "./rowStyle";
+import { resolveSpanBackgrounds } from "./spanColors";
 import { buildReviewRenderPlan } from "./reviewRenderPlan";
 import { measureTextWidth } from "../lib/text";
 import { TRANSPARENT_BACKGROUND, resolveTheme } from "../themes";
@@ -204,6 +206,61 @@ describe("Pierre diff rows", () => {
     expect(changedRow.right.spans.find((span) => span.bg)?.bg).toBe("#112234");
   });
 
+  test("keeps word-overlay identity isolated in same-node theme caches", async () => {
+    const file = createDiffFile();
+    const highlighted = await loadHighlightedDiff(file);
+    const baseTheme = resolveTheme("github-dark-default", null);
+    const firstTheme = {
+      ...baseTheme,
+      id: "same-theme",
+      addedContentBg: "#112233",
+      removedContentBg: "#332211",
+      addedContentOverlay: "#abcdef01",
+      removedContentOverlay: "#fedcba01",
+    };
+    const secondTheme = {
+      ...firstTheme,
+      addedContentOverlay: "#abcdef02",
+      removedContentOverlay: "#fedcba02",
+    };
+
+    expect(themeRenderCacheKey(firstTheme)).not.toBe(themeRenderCacheKey(secondTheme));
+
+    const firstRows = buildSplitRows(file, highlighted, firstTheme);
+    const secondRows = buildSplitRows(file, highlighted, secondTheme);
+    const changedSpans = (rows: typeof firstRows) => {
+      const row = rows.find(
+        (candidate) =>
+          candidate.type === "split-line" &&
+          candidate.left.kind === "deletion" &&
+          candidate.right.kind === "addition",
+      );
+      if (!row || row.type !== "split-line") {
+        throw new Error("Expected a split-line change row");
+      }
+      return {
+        added: row.right.spans.find((span) => span.text.includes("42")),
+        removed: row.left.spans.find((span) => span.text.includes("41")),
+      };
+    };
+
+    const firstSpans = changedSpans(firstRows);
+    const secondSpans = changedSpans(secondRows);
+
+    expect(firstSpans).toMatchObject({
+      added: { bgOverlay: "#abcdef01" },
+      removed: { bgOverlay: "#fedcba01" },
+    });
+    expect(secondSpans).toMatchObject({
+      added: { bgOverlay: "#abcdef02" },
+      removed: { bgOverlay: "#fedcba02" },
+    });
+
+    const overMovedRow = (span: (typeof firstSpans)["added"]) =>
+      resolveSpanBackgrounds(span?.bg, span?.bgOverlay, "#182d23", "#182d23").contrastBackground;
+    expect(overMovedRow(firstSpans.added)).not.toBe(overMovedRow(secondSpans.added));
+  });
+
   test("builds stacked rows with separate deletion and addition lines", () => {
     const file = createDiffFile();
     const theme = resolveTheme("github-light-default", null);
@@ -327,7 +384,11 @@ describe("Pierre diff rows", () => {
     };
     const theme = resolveTheme("github-dark-default", null);
     const rows = buildSplitRows(file, null, theme);
-    const plannedRows = buildReviewRenderPlan({ fileId: file.id, rows, showHunkHeaders: true });
+    const plannedRows = buildReviewRenderPlan({
+      fileId: file.id,
+      rows,
+      showHunkHeaders: true,
+    });
     const changedRow = plannedRows.find(
       (row) =>
         row.kind === "diff-row" &&
@@ -659,7 +720,11 @@ describe("Pierre diff rows", () => {
 
   test("maps Pierre TypeScript syntax hues onto theme syntax colors in dark and light", async () => {
     const metadata = parseDiffFromFile(
-      { name: "syntax.ts", contents: "const a = 1;\n", cacheKey: "syntax-before" },
+      {
+        name: "syntax.ts",
+        contents: "const a = 1;\n",
+        cacheKey: "syntax-before",
+      },
       {
         name: "syntax.ts",
         contents:
@@ -706,8 +771,16 @@ describe("Pierre diff rows", () => {
 
   test("maps Pierre plain-text defaults onto a custom syntax default", async () => {
     const metadata = parseDiffFromFile(
-      { name: "notes.txt", contents: "starting work\n", cacheKey: "plain-before" },
-      { name: "notes.txt", contents: "starting works\n", cacheKey: "plain-after" },
+      {
+        name: "notes.txt",
+        contents: "starting work\n",
+        cacheKey: "plain-before",
+      },
+      {
+        name: "notes.txt",
+        contents: "starting works\n",
+        cacheKey: "plain-after",
+      },
       { context: 3 },
       true,
     );
@@ -736,7 +809,11 @@ describe("Pierre diff rows", () => {
 
   test("uses Shiki's bundled Catppuccin theme for Catppuccin syntax", async () => {
     const metadata = parseDiffFromFile(
-      { name: "syntax.ts", contents: "const a = 1;\n", cacheKey: "catppuccin-before" },
+      {
+        name: "syntax.ts",
+        contents: "const a = 1;\n",
+        cacheKey: "catppuccin-before",
+      },
       {
         name: "syntax.ts",
         contents:

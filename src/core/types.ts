@@ -138,7 +138,9 @@ export interface CustomThemeConfig {
   movedAddedBg?: string;
   movedRemovedBg?: string;
   contextBg?: string;
+  /** Added-word background; accepts alpha-last #rrggbbaa input. */
   addedContentBg?: string;
+  /** Removed-word background; accepts alpha-last #rrggbbaa input. */
   removedContentBg?: string;
   contextContentBg?: string;
   addedSignColor?: string;

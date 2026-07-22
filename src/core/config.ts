@@ -20,6 +20,7 @@ import type {
 
 const BUILT_IN_THEME_IDS = BUNDLED_SHIKI_THEME_IDS;
 const HEX_COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
+const HEX_COLOR_WITH_ALPHA_PATTERN = /^#[0-9a-f]{8}$/i;
 const CUSTOM_THEME_ID_PATTERN = /^[a-z][a-z0-9-]*$/;
 const RESERVED_CUSTOM_THEME_IDS = new Set(["system", "auto", "custom"]);
 const CUSTOM_THEME_COLOR_KEYS = [
@@ -159,17 +160,33 @@ function normalizeThemePreference(value: unknown): ThemePreference | undefined {
   return pair;
 }
 
-/** Accept only #rrggbb theme colors and report the failing TOML key path. */
-function normalizeThemeColor(value: unknown, keyPath: string) {
+/** Accept editor-compatible RGB input while limiting partial alpha to named word roles. */
+function normalizeThemeColor(value: unknown, keyPath: string, allowPartialAlpha = false) {
   if (value === undefined) {
     return undefined;
   }
 
-  if (typeof value !== "string" || !HEX_COLOR_PATTERN.test(value)) {
+  if (typeof value !== "string") {
     throw new Error(`Expected ${keyPath} to be a hex color like #112233.`);
   }
 
-  return value.toLowerCase();
+  const normalized = value.toLowerCase();
+  if (HEX_COLOR_PATTERN.test(normalized)) {
+    return normalized;
+  }
+
+  if (HEX_COLOR_WITH_ALPHA_PATTERN.test(normalized)) {
+    if (normalized.endsWith("ff")) {
+      return normalized.slice(0, 7);
+    }
+    if (allowPartialAlpha) {
+      return normalized;
+    }
+  }
+
+  throw new Error(
+    `Expected ${keyPath} to be a hex color like #112233. Partial alpha is supported only for addedContentBg and removedContentBg using #RRGGBBAA.`,
+  );
 }
 
 /** Accept only built-in theme ids for config-defined custom themes. */
@@ -238,7 +255,11 @@ function readCustomThemeDefinition(
   }
 
   for (const key of CUSTOM_THEME_COLOR_KEYS) {
-    const value = normalizeThemeColor(customThemeSource[key], `${keyPath}.${key}`);
+    const value = normalizeThemeColor(
+      customThemeSource[key],
+      `${keyPath}.${key}`,
+      key === "addedContentBg" || key === "removedContentBg",
+    );
     if (value !== undefined) {
       customTheme[key] = value;
     }

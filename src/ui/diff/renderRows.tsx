@@ -1,6 +1,6 @@
 import { memo, type ReactNode } from "react";
 import type { DiffFile, UserNoteLineTarget } from "../../core/types";
-import { TRANSPARENT_BACKGROUND, type AppTheme, type ThemeRenderSurfaces } from "../themes";
+import type { AppTheme, ThemeRenderSurfaces } from "../themes";
 import {
   resolveSplitCellGeometry,
   resolveSplitPaneWidths,
@@ -27,7 +27,7 @@ import { wrapText } from "../lib/agentPopover";
 import { sanitizeTerminalLine, sanitizeTerminalSpans } from "../../lib/terminalText";
 import { measureTextWidth, padText as padTextByWidth, sliceTextByWidth } from "../lib/text";
 import type { CopySelectedRowRange } from "../components/panes/copySelection";
-import { resolveSpanColors } from "./spanColors";
+import { resolveSpanBackgrounds, resolveSpanColors } from "./spanColors";
 
 /** Clamp a label to one terminal row with an ellipsis. */
 export function fitText(text: string, width: number) {
@@ -50,7 +50,12 @@ export function fitText(text: string, width: number) {
 /** Append a styled span while preserving color-run coalescing. */
 function appendRenderSpan(target: RenderSpan[], span: RenderSpan) {
   const previous = target.at(-1);
-  if (previous && previous.fg === span.fg && previous.bg === span.bg) {
+  if (
+    previous &&
+    previous.fg === span.fg &&
+    previous.bg === span.bg &&
+    previous.bgOverlay === span.bgOverlay
+  ) {
     previous.text += span.text;
   } else {
     target.push(span);
@@ -140,11 +145,17 @@ function renderInlineSpans(
   const needsBlending = Boolean(selection);
 
   /** Resolve one code span against its emitted and retained opaque backgrounds. */
-  const finalColors = (foreground: string, spanBg: string | undefined, selected = false) => {
-    const emittedBaseBg = spanBg ?? fallbackBg;
-    const opaqueBaseBg = !spanBg || spanBg === TRANSPARENT_BACKGROUND ? opaqueFallbackBg : spanBg;
-    const finalBg = selected ? selectionHighlightBg(opaqueBaseBg, opaqueTheme) : emittedBaseBg;
-    return resolveSpanColors(foreground, finalBg, selected ? finalBg : opaqueBaseBg);
+  const finalColors = (
+    foreground: string,
+    spanBg: string | undefined,
+    spanOverlay: string | undefined,
+    selected = false,
+  ) => {
+    const base = resolveSpanBackgrounds(spanBg, spanOverlay, fallbackBg, opaqueFallbackBg);
+    const finalBg = selected
+      ? selectionHighlightBg(base.contrastBackground, opaqueTheme)
+      : base.emittedBackground;
+    return resolveSpanColors(foreground, finalBg, selected ? finalBg : base.contrastBackground);
   };
 
   // Build the final element list by splitting spans at selection boundaries so the highlight
@@ -161,7 +172,7 @@ function renderInlineSpans(
 
     if (!needsBlending || !selection || spanEnd <= selection.start || spanStart >= selection.end) {
       // Span is entirely outside the selection — render with original styling.
-      const colors = finalColors(span.fg ?? fallbackColor, span.bg);
+      const colors = finalColors(span.fg ?? fallbackColor, span.bg, span.bgOverlay);
       elements.push(
         <span
           key={`${keyPrefix}:${elementIndex++}`}
@@ -180,7 +191,7 @@ function renderInlineSpans(
 
     if (localSelStart >= localSelEnd) {
       // No overlap after clamping — render original.
-      const colors = finalColors(span.fg ?? fallbackColor, span.bg);
+      const colors = finalColors(span.fg ?? fallbackColor, span.bg, span.bgOverlay);
       elements.push(
         <span
           key={`${keyPrefix}:${elementIndex++}`}
@@ -199,7 +210,7 @@ function renderInlineSpans(
     const suffix = sliceTextByWidth(span.text, localSelEnd, spanWidth - localSelEnd).text;
 
     if (prefix) {
-      const colors = finalColors(span.fg ?? fallbackColor, span.bg);
+      const colors = finalColors(span.fg ?? fallbackColor, span.bg, span.bgOverlay);
       elements.push(
         <span
           key={`${keyPrefix}:${elementIndex++}`}
@@ -211,7 +222,7 @@ function renderInlineSpans(
       );
     }
     if (selected) {
-      const colors = finalColors(span.fg ?? fallbackColor, span.bg, true);
+      const colors = finalColors(span.fg ?? fallbackColor, span.bg, span.bgOverlay, true);
       elements.push(
         <span
           key={`${keyPrefix}:${elementIndex++}`}
@@ -223,7 +234,7 @@ function renderInlineSpans(
       );
     }
     if (suffix) {
-      const colors = finalColors(span.fg ?? fallbackColor, span.bg);
+      const colors = finalColors(span.fg ?? fallbackColor, span.bg, span.bgOverlay);
       elements.push(
         <span
           key={`${keyPrefix}:${elementIndex++}`}
@@ -253,7 +264,7 @@ function renderInlineSpans(
         const afterSel = paddingAmount - beforeSel - Math.max(0, inSel);
 
         if (beforeSel > 0) {
-          const colors = finalColors(fallbackColor, undefined);
+          const colors = finalColors(fallbackColor, undefined, undefined);
           elements.push(
             <span
               key={`${keyPrefix}:pad-before`}
@@ -265,7 +276,7 @@ function renderInlineSpans(
           );
         }
         if (inSel > 0) {
-          const colors = finalColors(fallbackColor, undefined, true);
+          const colors = finalColors(fallbackColor, undefined, undefined, true);
           elements.push(
             <span key={`${keyPrefix}:pad-sel`} fg={colors.foreground} bg={colors.emittedBackground}>
               {" ".repeat(inSel)}
@@ -273,7 +284,7 @@ function renderInlineSpans(
           );
         }
         if (afterSel > 0) {
-          const colors = finalColors(fallbackColor, undefined);
+          const colors = finalColors(fallbackColor, undefined, undefined);
           elements.push(
             <span
               key={`${keyPrefix}:pad-after`}
@@ -285,7 +296,7 @@ function renderInlineSpans(
           );
         }
       } else {
-        const colors = finalColors(fallbackColor, undefined);
+        const colors = finalColors(fallbackColor, undefined, undefined);
         elements.push(
           <span key={`${keyPrefix}:pad`} fg={colors.foreground} bg={colors.emittedBackground}>
             {" ".repeat(paddingAmount)}
@@ -295,7 +306,7 @@ function renderInlineSpans(
     }
   } else if (width - usedWidth > 0) {
     // No blending — always render a separate padding span.
-    const colors = finalColors(fallbackColor, undefined);
+    const colors = finalColors(fallbackColor, undefined, undefined);
     elements.push(
       <span key={`${keyPrefix}:pad`} fg={colors.foreground} bg={colors.emittedBackground}>
         {" ".repeat(width - usedWidth)}
@@ -387,7 +398,7 @@ function buildWrappedSplitCell(
   prefixWidth: number,
   theme: AppTheme,
 ) {
-  const palette = splitCellPalette(cell.kind, theme);
+  const palette = splitCellPalette(cell.kind, theme, cell.moveKind);
   const { gutterWidth, contentWidth } = resolveSplitCellGeometry(
     width,
     lineNumberDigits,
@@ -419,7 +430,7 @@ function buildWrappedStackCell(
   prefixWidth: number,
   theme: AppTheme,
 ) {
-  const palette = stackCellPalette(cell.kind, theme);
+  const palette = stackCellPalette(cell.kind, theme, cell.moveKind);
   const { gutterWidth, contentWidth } = resolveStackCellGeometry(
     width,
     lineNumberDigits,

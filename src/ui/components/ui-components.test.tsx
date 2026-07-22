@@ -272,7 +272,14 @@ function createExpandableContextDiffFile(
 
   return {
     after,
-    file: buildTestDiffFile({ after, before, context: 3, id, path, sourceFetcher }),
+    file: buildTestDiffFile({
+      after,
+      before,
+      context: 3,
+      id,
+      path,
+      sourceFetcher,
+    }),
   };
 }
 
@@ -407,7 +414,11 @@ async function captureFrame(node: ReactNode, width = 120, height = 24) {
 }
 
 function frameHasHighlightedMarker(
-  frame: { lines: Array<{ spans: Array<{ text: string; fg?: unknown; bg?: unknown }> }> },
+  frame: {
+    lines: Array<{
+      spans: Array<{ text: string; fg?: unknown; bg?: unknown }>;
+    }>;
+  },
   marker: string,
 ) {
   return frame.lines.some((line) => {
@@ -425,7 +436,11 @@ function frameHasHighlightedMarker(
 
 /** Measure the rendered background contrast between one word-diff span and its surrounding line. */
 function renderedWordDiffBackgroundDistance(
-  frame: { lines: Array<{ spans: Array<{ text: string; bg?: { buffer?: ArrayLike<number> } }> }> },
+  frame: {
+    lines: Array<{
+      spans: Array<{ text: string; bg?: { buffer?: ArrayLike<number> } }>;
+    }>;
+  },
   marker: string,
 ) {
   for (const line of frame.lines) {
@@ -823,6 +838,311 @@ describe("UI components", () => {
       expect(capturedTestColorToHex(rowSpan?.bg)?.toLowerCase()).toBe("#dce8de");
       expect(capturedTestColorToHex(wordSpan?.fg)?.toLowerCase()).toBe("#7e551c");
       expect(capturedTestColorToHex(wordSpan?.bg)?.toLowerCase()).toBe("#bfddd0");
+    } finally {
+      await act(async () => {
+        setup.renderer.destroy();
+      });
+    }
+  });
+
+  test("DiffRowView resolves word overlays over moved stack rows before and after wrapping", async () => {
+    const theme = resolveTheme("moon-alpha", null, {
+      "moon-alpha": {
+        base: "github-dark-default",
+        movedAddedBg: "#182d23",
+        movedRemovedBg: "#431720",
+        addedContentBg: "#2e9e4859",
+        removedContentBg: "#78081acc",
+      },
+    });
+    const cases = [
+      {
+        kind: "addition" as const,
+        sign: "+" as const,
+        text: "added-overlay-wraps",
+        bg: theme.addedContentBg,
+        bgOverlay: theme.addedContentOverlay,
+        expectedBackground: "#205430",
+      },
+      {
+        kind: "deletion" as const,
+        sign: "-" as const,
+        text: "removed-overlay-wraps",
+        bg: theme.removedContentBg,
+        bgOverlay: theme.removedContentOverlay,
+        expectedBackground: "#6d0b1b",
+      },
+    ];
+
+    for (const testCase of cases) {
+      for (const wrapLines of [false, true]) {
+        const setup = await testRender(
+          <DiffRowView
+            row={{
+              type: "stack-line",
+              key: `moon-alpha:line:moved:${testCase.kind}:${wrapLines}`,
+              fileId: "moon-alpha",
+              hunkIndex: 0,
+              cell: {
+                kind: testCase.kind,
+                moveKind: "moved",
+                sign: testCase.sign,
+                oldLineNumber: testCase.kind === "deletion" ? 1 : undefined,
+                newLineNumber: testCase.kind === "addition" ? 1 : undefined,
+                spans: [
+                  {
+                    text: testCase.text,
+                    bg: testCase.bg,
+                    bgOverlay: testCase.bgOverlay,
+                  },
+                ],
+              },
+            }}
+            width={wrapLines ? 10 : 28}
+            lineNumberDigits={1}
+            showLineNumbers={false}
+            showHunkHeaders={true}
+            wrapLines={wrapLines}
+            codeHorizontalOffset={0}
+            theme={theme}
+            selected={false}
+          />,
+          { width: 32, height: 4 },
+        );
+
+        try {
+          await act(async () => {
+            await setup.renderOnce();
+          });
+          const wordSpans = setup
+            .captureSpans()
+            .lines.flatMap((line) => line.spans)
+            .filter(
+              (span) =>
+                capturedTestColorToHex(span.bg)?.toLowerCase() === testCase.expectedBackground,
+            );
+
+          expect(wordSpans.map((span) => span.text).join("")).toBe(testCase.text);
+          expect(wordSpans.length).toBe(wrapLines ? 3 : 1);
+        } finally {
+          await act(async () => {
+            setup.renderer.destroy();
+          });
+        }
+      }
+    }
+  });
+
+  test("DiffRowView resolves added and removed overlays over moved split rows before and after wrapping", async () => {
+    const theme = resolveTheme("moon-alpha", null, {
+      "moon-alpha": {
+        base: "github-dark-default",
+        movedAddedBg: "#182d23",
+        movedRemovedBg: "#431720",
+        addedContentBg: "#2e9e4859",
+        removedContentBg: "#78081acc",
+      },
+    });
+    for (const wrapLines of [false, true]) {
+      const setup = await testRender(
+        <DiffRowView
+          row={{
+            type: "split-line",
+            key: `moon-alpha:line:moved-split:${wrapLines}`,
+            fileId: "moon-alpha",
+            hunkIndex: 0,
+            left: {
+              kind: "deletion",
+              moveKind: "moved",
+              sign: "-",
+              lineNumber: 1,
+              spans: [
+                {
+                  text: "removed-overlay-wraps",
+                  bg: theme.removedContentBg,
+                  bgOverlay: theme.removedContentOverlay,
+                },
+              ],
+            },
+            right: {
+              kind: "addition",
+              moveKind: "moved",
+              sign: "+",
+              lineNumber: 1,
+              spans: [
+                {
+                  text: "added-overlay-wraps",
+                  bg: theme.addedContentBg,
+                  bgOverlay: theme.addedContentOverlay,
+                },
+              ],
+            },
+          }}
+          width={wrapLines ? 28 : 60}
+          lineNumberDigits={1}
+          showLineNumbers={false}
+          showHunkHeaders={true}
+          wrapLines={wrapLines}
+          codeHorizontalOffset={0}
+          theme={theme}
+          selected={false}
+        />,
+        { width: 64, height: 6 },
+      );
+
+      try {
+        await act(async () => {
+          await setup.renderOnce();
+        });
+        const spans = setup.captureSpans().lines.flatMap((line) => line.spans);
+        const textForBackground = (background: string) =>
+          spans
+            .filter((span) => capturedTestColorToHex(span.bg)?.toLowerCase() === background)
+            .map((span) => span.text)
+            .join("");
+
+        expect(textForBackground("#6d0b1b")).toBe("removed-overlay-wraps");
+        expect(textForBackground("#205430")).toBe("added-overlay-wraps");
+      } finally {
+        await act(async () => {
+          setup.renderer.destroy();
+        });
+      }
+    }
+  });
+
+  test("DiffRowView preserves adjacent overlay identity through horizontal clipping", async () => {
+    const theme = resolveTheme("moon-alpha", null, {
+      "moon-alpha": {
+        base: "github-dark-default",
+        movedAddedBg: "#182d23",
+        addedContentBg: "#2e9e4859",
+      },
+    });
+    const setup = await testRender(
+      <DiffRowView
+        row={{
+          type: "stack-line",
+          key: "moon-alpha:line:clipped-overlays",
+          fileId: "moon-alpha",
+          hunkIndex: 0,
+          cell: {
+            kind: "addition",
+            moveKind: "moved",
+            sign: "+",
+            newLineNumber: 1,
+            spans: [
+              {
+                text: "first",
+                bg: theme.addedContentBg,
+                bgOverlay: theme.addedContentOverlay,
+              },
+              {
+                text: "second",
+                bg: theme.addedContentBg,
+                bgOverlay: "#ff000080",
+              },
+            ],
+          },
+        }}
+        width={12}
+        lineNumberDigits={1}
+        showLineNumbers={false}
+        showHunkHeaders={true}
+        wrapLines={false}
+        codeHorizontalOffset={3}
+        theme={theme}
+        selected={false}
+      />,
+      { width: 16, height: 2 },
+    );
+
+    try {
+      await act(async () => {
+        await setup.renderOnce();
+      });
+      const spans = setup.captureSpans().lines.flatMap((line) => line.spans);
+      const firstOverlay = spans.find(
+        (span) => capturedTestColorToHex(span.bg)?.toLowerCase() === "#205430",
+      );
+      const secondOverlay = spans.find(
+        (span) => capturedTestColorToHex(span.bg)?.toLowerCase() === "#8c1611",
+      );
+
+      expect(firstOverlay?.text).toBe("st");
+      expect(secondOverlay?.text).toBe("second");
+    } finally {
+      await act(async () => {
+        setup.renderer.destroy();
+      });
+    }
+  });
+
+  test("DiffRowView applies copy selection and contrast over a transparent-mode word overlay", async () => {
+    const opaqueTheme = resolveTheme("moon-alpha", null, {
+      "moon-alpha": {
+        base: "github-dark-default",
+        movedAddedBg: "#182d23",
+        addedContentBg: "#2e9e4859",
+        selectedHunk: "#8b5cf6",
+      },
+    });
+    const surfaces = themeRenderSurfaces(opaqueTheme, true);
+    const overlayBackground = "#205430";
+    const selectedBackground = selectionHighlightBg(overlayBackground, opaqueTheme);
+    const overlayForeground = ensureMinimumContrast("#ea9d34", overlayBackground);
+    const selectedForeground = ensureMinimumContrast("#ea9d34", selectedBackground);
+    const setup = await testRender(
+      <DiffRowView
+        row={{
+          type: "stack-line",
+          key: "moon-alpha:line:selected-overlay",
+          fileId: "moon-alpha",
+          hunkIndex: 0,
+          cell: {
+            kind: "addition",
+            moveKind: "moved",
+            sign: "+",
+            newLineNumber: 1,
+            spans: [
+              {
+                text: "overlay",
+                fg: "#ea9d34",
+                bg: opaqueTheme.addedContentBg,
+                bgOverlay: opaqueTheme.addedContentOverlay,
+              },
+            ],
+          },
+        }}
+        width={20}
+        lineNumberDigits={1}
+        showLineNumbers={false}
+        showHunkHeaders={true}
+        wrapLines={false}
+        codeHorizontalOffset={0}
+        theme={surfaces.emittedTheme}
+        themeSurfaces={surfaces}
+        selected={false}
+        copySelectedRowRange={{ startCol: 3, endCol: 5 }}
+      />,
+      { width: 24, height: 2 },
+    );
+
+    try {
+      await act(async () => {
+        await setup.renderOnce();
+      });
+      const spans = setup.captureSpans().lines.flatMap((line) => line.spans);
+      const selectedSpan = spans.find((span) => span.text === "ove");
+      const unselectedSpan = spans.find((span) => span.text === "rlay");
+
+      expect(capturedTestColorToHex(selectedSpan?.bg)?.toLowerCase()).toBe(selectedBackground);
+      expect(capturedTestColorToHex(selectedSpan?.fg)?.toLowerCase()).toBe(selectedForeground);
+      expect(capturedTestColorToHex(unselectedSpan?.bg)?.toLowerCase()).toBe(overlayBackground);
+      expect(capturedTestColorToHex(unselectedSpan?.fg)?.toLowerCase()).toBe(overlayForeground);
+      expect(selectedBackground).not.toBe(
+        selectionHighlightBg(opaqueTheme.movedAddedBg, opaqueTheme),
+      );
     } finally {
       await act(async () => {
         setup.renderer.destroy();
@@ -2039,7 +2359,11 @@ describe("UI components", () => {
       "This draft note is long enough to soft wrap inside the composer without manually inserted newlines.";
     const frame = await captureFrame(
       <AgentInlineNote
-        annotation={{ newRange: [611, 611], source: "user-draft", summary: body }}
+        annotation={{
+          newRange: [611, 611],
+          source: "user-draft",
+          summary: body,
+        }}
         draft={{
           body,
           focused: true,
@@ -2360,11 +2684,41 @@ describe("UI components", () => {
       <MenuDropdown
         activeMenuId="view"
         activeMenuEntries={[
-          { kind: "item", label: "Split view", hint: "1", checked: true, action: () => {} },
-          { kind: "item", label: "Stacked view", hint: "2", checked: false, action: () => {} },
-          { kind: "item", label: "Line numbers", hint: "l", checked: true, action: () => {} },
-          { kind: "item", label: "Line wrapping", hint: "w", checked: false, action: () => {} },
-          { kind: "item", label: "Hunk metadata", hint: "m", checked: true, action: () => {} },
+          {
+            kind: "item",
+            label: "Split view",
+            hint: "1",
+            checked: true,
+            action: () => {},
+          },
+          {
+            kind: "item",
+            label: "Stacked view",
+            hint: "2",
+            checked: false,
+            action: () => {},
+          },
+          {
+            kind: "item",
+            label: "Line numbers",
+            hint: "l",
+            checked: true,
+            action: () => {},
+          },
+          {
+            kind: "item",
+            label: "Line wrapping",
+            hint: "w",
+            checked: false,
+            action: () => {},
+          },
+          {
+            kind: "item",
+            label: "Hunk metadata",
+            hint: "m",
+            checked: true,
+            action: () => {},
+          },
         ]}
         activeMenuItemIndex={0}
         activeMenuSpec={{ id: "view", left: 2, width: 6, label: "View" }}
@@ -3148,7 +3502,15 @@ describe("UI components", () => {
       "export const answer = 41;\nexport const stable = true;\n",
       "export const answer = 42;\nexport const stable = true;\n",
     );
-    const theme = resolveTheme("github-dark-default", null);
+    const theme = resolveTheme("dawn-alpha", null, {
+      "dawn-alpha": {
+        base: "github-light-default",
+        addedBg: "#dce8de",
+        removedBg: "#efdddb",
+        addedContentBg: "#2e9e4859",
+        removedContentBg: "#78081acc",
+      },
+    });
     const setup = await testRender(
       <PierreDiffView
         file={file}
@@ -3164,6 +3526,7 @@ describe("UI components", () => {
     try {
       let removedBackgroundDistance: number | null = null;
       let addedBackgroundDistance: number | null = null;
+      let renderedSpans: ReturnType<typeof setup.captureSpans> | null = null;
 
       for (let iteration = 0; iteration < 200; iteration += 1) {
         await act(async () => {
@@ -3174,6 +3537,7 @@ describe("UI components", () => {
         });
 
         const frame = setup.captureSpans();
+        renderedSpans = frame;
         removedBackgroundDistance = renderedWordDiffBackgroundDistance(frame, "41");
         addedBackgroundDistance = renderedWordDiffBackgroundDistance(frame, "42");
 
@@ -3189,6 +3553,13 @@ describe("UI components", () => {
 
       expect(removedBackgroundDistance).toBeGreaterThanOrEqual(28);
       expect(addedBackgroundDistance).toBeGreaterThanOrEqual(28);
+      const spans = renderedSpans?.lines.flatMap((line) => line.spans) ?? [];
+      expect(
+        capturedTestColorToHex(spans.find((span) => span.text.includes("41"))?.bg)?.toLowerCase(),
+      ).toBe("#903341");
+      expect(
+        capturedTestColorToHex(spans.find((span) => span.text.includes("42"))?.bg)?.toLowerCase(),
+      ).toBe("#9fceaa");
     } finally {
       await act(async () => {
         setup.renderer.destroy();

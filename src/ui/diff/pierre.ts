@@ -67,6 +67,8 @@ export function themeRenderCacheKey(theme: AppTheme) {
     theme.removedBg,
     theme.addedContentBg,
     theme.removedContentBg,
+    theme.addedContentOverlay ?? "",
+    theme.removedContentOverlay ?? "",
     theme.addedSignColor,
     theme.removedSignColor,
     theme.selectedHunk,
@@ -111,6 +113,8 @@ export interface RenderSpan {
   text: string;
   fg?: string;
   bg?: string;
+  /** Optional alpha-last word overlay resolved against the row background during rendering. */
+  bgOverlay?: string;
 }
 
 export interface SplitLineCell {
@@ -260,13 +264,19 @@ const normalizedColorCache = new Map<string, Map<string, string>>();
 // into terminal spans. The same highlighted line objects are reused when files remount or when
 // we build both split and stack rows, so memoize flattened spans by line node + theme/background.
 const flattenedHighlightedLineCache = new WeakMap<HastNode, Map<string, RenderSpan[]>>();
-/** Resolve one word-diff background from the final component colors owned by theme resolution. */
-function wordDiffHighlightBg(kind: SplitLineCell["kind"], theme: AppTheme) {
+/** Resolve one word-diff style while keeping optional alpha separate from opaque backgrounds. */
+function wordDiffHighlightStyle(kind: SplitLineCell["kind"], theme: AppTheme) {
   return {
-    addition: theme.addedContentBg,
-    context: theme.contextContentBg,
-    deletion: theme.removedContentBg,
-    empty: theme.panelAlt,
+    addition: {
+      bg: theme.addedContentBg,
+      bgOverlay: theme.addedContentOverlay,
+    },
+    context: { bg: theme.contextContentBg },
+    deletion: {
+      bg: theme.removedContentBg,
+      bgOverlay: theme.removedContentOverlay,
+    },
+    empty: { bg: theme.panelAlt },
   }[kind];
 }
 
@@ -308,7 +318,12 @@ function mergeSpan(target: RenderSpan[], next: RenderSpan) {
   }
 
   const previous = target[target.length - 1];
-  if (previous && previous.fg === next.fg && previous.bg === next.bg) {
+  if (
+    previous &&
+    previous.fg === next.fg &&
+    previous.bg === next.bg &&
+    previous.bgOverlay === next.bgOverlay
+  ) {
     previous.text += next.text;
     return;
   }
@@ -317,12 +332,16 @@ function mergeSpan(target: RenderSpan[], next: RenderSpan) {
 }
 
 /** Flatten one highlighted HAST line into terminal-friendly styled text spans. */
-function flattenHighlightedLine(node: HastNode | undefined, theme: AppTheme, emphasisBg: string) {
+function flattenHighlightedLine(
+  node: HastNode | undefined,
+  theme: AppTheme,
+  emphasisStyle: Pick<RenderSpan, "bg" | "bgOverlay">,
+) {
   if (!node) {
     return [];
   }
 
-  const cacheKey = `${themeRenderCacheKey(theme)}:${emphasisBg}`;
+  const cacheKey = `${themeRenderCacheKey(theme)}:${emphasisStyle.bg ?? ""}:${emphasisStyle.bgOverlay ?? ""}`;
   const cachedByTheme = flattenedHighlightedLineCache.get(node);
   const cached = cachedByTheme?.get(cacheKey);
   if (cached) {
@@ -335,7 +354,10 @@ function flattenHighlightedLine(node: HastNode | undefined, theme: AppTheme, emp
   const spans: RenderSpan[] = [];
   const colorVariable = theme.appearance === "light" ? "--diffs-token-light" : "--diffs-token-dark";
 
-  const visit = (current: HastNode | undefined, inherited: Pick<RenderSpan, "fg" | "bg">) => {
+  const visit = (
+    current: HastNode | undefined,
+    inherited: Pick<RenderSpan, "fg" | "bg" | "bgOverlay">,
+  ) => {
     if (!current) {
       return;
     }
@@ -348,20 +370,23 @@ function flattenHighlightedLine(node: HastNode | undefined, theme: AppTheme, emp
         text: tabify(cleanLastNewline(current.value)),
         fg: inherited.fg,
         bg: inherited.bg,
+        bgOverlay: inherited.bgOverlay,
       });
       return;
     }
 
     const properties = current.properties ?? {};
     const styles = parseStyleValue(properties.style);
-    const nextStyle: Pick<RenderSpan, "fg" | "bg"> = {
+    const isWordDiff = Object.hasOwn(properties, "data-diff-span");
+    const nextStyle: Pick<RenderSpan, "fg" | "bg" | "bgOverlay"> = {
       // Newer Pierre output can emit direct `color:#...` styles instead of theme CSS variables.
       fg: normalizeHighlightedColor(
         styles.get(colorVariable) ?? styles.get("color") ?? inherited.fg,
         theme,
       ),
       // Pierre marks inline word-diff emphasis spans with a data attribute rather than a separate row kind.
-      bg: Object.hasOwn(properties, "data-diff-span") ? emphasisBg : inherited.bg,
+      bg: isWordDiff ? emphasisStyle.bg : inherited.bg,
+      bgOverlay: isWordDiff ? emphasisStyle.bgOverlay : inherited.bgOverlay,
     };
 
     for (const child of current.children ?? []) {
@@ -410,7 +435,7 @@ function makeSplitCell(
     const fallbackText = cleanDiffLine(rawLine);
     spans = fallbackText.length > 0 ? [{ text: fallbackText }] : [];
   } else {
-    spans = flattenHighlightedLine(highlightedLine, theme, wordDiffHighlightBg(kind, theme));
+    spans = flattenHighlightedLine(highlightedLine, theme, wordDiffHighlightStyle(kind, theme));
 
     if (spans.length === 0) {
       const fallbackText = cleanDiffLine(rawLine);
@@ -444,7 +469,7 @@ function makeStackCell(
     const fallbackText = cleanDiffLine(rawLine);
     spans = fallbackText.length > 0 ? [{ text: fallbackText }] : [];
   } else {
-    spans = flattenHighlightedLine(highlightedLine, theme, wordDiffHighlightBg(kind, theme));
+    spans = flattenHighlightedLine(highlightedLine, theme, wordDiffHighlightStyle(kind, theme));
 
     if (spans.length === 0) {
       const fallbackText = cleanDiffLine(rawLine);
@@ -701,7 +726,9 @@ export function spansForHighlightedSourceLine(
     return fallbackText.length > 0 ? [{ text: fallbackText }] : [];
   }
 
-  const spans = flattenHighlightedLine(highlightedLine, theme, theme.contextContentBg);
+  const spans = flattenHighlightedLine(highlightedLine, theme, {
+    bg: theme.contextContentBg,
+  });
   if (spans.length > 0) {
     return spans;
   }

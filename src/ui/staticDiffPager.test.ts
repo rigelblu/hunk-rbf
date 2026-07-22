@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { renderStaticDiffPager } from "./staticDiffPager";
+import type { DiffRow } from "./diff/pierre";
+import { resolveTheme, themeRenderSurfaces } from "./themes";
+import {
+  renderStaticDiffPager,
+  renderStaticSplitRow,
+  renderStaticStackRow,
+} from "./staticDiffPager";
 
 function stripAnsi(text: string) {
   return text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
@@ -52,7 +58,10 @@ describe("static diff pager", () => {
       "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-const value = 1;\n+const value = 2;\n";
 
     const plain = stripAnsi(
-      await renderStaticDiffPager(patchText, { lineNumbers: false, hunkHeaders: false }),
+      await renderStaticDiffPager(patchText, {
+        lineNumbers: false,
+        hunkHeaders: false,
+      }),
     );
 
     expect(plain).not.toContain("@@ -1 +1 @@");
@@ -102,7 +111,11 @@ describe("static diff pager", () => {
     const output = await renderStaticDiffPager(
       patchText,
       { theme: "custom" },
-      { customThemes: { custom: { base: "github-dark-default", text: "#123456" } } },
+      {
+        customThemes: {
+          custom: { base: "github-dark-default", text: "#123456" },
+        },
+      },
     );
 
     expect(stripAnsi(output)).toContain("a.ts modified +1 -1");
@@ -156,11 +169,122 @@ describe("static diff pager", () => {
     expect(output).toContain("\x1b[48;2;34;17;52mwork");
   });
 
+  test("composites custom word overlays before emitting opaque ANSI backgrounds", async () => {
+    const patchText =
+      "diff --git a/notes.txt b/notes.txt\n--- a/notes.txt\n+++ b/notes.txt\n@@ -1 +1 @@\n-starting work\n+starting works\n";
+    for (const mode of ["stack", "split"] as const) {
+      for (const transparentBackground of [false, true]) {
+        const output = await renderStaticDiffPager(
+          patchText,
+          { theme: "dawn-alpha", mode, transparentBackground },
+          {
+            customThemes: {
+              "dawn-alpha": {
+                base: "rose-pine-dawn",
+                addedBg: "#dce8de",
+                removedBg: "#efdddb",
+                addedContentBg: "#2e9e4859",
+                removedContentBg: "#78081acc",
+              },
+            },
+            terminalColumns: 160,
+          },
+        );
+
+        expect(output).toContain("\x1b[48;2;159;206;170mworks");
+        expect(output).toContain("\x1b[48;2;144;51;65mwork");
+        expect(output).not.toMatch(/\x1b\[48;2;[^m]*;[^m]*;[^m]*;[^m]*m/);
+      }
+    }
+  });
+
+  test("composites word overlays against moved rows in both layouts and transparency modes", () => {
+    const theme = resolveTheme("moon-alpha", null, {
+      "moon-alpha": {
+        base: "github-dark-default",
+        addedBg: "#dce8de",
+        removedBg: "#efdddb",
+        movedAddedBg: "#182d23",
+        movedRemovedBg: "#431720",
+        addedContentBg: "#2e9e4859",
+        removedContentBg: "#78081acc",
+      },
+    });
+    const movedAddition = {
+      kind: "addition" as const,
+      moveKind: "moved" as const,
+      sign: "+",
+      newLineNumber: 1,
+      spans: [
+        {
+          text: "added-moved",
+          bg: theme.addedContentBg,
+          bgOverlay: theme.addedContentOverlay,
+        },
+      ],
+    };
+    const movedDeletion = {
+      kind: "deletion" as const,
+      moveKind: "moved" as const,
+      sign: "-",
+      oldLineNumber: 1,
+      spans: [
+        {
+          text: "removed-moved",
+          bg: theme.removedContentBg,
+          bgOverlay: theme.removedContentOverlay,
+        },
+      ],
+    };
+    const stackRows: DiffRow[] = [
+      {
+        type: "stack-line",
+        key: "moon-alpha:moved:deletion",
+        fileId: "moon-alpha",
+        hunkIndex: 0,
+        cell: movedDeletion,
+      },
+      {
+        type: "stack-line",
+        key: "moon-alpha:moved:addition",
+        fileId: "moon-alpha",
+        hunkIndex: 0,
+        cell: movedAddition,
+      },
+    ];
+    const splitRow: DiffRow = {
+      type: "split-line",
+      key: "moon-alpha:moved:split",
+      fileId: "moon-alpha",
+      hunkIndex: 0,
+      left: { ...movedDeletion, lineNumber: 1 },
+      right: { ...movedAddition, lineNumber: 1 },
+    };
+
+    for (const transparentBackground of [false, true]) {
+      const surfaces = themeRenderSurfaces(theme, transparentBackground);
+      const stackOutput = stackRows
+        .map((row) => renderStaticStackRow(row, surfaces, 1, { lineNumbers: false }))
+        .join("\n");
+      const splitOutput = renderStaticSplitRow(splitRow, surfaces, 1, { lineNumbers: false }, 80);
+
+      for (const output of [stackOutput, splitOutput]) {
+        expect(output).toContain("\x1b[48;2;32;84;48madded-moved");
+        expect(output).toContain("\x1b[48;2;109;11;27mremoved-moved");
+        expect(output).not.toContain("\x1b[48;2;159;206;170madded-moved");
+        expect(output).not.toContain("\x1b[48;2;144;51;65mremoved-moved");
+        expect(output).not.toMatch(/\x1b\[48;2;[^m]*;[^m]*;[^m]*;[^m]*m/);
+      }
+    }
+  });
+
   test("keeps only added/removed backgrounds when transparent background is requested", async () => {
     const patchText =
       "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1,3 +1,3 @@\n const a = 1;\n-const value = 1;\n+const value = 2;\n const z = 3;\n";
 
-    const output = await renderStaticDiffPager(patchText, { transparentBackground: true });
+    const output = await renderStaticDiffPager(patchText, {
+      transparentBackground: true,
+    });
     const lines = output.split("\n");
     const lineWith = (text: string) => lines.find((line) => stripAnsi(line).includes(text)) ?? "";
 
