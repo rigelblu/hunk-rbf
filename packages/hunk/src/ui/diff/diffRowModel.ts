@@ -15,6 +15,8 @@ export interface RenderSpan {
   bg?: string;
   /** Resolve paint-only foreground effects after cursor and copy-selection backgrounds apply. */
   transformFg?: (sourceFg: string | undefined, renderedBg: string) => string;
+  /** Alpha-last word overlay resolved against the final row surface at paint time. */
+  bgOverlay?: string;
 }
 
 export interface SplitLineCell {

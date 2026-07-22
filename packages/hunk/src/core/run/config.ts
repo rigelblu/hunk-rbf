@@ -588,13 +588,15 @@ export const CONFIG_REFERENCE_EXTENSIONS = {
  * `registerTheme` calls cannot drift apart; only the error wording — which
  * names the TOML key the user actually wrote — belongs to this layer.
  */
-function normalizeThemeColor(value: unknown, keyPath: string) {
+function normalizeThemeColor(value: unknown, keyPath: string, allowPartialAlpha = false) {
   if (value === undefined) {
     return undefined;
   }
 
-  if (describeThemeColorIssue(value)) {
-    throw new Error(`Expected ${keyPath} to be a hex color like #112233.`);
+  if (describeThemeColorIssue(value, allowPartialAlpha)) {
+    throw new Error(
+      `Expected ${keyPath} to be a hex color like #112233. Partial alpha is supported only for addedContentBg and removedContentBg using #RRGGBBAA.`,
+    );
   }
 
   return normalizeThemeColorValue(value as string);
@@ -690,7 +692,11 @@ function readCustomThemeTable(
   }
 
   for (const key of CUSTOM_THEME_COLOR_KEYS) {
-    const value = normalizeThemeColor(source[key], `${keyPath}.${key}`);
+    const value = normalizeThemeColor(
+      source[key],
+      `${keyPath}.${key}`,
+      key === "addedContentBg" || key === "removedContentBg",
+    );
     if (value !== undefined) {
       theme[key] = value;
     }

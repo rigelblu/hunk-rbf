@@ -72,6 +72,9 @@ export function monochromeLogTheme(theme: AppTheme, terminalMode: ThemeMode): Ap
     contextBg: background,
     addedContentBg: background,
     removedContentBg: background,
+    // The spread keeps a custom theme's alpha word overlays, which would repaint words in color.
+    addedContentOverlay: undefined,
+    removedContentOverlay: undefined,
     contextContentBg: background,
     addedSignColor: foreground,
     removedSignColor: foreground,

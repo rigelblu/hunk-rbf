@@ -17,6 +17,7 @@ function appendRenderSpan(target: RenderSpan[], span: RenderSpan) {
     previous &&
     previous.fg === span.fg &&
     previous.bg === span.bg &&
+    previous.bgOverlay === span.bgOverlay &&
     previous.transformFg === span.transformFg
   ) {
     previous.text += span.text;

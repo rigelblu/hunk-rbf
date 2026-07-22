@@ -4,7 +4,7 @@
  */
 import { Fragment, isValidElement, memo, type ReactNode } from "react";
 import { parseColor, StyledText, type TextChunk } from "@opentui/core";
-import { TRANSPARENT_BACKGROUND, type AppTheme, type ThemeRenderSurfaces } from "../themes";
+import type { AppTheme, ThemeRenderSurfaces } from "../themes";
 import type { CodeCellLayoutPlan, CodeRowLayoutPlan } from "./codeRowLayout";
 import type { DiffRow, RenderSpan, SplitLineCell, UnifiedLineCell } from "./diffRows";
 import {
@@ -19,7 +19,7 @@ import {
   unifiedCellPalette,
   unifiedGutterText,
 } from "./rowStyle";
-import { resolveSpanColors } from "./spanColors";
+import { resolveSpanBackgrounds, resolveSpanColors } from "./spanColors";
 import { sanitizeTerminalSpans } from "../../lib/terminalText";
 import { measureTextWidth, sliceTextByWidth } from "../lib/text";
 import { sliceSpansWindow, wrapSpans } from "./styledSpanLayout";
@@ -45,7 +45,7 @@ interface CellPrefix {
 }
 
 /** The span fields that decide painted colors. */
-type SpanPaint = Pick<RenderSpan, "fg" | "bg" | "transformFg">;
+type SpanPaint = Pick<RenderSpan, "fg" | "bg" | "bgOverlay" | "transformFg">;
 
 /** Padding carries no colors of its own, so it paints with the cell fallbacks. */
 const PADDING_PAINT: SpanPaint = {};
@@ -69,8 +69,9 @@ function styledTextColor(value: string | undefined) {
 /**
  * Resolve one span's final colors against the background the terminal will draw.
  *
- * Highlights blend over the opaque surface, so a transparent row never blends through black, and
- * syntax text is measured against that opaque background before paint-only effects apply.
+ * A word overlay composites over the opaque row first. Highlights then blend over that opaque
+ * surface, so a transparent row never blends through black, and syntax text is measured against
+ * that opaque background before paint-only effects apply.
  */
 function finalSpanColors(
   span: SpanPaint,
@@ -79,12 +80,14 @@ function finalSpanColors(
   opaqueFallbackBg: string,
   highlightBg?: (baseBg: string) => string,
 ) {
-  const opaqueBaseBg = !span.bg || span.bg === TRANSPARENT_BACKGROUND ? opaqueFallbackBg : span.bg;
-  const emittedBackground = highlightBg ? highlightBg(opaqueBaseBg) : (span.bg ?? fallbackBg);
+  const backgrounds = resolveSpanBackgrounds(span.bg, span.bgOverlay, fallbackBg, opaqueFallbackBg);
+  const emittedBackground = highlightBg
+    ? highlightBg(backgrounds.contrastBackground)
+    : backgrounds.emittedBackground;
   const colors = resolveSpanColors(
     span.fg ?? fallbackColor,
     emittedBackground,
-    highlightBg ? emittedBackground : opaqueBaseBg,
+    highlightBg ? emittedBackground : backgrounds.contrastBackground,
   );
   // Clamp before dimming, so an extension's dim mark may fall below 4.5:1.
   return span.transformFg

@@ -5,7 +5,13 @@ interface RgbColor {
   b: number;
 }
 
+interface RgbaColor extends RgbColor {
+  a: number;
+}
+
 const HEX_COLOR_PATTERN = /^#?[0-9a-f]{6}$/i;
+const STRICT_HEX_COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
+const HEX_COLOR_WITH_ALPHA_PATTERN = /^#[0-9a-f]{8}$/i;
 const MAX_MINIMUM_CONTRAST_CACHE_ENTRIES = 2_048;
 const minimumContrastCache = new Map<string, string | null>();
 
@@ -30,6 +36,41 @@ function hexToRgb(hex: string): RgbColor {
     g: (value >> 8) & 0xff,
     b: value & 0xff,
   };
+}
+
+/** Parse one alpha-last #rrggbbaa color without silently coercing invalid input. */
+function hexToRgba(hex: string): RgbaColor | undefined {
+  if (!HEX_COLOR_WITH_ALPHA_PATTERN.test(hex)) {
+    return undefined;
+  }
+
+  const normalized = hex.replace(/^#/, "");
+  return {
+    r: Number.parseInt(normalized.slice(0, 2), 16),
+    g: Number.parseInt(normalized.slice(2, 4), 16),
+    b: Number.parseInt(normalized.slice(4, 6), 16),
+    a: Number.parseInt(normalized.slice(6, 8), 16),
+  };
+}
+
+/** Composite one alpha-last overlay over an opaque background using sRGB channel math. */
+export function compositeHexOverlay(overlay: string, background: string) {
+  const foreground = hexToRgba(overlay);
+  if (!foreground || !STRICT_HEX_COLOR_PATTERN.test(background)) {
+    return undefined;
+  }
+
+  const backdrop = hexToRgb(background);
+  const alpha = foreground.a / 255;
+  const composite = (front: number, back: number) => Math.round(front * alpha + back * (1 - alpha));
+
+  return `#${(
+    (composite(foreground.r, backdrop.r) << 16) |
+    (composite(foreground.g, backdrop.g) << 8) |
+    composite(foreground.b, backdrop.b)
+  )
+    .toString(16)
+    .padStart(6, "0")}`;
 }
 
 /** Blend one foreground color toward a background color at a fixed ratio. */

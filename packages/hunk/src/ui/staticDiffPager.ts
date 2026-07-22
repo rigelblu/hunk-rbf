@@ -50,11 +50,10 @@ import {
 import {
   resolveTheme,
   themeRenderSurfaces,
-  TRANSPARENT_BACKGROUND,
   type AppTheme,
   type ThemeRenderSurfaces,
 } from "./themes";
-import { resolveSpanColors } from "./diff/spanColors";
+import { resolveSpanBackgrounds, resolveSpanColors } from "./diff/spanColors";
 
 const DEFAULT_STATIC_WIDTH = 120;
 const MIN_STATIC_WIDTH = 20;
@@ -97,9 +96,12 @@ function staticSpanColors(
   rowBg: string,
   opaqueRowBg: string,
 ) {
-  const emittedBackground = span.bg ?? rowBg;
-  const contrastBackground = !span.bg || span.bg === TRANSPARENT_BACKGROUND ? opaqueRowBg : span.bg;
-  return resolveSpanColors(span.fg ?? fallbackForeground, emittedBackground, contrastBackground);
+  const backgrounds = resolveSpanBackgrounds(span.bg, span.bgOverlay, rowBg, opaqueRowBg);
+  return resolveSpanColors(
+    span.fg ?? fallbackForeground,
+    backgrounds.emittedBackground,
+    backgrounds.contrastBackground,
+  );
 }
 
 /** Serialize highlighted spans against both emitted and opaque row backgrounds. */
@@ -185,7 +187,7 @@ function staticSplitGutterText(
 }
 
 /** Render one non-interactive unified diff row as ANSI text. */
-function renderStaticUnifiedRow(
+export function renderStaticUnifiedRow(
   row: DiffRow,
   surfaces: ThemeRenderSurfaces,
   lineNumberWidth: number,
@@ -258,7 +260,7 @@ function renderStaticSplitCell(
 }
 
 /** Render one non-interactive split diff row as ANSI text. */
-function renderStaticSplitRow(
+export function renderStaticSplitRow(
   row: DiffRow,
   surfaces: ThemeRenderSurfaces,
   lineNumberWidth: number,

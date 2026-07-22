@@ -92,6 +92,7 @@ export const CUSTOM_THEME_COLOR_KEYS = [
 
 /** The only color literal Hunk's renderers — and OpenTUI's FFI beneath them — accept. */
 const HEX_COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
+const HEX_COLOR_WITH_ALPHA_PATTERN = /^#[0-9a-f]{8}$/i;
 
 /**
  * Explain why one value cannot be used as a theme color, or return undefined when it can.
@@ -100,15 +101,29 @@ const HEX_COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
  * the renderer without matching it crashes OpenTUI's FFI at parse time, which
  * is why "the extension registered it" is not a reason to skip the check.
  */
-export function describeThemeColorIssue(value: unknown): string | undefined {
-  return typeof value === "string" && HEX_COLOR_PATTERN.test(value)
-    ? undefined
-    : "must be a hex color like #112233";
+export function describeThemeColorIssue(
+  value: unknown,
+  allowPartialAlpha = false,
+): string | undefined {
+  if (typeof value !== "string") {
+    return "must be a hex color like #112233";
+  }
+  if (
+    HEX_COLOR_PATTERN.test(value) ||
+    (HEX_COLOR_WITH_ALPHA_PATTERN.test(value) && value.toLowerCase().endsWith("ff"))
+  ) {
+    return undefined;
+  }
+  if (allowPartialAlpha && HEX_COLOR_WITH_ALPHA_PATTERN.test(value)) {
+    return undefined;
+  }
+  return "must be a hex color like #112233; partial alpha is supported only for addedContentBg and removedContentBg using #RRGGBBAA";
 }
 
 /** Canonicalize one already-validated theme color. */
 export function normalizeThemeColorValue(value: string) {
-  return value.toLowerCase();
+  const normalized = value.toLowerCase();
+  return normalized.endsWith("ff") && normalized.length === 9 ? normalized.slice(0, 7) : normalized;
 }
 
 /**
@@ -173,7 +188,10 @@ export function describeCustomThemeFieldIssue(theme: unknown): CustomThemeFieldI
       continue;
     }
 
-    const issue = describeThemeColorIssue(value);
+    const issue = describeThemeColorIssue(
+      value,
+      key === "addedContentBg" || key === "removedContentBg",
+    );
     if (issue) {
       return { key, reason: issue };
     }

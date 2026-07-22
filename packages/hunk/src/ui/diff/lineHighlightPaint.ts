@@ -309,12 +309,23 @@ function appendSpan(target: RenderSpan[], span: RenderSpan) {
     previous &&
     previous.fg === span.fg &&
     previous.bg === span.bg &&
+    previous.bgOverlay === span.bgOverlay &&
     previous.transformFg === span.transformFg
   ) {
     previous.text += span.text;
   } else {
     target.push(span);
   }
+}
+
+/** Drop a changed word's alpha overlay, reusing the span when it carries none. */
+function withoutBgOverlay(span: RenderSpan): RenderSpan {
+  if (span.bgOverlay === undefined) {
+    return span;
+  }
+  const replaced = { ...span };
+  delete replaced.bgOverlay;
+  return replaced;
 }
 
 /** One line's cut columns plus the tone winning each gap between them. */
@@ -442,9 +453,11 @@ export function applyLineHighlightsToSpans(
       appendSpan(result, { ...span, text });
       return;
     }
+    // A mark that paints its own background also replaces a changed word's alpha overlay.
+    const base = style.bg === undefined ? span : withoutBgOverlay(span);
     if (style.transformFg) {
       appendSpan(result, {
-        ...span,
+        ...base,
         text,
         bg: style.bg ?? span.bg,
         transformFg: style.transformFg,
@@ -454,8 +467,8 @@ export function applyLineHighlightsToSpans(
     appendSpan(
       result,
       style.fg === undefined
-        ? { ...span, text, bg: style.bg ?? span.bg }
-        : { ...span, text, bg: style.bg, fg: style.fg },
+        ? { ...base, text, bg: style.bg ?? span.bg }
+        : { ...withoutBgOverlay(span), text, bg: style.bg, fg: style.fg },
     );
   };
 
