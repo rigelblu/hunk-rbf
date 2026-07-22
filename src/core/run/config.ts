@@ -644,9 +644,21 @@ function readCustomThemes(source: Record<string, unknown>): CustomThemeLayer {
     usesLegacySyntax ||= read.usesLegacySyntax;
   }
 
-  const namedThemeSource = source.themes;
+  const legacyNamedThemeSource = source.custom_themes;
+  if (legacyNamedThemeSource !== undefined && !isRecord(legacyNamedThemeSource)) {
+    throw new Error("Expected custom_themes to contain named TOML tables.");
+  }
+
+  const namedThemeSource = source.themes ?? legacyNamedThemeSource;
   if (namedThemeSource !== undefined && !isRecord(namedThemeSource)) {
     throw new Error("Expected themes to contain named TOML tables.");
+  }
+
+  if (isRecord(legacyNamedThemeSource)) {
+    notices.push({
+      key: "deprecated:custom-themes-table",
+      message: "Deprecated [custom_themes.<id>] loaded • migrate to [themes.<id>]",
+    });
   }
 
   if (isRecord(namedThemeSource)) {
@@ -667,7 +679,8 @@ function readCustomThemes(source: Record<string, unknown>): CustomThemeLayer {
         continue;
       }
 
-      const read = readCustomThemeTable(table, id, `themes.${id}`);
+      const tablePath = source.themes === namedThemeSource ? `themes.${id}` : `custom_themes.${id}`;
+      const read = readCustomThemeTable(table, id, tablePath);
       themes.push(read.theme);
       usesLegacySyntax ||= read.usesLegacySyntax;
     }

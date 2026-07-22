@@ -6,10 +6,18 @@ import {
   type JobControlInterruptSupport,
   type JobControlSuspendSupport,
 } from "../core/process/jobControl";
+import {
+  installTerminalFocusReporting,
+  type TerminalFocusReportingSupport,
+} from "../core/process/focusReporting";
 import { shutdownSession } from "../core/process/shutdown";
 import { shouldUseMouseForApp, type ControllingTerminal } from "../core/process/terminal";
 import type { AppBootstrap } from "../core/bootstrap";
 import { resolveStartupUpdateNotice } from "../core/process/updateNotice";
+import {
+  resolveSystemAppearanceMode,
+  subscribeToSystemAppearanceMode,
+} from "../core/theme/systemAppearance";
 import { ReviewProducer } from "../app/review/producer";
 import {
   createInitialSessionSnapshot,
@@ -73,6 +81,11 @@ export async function runInteractiveApp({
   let shuttingDown = false;
   let jobControlSuspendSupport: JobControlSuspendSupport = { dispose: () => undefined };
   let jobControlInterruptSupport: JobControlInterruptSupport = { dispose: () => undefined };
+  let terminalFocusReportingSupport: TerminalFocusReportingSupport = {
+    disable: () => undefined,
+    dispose: () => undefined,
+    enable: () => undefined,
+  };
 
   /** Ask AppHost to retire extension authority before tearing down the terminal. */
   function requestQuit() {
@@ -91,6 +104,7 @@ export async function runInteractiveApp({
     }
     jobControlInterruptSupport.dispose();
     jobControlSuspendSupport.dispose();
+    terminalFocusReportingSupport.dispose();
     hostClient.stop();
     shutdownSession({ root, renderer: appRenderer });
   }
@@ -98,6 +112,7 @@ export async function runInteractiveApp({
   for (const signal of shutdownSignals) {
     process.once(signal, requestQuit);
   }
+  terminalFocusReportingSupport = installTerminalFocusReporting(appRenderer, process.stdout);
   jobControlInterruptSupport = installJobControlInterruptSupport(appRenderer, requestQuit);
   jobControlSuspendSupport = installJobControlSuspendSupport(appRenderer);
 
@@ -110,6 +125,8 @@ export async function runInteractiveApp({
       onQuit={shutdown}
       reviewProducer={reviewProducer}
       startupNoticeResolver={resolveStartupUpdateNotice}
+      systemAppearanceResolver={resolveSystemAppearanceMode}
+      systemAppearanceSubscriber={subscribeToSystemAppearanceMode}
     />,
   );
 }

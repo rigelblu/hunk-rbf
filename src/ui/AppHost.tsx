@@ -1,3 +1,5 @@
+import { CliRenderEvents, type ThemeMode } from "@opentui/core";
+import { useRenderer } from "@opentui/react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { resolveConfiguredExtensions } from "../app/extensionBootstrap";
 import { ReviewProducer } from "../app/review/producer";
@@ -16,6 +18,10 @@ import {
 } from "../extensions/apply";
 import { emitExtensionEvent, retireExtensionLoadResult } from "../extensions/events";
 import { extendVcsCatalog } from "../core/vcs";
+import type {
+  resolveSystemAppearanceMode,
+  subscribeToSystemAppearanceMode,
+} from "../core/theme/systemAppearance";
 import {
   createInitialSessionSnapshot,
   updateSessionRegistration,
@@ -45,6 +51,11 @@ function reloadRefusedDuringShutdown() {
   return new Error("The review session is shutting down and cannot reload.");
 }
 
+const NO_SYSTEM_APPEARANCE: typeof resolveSystemAppearanceMode = () => null;
+const NO_SYSTEM_APPEARANCE_SUBSCRIPTION: typeof subscribeToSystemAppearanceMode = () => ({
+  dispose: () => undefined,
+});
+
 /** Keep one live Hunk app mounted while allowing daemon-driven session reloads. */
 export function AppHost({
   bootstrap,
@@ -53,6 +64,8 @@ export function AppHost({
   onQuit = () => process.exit(0),
   reviewProducer,
   startupNoticeResolver,
+  systemAppearanceResolver,
+  systemAppearanceSubscriber,
   watchRuntime,
   workspaceFileWriter,
 }: {
@@ -68,9 +81,14 @@ export function AppHost({
    */
   reviewProducer?: ReviewProducer;
   startupNoticeResolver?: () => Promise<StartupNotice | null>;
+  systemAppearanceResolver?: typeof resolveSystemAppearanceMode;
+  systemAppearanceSubscriber?: typeof subscribeToSystemAppearanceMode;
   watchRuntime?: WatchedInputRuntime;
   workspaceFileWriter?: WorkspaceFileWriter;
 }) {
+  const renderer = useRenderer();
+  const resolveSystemAppearance = systemAppearanceResolver ?? NO_SYSTEM_APPEARANCE;
+  const subscribeSystemAppearance = systemAppearanceSubscriber ?? NO_SYSTEM_APPEARANCE_SUBSCRIPTION;
   const initialBootstrap = bootstrap.reloadContext.vcsCatalog
     ? bootstrap
     : {
@@ -108,6 +126,18 @@ export function AppHost({
   // than becoming an explicit choice.
   const launchExtensionsEnabled = initialBootstrap.input.options.extensions;
   const launchExtensionPaths = initialBootstrap.input.options.extensionPaths;
+  const [initialAppearance] = useState(() => {
+    const systemMode = resolveSystemAppearance();
+    return {
+      mode: systemMode ?? renderer.themeMode ?? initialBootstrap.initialThemeMode,
+      systemResolved: systemMode !== null,
+    };
+  });
+  const [terminalThemeMode, setTerminalThemeMode] = useState<ThemeMode | undefined>(
+    initialAppearance.mode,
+  );
+  const terminalThemeModeRef = useRef(initialAppearance.mode);
+  const systemAppearanceAuthoritativeRef = useRef(initialAppearance.systemResolved);
   const [sessionFileBounds] = useState(() =>
     createSessionReloadBounds(initialBootstrap, { cwd: initialBootstrap.reloadContext.cwd }),
   );
@@ -138,6 +168,51 @@ export function AppHost({
     notices: activeBootstrap.startupNotices,
     resolver: startupNoticeResolver,
   });
+
+  useEffect(() => {
+    /** Preserve one latest valid mode across App remounts and queued reloads. */
+    const applyThemeMode = (mode: ThemeMode) => {
+      if (terminalThemeModeRef.current === mode) return;
+      terminalThemeModeRef.current = mode;
+      setTerminalThemeMode(mode);
+    };
+
+    /** Use terminal notifications only until macOS has supplied an authoritative appearance. */
+    const handleThemeMode = (mode: ThemeMode) => {
+      if (!systemAppearanceAuthoritativeRef.current) applyThemeMode(mode);
+    };
+
+    /** Reassert macOS appearance when the user returns to the terminal. */
+    const handleFocus = () => {
+      const systemMode = resolveSystemAppearance();
+      if (systemMode !== null) {
+        systemAppearanceAuthoritativeRef.current = true;
+        applyThemeMode(systemMode);
+      }
+    };
+
+    renderer.on(CliRenderEvents.FOCUS, handleFocus);
+    renderer.on(CliRenderEvents.THEME_MODE, handleThemeMode);
+    const systemAppearanceSubscription = subscribeSystemAppearance((mode) => {
+      systemAppearanceAuthoritativeRef.current = true;
+      applyThemeMode(mode);
+    });
+    // Subscribe before re-reading so the watcher or reconciliation read sees any race.
+    handleFocus();
+    if (!initialAppearance.systemResolved && renderer.themeMode !== null) {
+      handleThemeMode(renderer.themeMode);
+    }
+    return () => {
+      systemAppearanceSubscription.dispose();
+      renderer.off(CliRenderEvents.FOCUS, handleFocus);
+      renderer.off(CliRenderEvents.THEME_MODE, handleThemeMode);
+    };
+  }, [
+    initialAppearance.systemResolved,
+    renderer,
+    resolveSystemAppearance,
+    subscribeSystemAppearance,
+  ]);
 
   useLayoutEffect(() => {
     // Child layout effects run before the parent's, so controls and generation
@@ -315,7 +390,7 @@ export function AppHost({
           configured,
           cwd,
           extensions,
-          initialThemeMode: currentBootstrap.initialThemeMode,
+          initialThemeMode: terminalThemeModeRef.current,
           loadAtCwd: true,
           baseVcsCatalog,
         });
@@ -338,6 +413,7 @@ export function AppHost({
       try {
         const { applied, bootstrap, input: reloadInput, sessionVcs } = loaded;
         nextBootstrap = bootstrap;
+        nextBootstrap.initialThemeMode = terminalThemeModeRef.current;
         nextBootstrap.cliThemeOverride = nextCliThemeOverride;
         if (extensions) {
           reportExtensionApplyIssues(applied.issues, extensions.context);
@@ -536,6 +612,7 @@ export function AppHost({
       onWorkspaceWriteCompleted={reloadAfterWorkspaceWrite}
       reviewProducer={producer}
       runWorkspaceWrite={runWorkspaceWrite}
+      terminalThemeMode={terminalThemeMode}
       watchRuntime={watchRuntime}
       workspaceFileWriter={workspaceFileWriter}
     />

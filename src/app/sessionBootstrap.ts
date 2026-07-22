@@ -76,6 +76,7 @@ export async function loadConfiguredSessionBootstrap({
     customThemes: sessionThemes.themes,
     vcsCatalog: applied.vcsCatalog,
   })) as AppBootstrap;
+  bootstrap.configuredThemePreference = configured.input.options.theme;
   bootstrap.changeset = await applyExtensionChangesetTransforms(extensions, bootstrap.changeset);
   bootstrap.initialThemeMode = initialThemeMode ?? bootstrap.initialThemeMode;
   bootstrap.extensions = extensions;

@@ -75,6 +75,7 @@ function createScrollBootstrapWithManyFiles(fileCount: number): AppBootstrap {
       files,
     },
     initialMode: "split",
+    configuredThemePreference: "github-dark-default",
     initialTheme: "github-dark-default",
   };
 }

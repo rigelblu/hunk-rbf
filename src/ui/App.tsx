@@ -59,6 +59,8 @@ import type {
 import type { ReviewProducer } from "../app/review/producer";
 import type { HunkSessionBrokerClient } from "../session/broker/brokerClient";
 import type { ReloadedSessionResult, ReloadSessionOptions } from "../session/types";
+import { resolveThemePreference } from "../core/themePreference";
+import type { TerminalThemeMode } from "../core/theme/detection";
 import { MenuBar } from "./components/chrome/MenuBar";
 import { ConfirmDialog, confirmDialogHeight } from "./components/chrome/ConfirmDialog";
 import { ExtensionDialog } from "./components/chrome/ExtensionDialog";
@@ -233,6 +235,7 @@ export function App({
   onWorkspaceWriteCompleted,
   reviewProducer,
   runWorkspaceWrite,
+  terminalThemeMode,
   watchRuntime,
   workspaceFileWriter = writeWorkspaceFile,
 }: {
@@ -252,6 +255,7 @@ export function App({
   reviewProducer?: ReviewProducer;
   /** Start and track one irreversible write, or refuse it once graceful shutdown begins. */
   runWorkspaceWrite: WorkspaceWriteRunner;
+  terminalThemeMode?: TerminalThemeMode;
   watchRuntime?: WatchedInputRuntime;
   workspaceFileWriter?: WorkspaceFileWriter;
 }) {
@@ -297,16 +301,7 @@ export function App({
   const [layoutToggleRequestId, setLayoutToggleRequestId] = useState(0);
   const [transientNoticeText, setTransientNoticeText] = useState<string | null>(null);
   const [layoutMode, setLayoutMode] = useState<LayoutMode>(bootstrap.initialMode);
-  const [themeId, setThemeId] = useState(
-    () =>
-      resolveTheme(
-        bootstrap.initialTheme,
-        bootstrap.initialThemeMode ?? renderer.themeMode,
-        bootstrap.customThemes,
-      ).id,
-  );
-  // Soft reloads replace bootstrap without re-running startup terminal theme detection.
-  const [detectedThemeMode] = useState(() => bootstrap.initialThemeMode);
+  const [sessionThemeOverrideId, setSessionThemeOverrideId] = useState<string | null>(null);
   const [showLineNumbers, setShowLineNumbers] = useState(bootstrap.initialShowLineNumbers ?? true);
   const [wrapLines, setWrapLines] = useState(bootstrap.initialWrapLines ?? false);
   const [copyDecorations, setCopyDecorations] = useState(bootstrap.initialCopyDecorations ?? false);
@@ -395,16 +390,31 @@ export function App({
     () => availableThemes(bootstrap.customThemes),
     [bootstrap.customThemes],
   );
-  const effectiveThemeId = themeSelectorState.previewThemeId ?? themeId;
+  const appearanceMode = terminalThemeMode ?? bootstrap.initialThemeMode ?? renderer.themeMode;
+  useEffect(() => {
+    if (
+      sessionThemeOverrideId &&
+      !themeOptions.some((theme) => theme.id === sessionThemeOverrideId)
+    ) {
+      setSessionThemeOverrideId(null);
+    }
+  }, [sessionThemeOverrideId, themeOptions]);
+  const configuredThemeId =
+    bootstrap.configuredThemePreference === undefined
+      ? bootstrap.initialTheme
+      : resolveThemePreference(bootstrap.configuredThemePreference, appearanceMode);
+  const effectiveThemeId =
+    themeSelectorState.previewThemeId ?? sessionThemeOverrideId ?? configuredThemeId;
   const baseTheme = useMemo(
-    () => resolveTheme(effectiveThemeId, detectedThemeMode ?? null, bootstrap.customThemes),
-    [effectiveThemeId, detectedThemeMode, bootstrap.customThemes],
+    () => resolveTheme(effectiveThemeId, appearanceMode ?? null, bootstrap.customThemes),
+    [effectiveThemeId, appearanceMode, bootstrap.customThemes],
   );
   const renderSurfaces = useMemo(
     () => themeRenderSurfaces(baseTheme, Boolean(bootstrap.input.options.transparentBackground)),
     [baseTheme, bootstrap.input.options.transparentBackground],
   );
   const activeTheme = renderSurfaces.emittedTheme;
+  const themeId = activeTheme.id;
 
   const themeSelectorItems = useMemo(
     () =>
@@ -1509,7 +1519,7 @@ export function App({
   const selectTheme = useCallback(
     (nextThemeId: string) => {
       const nextTheme = themeOptions.find((theme) => theme.id === nextThemeId);
-      setThemeId(nextThemeId);
+      setSessionThemeOverrideId(nextThemeId);
       showTransientNotice(`Theme: ${nextTheme?.label ?? nextThemeId}`);
     },
     [showTransientNotice, themeOptions],

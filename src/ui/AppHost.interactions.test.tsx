@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, mock, test } from "bun:test";
+import { CliRenderEvents } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
 import { SESSION_BROKER_REGISTRATION_VERSION } from "@hunk/session-broker-core";
@@ -14,6 +15,7 @@ import type {
 import { LEGACY_CUSTOM_SYNTAX_NOTICE } from "../core/process/startupNotice";
 import type { AppBootstrap } from "../core/bootstrap";
 import type { LayoutMode } from "../core/run/commandInputs";
+import type { TerminalThemeMode } from "../core/theme/detection";
 import { createTestVcsAppBootstrap } from "../../test/helpers/app-bootstrap";
 import { capturedTestColorToHex } from "../../test/helpers/test-color-helpers";
 import { createTestDiffFile as buildTestDiffFile, lines } from "../../test/helpers/diff-helpers";
@@ -152,6 +154,17 @@ function createBootstrap(initialMode: LayoutMode = "split", pager = false): AppB
     initialMode,
     pager,
   });
+}
+
+/** Apply and emit one OpenTUI terminal appearance change through the production event seam. */
+function setTestRendererThemeMode(
+  setup: Awaited<ReturnType<typeof testRender>>,
+  mode: TerminalThemeMode,
+) {
+  const renderer = setup.renderer as unknown as {
+    emit: (event: CliRenderEvents, mode: TerminalThemeMode) => boolean;
+  };
+  renderer.emit(CliRenderEvents.THEME_MODE, mode);
 }
 
 function createSingleFileBootstrap(): AppBootstrap {
@@ -1796,6 +1809,94 @@ describe("App interactions", () => {
       });
       rmSync(repo, { force: true, recursive: true });
       rmSync(outside, { force: true, recursive: true });
+    }
+  });
+
+  test("a renderer appearance event switches a configured theme pair live", async () => {
+    const bootstrap = createBootstrap();
+    bootstrap.configuredThemePreference = {
+      light: "catppuccin-latte",
+      dark: "nord",
+    };
+    bootstrap.initialTheme = "catppuccin-latte";
+    bootstrap.initialThemeMode = "light";
+    const setup = await testRender(<AppHost bootstrap={bootstrap} />, {
+      width: 220,
+      height: 24,
+    });
+
+    /** Assert the selected theme without depending on the selector's window position. */
+    const expectActiveTheme = async (themeId: string) => {
+      await act(async () => {
+        await setup.mockInput.typeText("t");
+      });
+      const frame = await waitForFrame(setup, (nextFrame) =>
+        nextFrame.split("\n").some((line) => line.includes(themeId) && line.includes("active")),
+      );
+      expect(
+        frame.split("\n").some((line) => line.includes(themeId) && line.includes("active")),
+      ).toBe(true);
+      await act(async () => {
+        await setup.mockInput.pressEscape();
+      });
+      await flush(setup);
+    };
+
+    try {
+      await flush(setup);
+      await act(async () => {
+        setTestRendererThemeMode(setup, "dark");
+      });
+      await flush(setup);
+      await expectActiveTheme("nord");
+    } finally {
+      await act(async () => {
+        setup.renderer.destroy();
+      });
+    }
+  });
+
+  test("system appearance remains authoritative over later terminal events", async () => {
+    const bootstrap = createBootstrap();
+    bootstrap.configuredThemePreference = {
+      light: "catppuccin-latte",
+      dark: "nord",
+    };
+    bootstrap.initialTheme = "catppuccin-latte";
+    bootstrap.initialThemeMode = "light";
+    let emitSystemMode: (mode: TerminalThemeMode) => void = () => undefined;
+    const setup = await testRender(
+      <AppHost
+        bootstrap={bootstrap}
+        systemAppearanceResolver={() => "light"}
+        systemAppearanceSubscriber={(onMode) => {
+          emitSystemMode = onMode;
+          return { dispose: () => undefined };
+        }}
+      />,
+      { width: 220, height: 24 },
+    );
+
+    try {
+      await flush(setup);
+      await act(async () => {
+        emitSystemMode("dark");
+        setTestRendererThemeMode(setup, "light");
+      });
+      await flush(setup);
+      await act(async () => {
+        await setup.mockInput.typeText("t");
+      });
+      const frame = await waitForFrame(setup, (nextFrame) =>
+        nextFrame.split("\n").some((line) => line.includes("nord") && line.includes("active")),
+      );
+      expect(
+        frame.split("\n").some((line) => line.includes("nord") && line.includes("active")),
+      ).toBe(true);
+    } finally {
+      await act(async () => {
+        setup.renderer.destroy();
+      });
     }
   });
 
