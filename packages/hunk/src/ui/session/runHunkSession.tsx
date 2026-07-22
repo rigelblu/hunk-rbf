@@ -2,6 +2,10 @@ import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 import type { ReactNode } from "react";
 import {
+  installTerminalFocusReporting,
+  type TerminalFocusReportingSupport,
+} from "../../core/process/focusReporting";
+import {
   installJobControlInterruptSupport,
   installJobControlSuspendSupport,
   type JobControlInterruptSupport,
@@ -46,6 +50,7 @@ export interface HunkSessionRunnerDeps {
   installInterrupt?: typeof installJobControlInterruptSupport;
   installSuspend?: typeof installJobControlSuspendSupport;
   installDisconnect?: typeof installTerminalDisconnectSupport;
+  installFocusReporting?: typeof installTerminalFocusReporting;
   disposeWorker?: typeof disposeHighlightWorker;
   onSignal?: (signal: NodeJS.Signals, listener: SignalListener) => unknown;
   offSignal?: (signal: NodeJS.Signals, listener: SignalListener) => unknown;
@@ -66,6 +71,7 @@ export async function runHunkSession(
   const installInterrupt = deps.installInterrupt ?? installJobControlInterruptSupport;
   const installSuspend = deps.installSuspend ?? installJobControlSuspendSupport;
   const installDisconnect = deps.installDisconnect ?? installTerminalDisconnectSupport;
+  const installFocusReporting = deps.installFocusReporting ?? installTerminalFocusReporting;
   const disposeWorker = deps.disposeWorker ?? disposeHighlightWorker;
   const onSignal = deps.onSignal ?? process.once.bind(process);
   const offSignal = deps.offSignal ?? process.off.bind(process);
@@ -76,6 +82,10 @@ export async function runHunkSession(
   let interrupt: JobControlInterruptSupport = { dispose: () => undefined };
   let suspend: JobControlSuspendSupport = { dispose: () => undefined };
   let disconnect: TerminalDisconnectSupport = { dispose: () => undefined };
+  let focusReporting: Pick<TerminalFocusReportingSupport, "dispose"> = {
+    dispose: () => undefined,
+  };
+  let terminalDisconnected = false;
   let settled = false;
   let requestedExitCode: number | undefined;
   let finishOutcome!: (exitCode?: number) => void;
@@ -128,9 +138,17 @@ export async function runHunkSession(
       onDestroy: notifyRendererDestroy,
     });
     root = createReactRoot(renderer);
+    // Focus-in sequences let appearance-following surfaces re-read macOS when the terminal returns.
+    // A disconnected terminal has no mode left to restore, and writing to it would fail the exit.
+    focusReporting = installFocusReporting(renderer, {
+      write: (sequence) => terminalDisconnected || options.stdout.write(sequence),
+    });
     interrupt = installInterrupt(renderer, () => requestQuit(options.interruptExitCode));
     suspend = installSuspend(renderer);
-    disconnect = installDisconnect(options.stdin, () => requestQuit());
+    disconnect = installDisconnect(options.stdin, () => {
+      terminalDisconnected = true;
+      requestQuit();
+    });
     for (const [signal, handler] of signalHandlers) onSignal(signal, handler);
     root.render(
       options.render({
@@ -157,6 +175,7 @@ export async function runHunkSession(
     }
     attempt(() => interrupt.dispose());
     attempt(() => suspend.dispose());
+    attempt(() => focusReporting.dispose());
     attempt(() => disconnect.dispose());
     attempt(disposeWorker);
     const mountedRoot = root;

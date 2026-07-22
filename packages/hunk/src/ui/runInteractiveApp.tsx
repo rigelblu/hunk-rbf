@@ -1,6 +1,10 @@
 import { shouldUseMouseForApp, type ControllingTerminal } from "../core/process/terminal";
 import type { AppBootstrap } from "../core/bootstrap";
 import { resolveStartupUpdateNotice } from "../core/process/updateNotice";
+import {
+  resolveSystemAppearanceMode,
+  subscribeToSystemAppearanceMode,
+} from "../core/theme/systemAppearance";
 import { createReviewSessionRuntime } from "../app/session/reviewRuntime";
 import { createSessionReloadBounds } from "../app/session/reloadBounds";
 import type { InteractiveSessionInitialization } from "../core/session/initialization";
@@ -91,6 +95,8 @@ export async function runInteractiveApp(
           externalQuitSignal={externalQuitSignal}
           onQuit={finish}
           startupNoticeResolver={resolveStartupUpdateNotice}
+          systemAppearanceResolver={resolveSystemAppearanceMode}
+          systemAppearanceSubscriber={subscribeToSystemAppearanceMode}
         />
       ),
     });

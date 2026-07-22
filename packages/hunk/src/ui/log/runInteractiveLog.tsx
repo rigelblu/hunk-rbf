@@ -1,4 +1,8 @@
 import { HunkUserError } from "../../core/run/errors";
+import {
+  resolveSystemAppearanceMode,
+  subscribeToSystemAppearanceMode,
+} from "../../core/theme/systemAppearance";
 import type { InteractiveHistoryRuntime } from "../history/types";
 import { HunkSessionHost, type HistorySurfaceRoute } from "../session/HunkSessionHost";
 import { runHunkSession } from "../session/runHunkSession";
@@ -60,6 +64,8 @@ export async function runInteractiveLog(
           initialization={runtime.initialization}
           externalQuitSignal={externalQuitSignal}
           onQuit={finish}
+          systemAppearanceResolver={resolveSystemAppearanceMode}
+          systemAppearanceSubscriber={subscribeToSystemAppearanceMode}
         />
       ),
     });

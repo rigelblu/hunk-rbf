@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { resolveThemePreference, type ThemePreference } from "../../core/themePreference";
 import type { ThemeSelectorItem } from "../components/chrome/ThemeSelectorDialog";
 import type { ThemeController } from "../theme/controller";
 import { availableThemes, resolveTheme, themeRenderSurfaces } from "../themes";
@@ -10,6 +11,8 @@ interface ThemeSelectorControllerState {
 }
 
 export interface UseThemeSelectorControllerOptions {
+  /** Unresolved configured theme, which follows live appearance until the session picks a theme. */
+  configuredThemePreference?: ThemePreference;
   onTransientNotice: (text: string) => void;
   themeController: ThemeController;
   transparentBackground: boolean;
@@ -17,6 +20,7 @@ export interface UseThemeSelectorControllerOptions {
 
 /** Drive theme resolution, committed selection, and transient selector previews. */
 export function useThemeSelectorController({
+  configuredThemePreference,
   onTransientNotice,
   themeController,
   transparentBackground,
@@ -25,6 +29,7 @@ export function useThemeSelectorController({
     themeController.subscribe,
     themeController.getSnapshot,
   );
+  const themeMode = themeController.themeMode;
   const [state, setState] = useState<ThemeSelectorControllerState>(() => ({
     open: false,
     previewThemeId: null,
@@ -32,9 +37,17 @@ export function useThemeSelectorController({
   }));
 
   const themeOptions = useMemo(() => availableThemes(customThemes), [customThemes]);
+  // Below a preview, a session pick beats the configured preference resolved against the live
+  // appearance, which beats the committed launch theme.
+  const displayedThemeId =
+    themeController.sessionThemeId ??
+    (configuredThemePreference === undefined
+      ? undefined
+      : resolveThemePreference(configuredThemePreference, themeMode)) ??
+    committedThemeId;
   const committedTheme = useMemo(
-    () => resolveTheme(committedThemeId, themeController.themeMode ?? null, customThemes),
-    [committedThemeId, customThemes, themeController.themeMode],
+    () => resolveTheme(displayedThemeId, themeMode ?? null, customThemes),
+    [customThemes, displayedThemeId, themeMode],
   );
   const committedIndex = themeOptions.findIndex((theme) => theme.id === committedTheme.id);
   const storedSelectedIndex = themeOptions.findIndex((theme) => theme.id === state.selectedThemeId);

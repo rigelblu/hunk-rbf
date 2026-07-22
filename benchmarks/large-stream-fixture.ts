@@ -152,6 +152,7 @@ export function createLargeSplitStreamBootstrap({
       }),
     },
     initialMode: "split",
+    configuredThemePreference: "midnight",
     initialTheme: "midnight",
     initialShowAgentNotes: false,
   };
@@ -247,6 +248,7 @@ export function createHugeStreamBootstrap(): AppBootstrap {
       files,
     },
     initialMode: "split",
+    configuredThemePreference: "midnight",
     initialTheme: "midnight",
     initialShowAgentNotes: false,
   };

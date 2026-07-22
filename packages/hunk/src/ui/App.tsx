@@ -313,6 +313,7 @@ export function App({
     openThemeSelector,
     previewThemeSelectorItem,
   } = useThemeSelectorController({
+    configuredThemePreference: bootstrap.configuredThemePreference,
     onTransientNotice: showTransientNotice,
     themeController: activeThemeController,
     transparentBackground: bootstrap.input.options.transparentBackground ?? false,

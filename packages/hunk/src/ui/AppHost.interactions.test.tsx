@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, mock, test } from "bun:test";
+import { CliRenderEvents } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
 import { SESSION_BROKER_REGISTRATION_VERSION } from "@hunk/session-broker-core";
@@ -15,6 +16,7 @@ import type {
 import { LEGACY_CUSTOM_SYNTAX_NOTICE } from "../core/process/startupNotice";
 import type { AppBootstrap } from "../core/bootstrap";
 import type { LayoutMode } from "../core/run/commandInputs";
+import type { TerminalThemeMode } from "../core/theme/detection";
 import { createTestVcsAppBootstrap } from "../../../../test/helpers/app-bootstrap";
 import { capturedTestColorToHex } from "../../../../test/helpers/test-color-helpers";
 import {
@@ -25,6 +27,7 @@ import { createEmptyExtensionLoadResult } from "../extensions/types";
 import { AGENT_SKILL_COMMAND, AGENT_SKILL_PROMPT } from "./components/chrome/AgentSkillDialog";
 import { App } from "./App";
 import { ThemeController } from "./theme/controller";
+import { trackLiveAppearance } from "./theme/liveAppearance";
 import { availableThemes, resolveTheme } from "./themes";
 
 const { loadAppBootstrap } = await import("../core/changeset/loaders");
@@ -183,6 +186,17 @@ function createTreeSidebarBootstrap(): AppBootstrap {
       createTestDiffFile("root", "README.md", "r\n", "rr\n"),
     ],
   });
+}
+
+/** Apply and emit one OpenTUI terminal appearance change through the production event seam. */
+function setTestRendererThemeMode(
+  setup: Awaited<ReturnType<typeof testRender>>,
+  mode: TerminalThemeMode,
+) {
+  const renderer = setup.renderer as unknown as {
+    emit: (event: CliRenderEvents, mode: TerminalThemeMode) => boolean;
+  };
+  renderer.emit(CliRenderEvents.THEME_MODE, mode);
 }
 
 function createSingleFileBootstrap(): AppBootstrap {
@@ -1928,6 +1942,201 @@ describe("App interactions", () => {
       rmSync(repo, { force: true, recursive: true });
       rmSync(outside, { force: true, recursive: true });
     }
+  });
+
+  test("a renderer appearance event switches a configured theme pair live", async () => {
+    const bootstrap = createBootstrap();
+    bootstrap.configuredThemePreference = {
+      light: "catppuccin-latte",
+      dark: "nord",
+    };
+    bootstrap.initialTheme = "catppuccin-latte";
+    bootstrap.initialThemeMode = "light";
+    const setup = await testRender(<AppHost bootstrap={bootstrap} />, {
+      width: 220,
+      height: 24,
+    });
+
+    /** Assert the selected theme without depending on the selector's window position. */
+    const expectActiveTheme = async (themeId: string) => {
+      await act(async () => {
+        await setup.mockInput.typeText("t");
+      });
+      const frame = await waitForFrame(setup, (nextFrame) =>
+        nextFrame.split("\n").some((line) => line.includes(themeId) && line.includes("active")),
+      );
+      expect(
+        frame.split("\n").some((line) => line.includes(themeId) && line.includes("active")),
+      ).toBe(true);
+      await act(async () => {
+        await setup.mockInput.pressEscape();
+      });
+      await flush(setup);
+    };
+
+    try {
+      await flush(setup);
+      await act(async () => {
+        setTestRendererThemeMode(setup, "dark");
+      });
+      await flush(setup);
+      await expectActiveTheme("nord");
+    } finally {
+      await act(async () => {
+        setup.renderer.destroy();
+      });
+    }
+  });
+
+  test("system appearance remains authoritative over later terminal events", async () => {
+    const bootstrap = createBootstrap();
+    bootstrap.configuredThemePreference = {
+      light: "catppuccin-latte",
+      dark: "nord",
+    };
+    bootstrap.initialTheme = "catppuccin-latte";
+    bootstrap.initialThemeMode = "light";
+    let emitSystemMode: (mode: TerminalThemeMode) => void = () => undefined;
+    const setup = await testRender(
+      <AppHost
+        bootstrap={bootstrap}
+        systemAppearanceResolver={() => "light"}
+        systemAppearanceSubscriber={(onMode) => {
+          emitSystemMode = onMode;
+          return { dispose: () => undefined };
+        }}
+      />,
+      { width: 220, height: 24 },
+    );
+
+    try {
+      await flush(setup);
+      await act(async () => {
+        emitSystemMode("dark");
+        setTestRendererThemeMode(setup, "light");
+      });
+      await flush(setup);
+      await act(async () => {
+        await setup.mockInput.typeText("t");
+      });
+      const frame = await waitForFrame(setup, (nextFrame) =>
+        nextFrame.split("\n").some((line) => line.includes("nord") && line.includes("active")),
+      );
+      expect(
+        frame.split("\n").some((line) => line.includes("nord") && line.includes("active")),
+      ).toBe(true);
+    } finally {
+      await act(async () => {
+        setup.renderer.destroy();
+      });
+    }
+  });
+
+  test("quit after a live macOS appearance switch offers no save prompt", async () => {
+    const quit = mock(() => undefined);
+    const bootstrap = createBootstrap();
+    bootstrap.configuredThemePreference = {
+      light: "catppuccin-latte",
+      dark: "nord",
+    };
+    bootstrap.initialTheme = "catppuccin-latte";
+    bootstrap.initialThemeMode = "light";
+    bootstrap.input.options.promptSaveViewPreferences = true;
+    let emitSystemMode: (mode: TerminalThemeMode) => void = () => undefined;
+    const setup = await testRender(
+      <AppHost
+        bootstrap={bootstrap}
+        onQuit={quit}
+        systemAppearanceResolver={() => "light"}
+        systemAppearanceSubscriber={(onMode) => {
+          emitSystemMode = onMode;
+          return { dispose: () => undefined };
+        }}
+      />,
+      { width: 220, height: 24 },
+    );
+
+    try {
+      await flush(setup);
+      await act(async () => {
+        emitSystemMode("dark");
+      });
+      await flush(setup);
+      await act(async () => {
+        await setup.mockInput.typeText("t");
+      });
+      const frame = await waitForFrame(setup, (nextFrame) =>
+        nextFrame.split("\n").some((line) => line.includes("nord") && line.includes("active")),
+      );
+      expect(
+        frame.split("\n").some((line) => line.includes("nord") && line.includes("active")),
+      ).toBe(true);
+      await act(async () => {
+        await setup.mockInput.pressEscape();
+      });
+      await waitForFrame(setup, (nextFrame) => !nextFrame.includes("Theme selector"));
+
+      await act(async () => {
+        await setup.mockInput.typeText("q");
+      });
+      await flush(setup);
+
+      expect(setup.captureCharFrame()).not.toContain("Save view preferences?");
+      expect(quit).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => {
+        setup.renderer.destroy();
+      });
+    }
+  });
+
+  test("tracks live appearance only for a theme controller the host owns", async () => {
+    const subscriptions: string[] = [];
+    /** Record which host subscribed to macOS appearance changes. */
+    const recordSubscription = (host: string) => () => {
+      subscriptions.push(host);
+      return { dispose: () => undefined };
+    };
+
+    const ownedSetup = await testRender(
+      <AppHost
+        bootstrap={createBootstrap()}
+        systemAppearanceSubscriber={recordSubscription("owned")}
+      />,
+      { width: 160, height: 24 },
+    );
+    try {
+      await flush(ownedSetup);
+    } finally {
+      await act(async () => {
+        ownedSetup.renderer.destroy();
+      });
+    }
+
+    const sharedSetup = await testRender(
+      <AppHost
+        bootstrap={createBootstrap()}
+        systemAppearanceSubscriber={recordSubscription("shared")}
+        themeController={new ThemeController({ initialTheme: "nord" })}
+      />,
+      { width: 160, height: 24 },
+    );
+    try {
+      await flush(sharedSetup);
+    } finally {
+      await act(async () => {
+        sharedSetup.renderer.destroy();
+      });
+    }
+
+    expect(subscriptions).toEqual(["owned"]);
+
+    const renderer = { off: () => undefined, on: () => undefined, themeMode: null } as never;
+    const stopTracking = trackLiveAppearance(renderer, new ThemeController({}), {});
+    expect(() => trackLiveAppearance(renderer, new ThemeController({}), {})).toThrow(
+      "already tracked",
+    );
+    stopTracking();
   });
 
   test("custom theme stays active in the theme selector when bootstrap provides a custom palette", async () => {

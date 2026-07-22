@@ -217,6 +217,197 @@ describe("reload theme catalog", () => {
   });
 });
 
+/** Create one refreshable review whose repository config names its theme. */
+async function loadConfiguredThemeReview(themeConfig: string) {
+  const { configPath, dir } = createReloadThemeRepository();
+  writeFileSync(configPath, themeConfig);
+  const bootstrap = await loadAppBootstrap(
+    { kind: "vcs", staged: false, options: { mode: "unified", excludeUntracked: true } },
+    { cwd: dir, vcsCatalog: getBundledVcsCatalog() },
+  );
+  return { bootstrap, configPath, dir };
+}
+
+/** Open the theme selector, wait until one theme row is active, then close the selector. */
+async function expectActiveSelectorTheme(
+  setup: Awaited<ReturnType<typeof testRender>>,
+  themeId: string,
+) {
+  const isActiveRow = (line: string) =>
+    line.split(/\s+/).includes(themeId) && line.includes("active");
+  await act(async () => setup.mockInput.typeText("t"));
+  let frame = setup.captureCharFrame();
+  for (let attempt = 0; attempt < 20 && !frame.split("\n").some(isActiveRow); attempt++) {
+    await flush(setup);
+    await Bun.sleep(30);
+    frame = setup.captureCharFrame();
+  }
+  expect(frame.split("\n").some(isActiveRow)).toBe(true);
+  await act(async () => setup.mockInput.pressEscape());
+  // Wait for the selector to close so the key parser cannot join this escape with the next key.
+  for (
+    let attempt = 0;
+    attempt < 20 && setup.captureCharFrame().includes("Theme selector");
+    attempt++
+  ) {
+    await flush(setup);
+    await Bun.sleep(30);
+  }
+  expect(setup.captureCharFrame()).not.toContain("Theme selector");
+}
+
+/** Reload through the `r` refresh key and wait until the next bootstrap has mounted. */
+async function reloadWithRefreshKey(
+  setup: Awaited<ReturnType<typeof testRender>>,
+  readActiveBootstrap: () => object,
+) {
+  const previous = readActiveBootstrap();
+  await act(async () => setup.mockInput.typeText("r"));
+  for (let attempt = 0; attempt < 40 && readActiveBootstrap() === previous; attempt++) {
+    await flush(setup);
+    await Bun.sleep(50);
+  }
+  expect(readActiveBootstrap()).not.toBe(previous);
+}
+
+describe("reload configured theme", () => {
+  test("a refresh with a changed configured theme switches the review and keeps the committed theme", async () => {
+    const { bootstrap, configPath, dir } = await loadConfiguredThemeReview('theme = "nord"\n');
+    bootstrap.initialTheme = "nord";
+    bootstrap.configuredThemePreference = "nord";
+    const themeController = new ThemeController({ initialTheme: "nord" });
+    let activeBootstrap = bootstrap;
+    const setup = await testRender(
+      <AppHost
+        bootstrap={bootstrap}
+        onActiveBootstrapChange={(next) => {
+          activeBootstrap = next;
+        }}
+        themeController={themeController}
+      />,
+      { width: 120, height: 20 },
+    );
+
+    try {
+      await flush(setup);
+      await expectActiveSelectorTheme(setup, "nord");
+      writeFileSync(configPath, 'theme = "dracula"\n');
+      await reloadWithRefreshKey(setup, () => activeBootstrap);
+
+      expect(activeBootstrap.configuredThemePreference).toBe("dracula");
+      await expectActiveSelectorTheme(setup, "dracula");
+      expect(themeController.getSnapshot().themeId).toBe("nord");
+    } finally {
+      await act(async () => setup.renderer.destroy());
+      await removeTestDirectory(dir);
+    }
+  });
+
+  test("a picked theme keeps masking a changed configured theme across a refresh", async () => {
+    const { bootstrap, configPath, dir } = await loadConfiguredThemeReview('theme = "nord"\n');
+    bootstrap.initialTheme = "nord";
+    bootstrap.configuredThemePreference = "nord";
+    const themeController = new ThemeController({ initialTheme: "nord" });
+    let activeBootstrap = bootstrap;
+    const setup = await testRender(
+      <AppHost
+        bootstrap={bootstrap}
+        onActiveBootstrapChange={(next) => {
+          activeBootstrap = next;
+        }}
+        themeController={themeController}
+      />,
+      { width: 120, height: 20 },
+    );
+
+    try {
+      await flush(setup);
+      await act(async () => themeController.commitTheme("github-dark-dimmed"));
+      await expectActiveSelectorTheme(setup, "github-dark-dimmed");
+      writeFileSync(configPath, 'theme = "dracula"\n');
+      await reloadWithRefreshKey(setup, () => activeBootstrap);
+
+      expect(activeBootstrap.configuredThemePreference).toBe("dracula");
+      await expectActiveSelectorTheme(setup, "github-dark-dimmed");
+      expect(themeController.getSnapshot().themeId).toBe("github-dark-dimmed");
+    } finally {
+      await act(async () => setup.renderer.destroy());
+      await removeTestDirectory(dir);
+    }
+  });
+
+  test("an appearance change after a refresh still switches a configured light/dark pair", async () => {
+    const pair = { light: "catppuccin-latte", dark: "nord" };
+    const { bootstrap, dir } = await loadConfiguredThemeReview(
+      'theme = { light = "catppuccin-latte", dark = "nord" }\n',
+    );
+    bootstrap.initialTheme = pair.light;
+    bootstrap.initialThemeMode = "light";
+    bootstrap.configuredThemePreference = pair;
+    let emitSystemMode: (mode: "light" | "dark") => void = () => undefined;
+    let activeBootstrap = bootstrap;
+    const setup = await testRender(
+      <AppHost
+        bootstrap={bootstrap}
+        onActiveBootstrapChange={(next) => {
+          activeBootstrap = next;
+        }}
+        systemAppearanceResolver={() => "light"}
+        systemAppearanceSubscriber={(onMode) => {
+          emitSystemMode = onMode;
+          return { dispose: () => undefined };
+        }}
+      />,
+      { width: 120, height: 20 },
+    );
+
+    try {
+      await flush(setup);
+      await expectActiveSelectorTheme(setup, pair.light);
+      await reloadWithRefreshKey(setup, () => activeBootstrap);
+
+      expect(activeBootstrap.configuredThemePreference).toEqual(pair);
+      await act(async () => emitSystemMode("dark"));
+      await flush(setup);
+      await expectActiveSelectorTheme(setup, pair.dark);
+    } finally {
+      await act(async () => setup.renderer.destroy());
+      await removeTestDirectory(dir);
+    }
+  });
+
+  test("a refresh with no configured theme lets a theme configured later apply", async () => {
+    const { bootstrap, configPath, dir } = await loadConfiguredThemeReview("");
+    // Config resolution records its built-in default when no layer names a theme.
+    bootstrap.configuredThemePreference = "github-dark-default";
+    let activeBootstrap = bootstrap;
+    const setup = await testRender(
+      <AppHost
+        bootstrap={bootstrap}
+        onActiveBootstrapChange={(next) => {
+          activeBootstrap = next;
+        }}
+      />,
+      { width: 120, height: 20 },
+    );
+
+    try {
+      await flush(setup);
+      // The second refresh starts from a bootstrap that config resolution built with no theme.
+      await reloadWithRefreshKey(setup, () => activeBootstrap);
+      await reloadWithRefreshKey(setup, () => activeBootstrap);
+      writeFileSync(configPath, 'theme = "dracula"\n');
+      await reloadWithRefreshKey(setup, () => activeBootstrap);
+
+      expect(activeBootstrap.configuredThemePreference).toBe("dracula");
+      await expectActiveSelectorTheme(setup, "dracula");
+    } finally {
+      await act(async () => setup.renderer.destroy());
+      await removeTestDirectory(dir);
+    }
+  });
+});
+
 describe("reload watch runtime compatibility", () => {
   test("refuses a live reload that enables watch mode under an affected Bun runtime", async () => {
     const dir = mkdtempSync(join(tmpdir(), "hunk-reload-watch-runtime-"));

@@ -18,6 +18,7 @@ import type { UserKeyBinding } from "./run/config";
 import type { WheelScrollLines } from "./run/wheelScrollLines";
 import type { StartupNotice } from "./process/startupNotice";
 import type { TerminalThemeMode } from "./theme/detection";
+import type { ThemePreference } from "./themePreference";
 import type { VcsCatalog } from "./vcs/types";
 
 /** Where a review was loaded from, retained so the session can reload and watch it. */
@@ -40,6 +41,8 @@ export interface AppBootstrap<ExtensionState = unknown> {
   reloadContext: ReloadContext;
   changeset: Changeset;
   initialMode: LayoutMode;
+  /** Unresolved user preference retained so appearance-following themes can update live. */
+  configuredThemePreference?: ThemePreference;
   initialTheme?: string;
   initialThemeMode?: TerminalThemeMode;
   /** Launch-time CLI theme authority retained across daemon and watch reloads. */

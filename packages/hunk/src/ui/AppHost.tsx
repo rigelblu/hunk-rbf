@@ -21,6 +21,10 @@ import {
 import { emitExtensionEvent } from "../extensions/events";
 import type { ExtensionSession } from "../extensions/session";
 import { extendVcsCatalog } from "../core/vcs";
+import type {
+  resolveSystemAppearanceMode,
+  subscribeToSystemAppearanceMode,
+} from "../core/theme/systemAppearance";
 import {
   createInitialSessionSnapshot,
   updateSessionRegistration,
@@ -41,6 +45,7 @@ import type {
 import { assertReliableWatchRuntime } from "../core/watch/runtime";
 import type { WatchedInputRuntime } from "./hooks/useWatchedInput";
 import { ThemeController } from "./theme/controller";
+import { trackLiveAppearance } from "./theme/liveAppearance";
 import type { PersistedViewPreferences } from "../core/run/config";
 
 /** Build the stable refusal returned once quit becomes terminal for reload coordination. */
@@ -69,6 +74,8 @@ export function AppHost({
   onRequestSessionShutdown,
   reviewProducer,
   startupNoticeResolver,
+  systemAppearanceResolver,
+  systemAppearanceSubscriber,
   themeController,
   watchRuntime,
   workspaceFileWriter,
@@ -100,6 +107,10 @@ export function AppHost({
    */
   reviewProducer?: ReviewProducer;
   startupNoticeResolver?: () => Promise<StartupNotice | null>;
+  /** Read macOS appearance for a theme controller this host owns; tests leave it unset. */
+  systemAppearanceResolver?: typeof resolveSystemAppearanceMode;
+  /** Watch macOS appearance for a theme controller this host owns; tests leave it unset. */
+  systemAppearanceSubscriber?: typeof subscribeToSystemAppearanceMode;
   /** Session-owned committed theme state shared across routed surfaces. */
   themeController?: ThemeController;
   watchRuntime?: WatchedInputRuntime;
@@ -117,14 +128,17 @@ export function AppHost({
           vcsCatalog: getBundledVcsCatalog(),
         },
       };
-  const [ownedThemeController] = useState(
-    () =>
-      new ThemeController({
-        initialTheme: initialBootstrap.initialTheme,
-        initialThemeMode: initialBootstrap.initialThemeMode ?? renderer.themeMode,
-        customThemes: initialBootstrap.customThemes,
-      }),
-  );
+  const [ownedThemeController] = useState(() => {
+    // A controller this host owns starts from macOS appearance when it can be read, before the
+    // first App render. A session-owned controller already did this where it was created.
+    const systemMode = themeController ? null : (systemAppearanceResolver?.() ?? null);
+    return new ThemeController({
+      initialTheme: initialBootstrap.initialTheme,
+      initialThemeMode: systemMode ?? initialBootstrap.initialThemeMode ?? renderer.themeMode,
+      customThemes: initialBootstrap.customThemes,
+      systemAppearanceResolved: systemMode !== null,
+    });
+  });
   const activeThemeController = themeController ?? ownedThemeController;
   const [activeExtensionSession] = useState(extensionSession);
   // Direct renderer harnesses can mount extension-free bootstraps while still supplying an
@@ -191,6 +205,21 @@ export function AppHost({
     notices: activeBootstrap.startupNotices,
     resolver: startupNoticeResolver,
   });
+
+  useEffect(() => {
+    // A session-owned controller is tracked by its owner for every routed surface.
+    if (themeController) return;
+    return trackLiveAppearance(renderer, ownedThemeController, {
+      resolveSystemAppearance: systemAppearanceResolver,
+      subscribeSystemAppearance: systemAppearanceSubscriber,
+    });
+  }, [
+    ownedThemeController,
+    renderer,
+    systemAppearanceResolver,
+    systemAppearanceSubscriber,
+    themeController,
+  ]);
 
   useLayoutEffect(() => {
     onActiveBootstrapChange?.(activeBootstrap);
@@ -271,7 +300,13 @@ export function AppHost({
           extensionPaths: launchExtensionPaths,
         },
       });
-      const incomingCliThemeOverride = nextInput.options.theme;
+      // A refresh echoes the committed theme back as input. Once a bootstrap records its configured
+      // theme, only a different theme is new CLI authority, so an echo never pins a configured
+      // theme that follows appearance or config.
+      const echoesCommittedTheme =
+        currentBootstrap.configuredThemePreference !== undefined &&
+        nextInput.options.theme === activeThemeController.getSnapshot().themeId;
+      const incomingCliThemeOverride = echoesCommittedTheme ? undefined : nextInput.options.theme;
       const nextCliThemeOverride = incomingCliThemeOverride ?? currentBootstrap.cliThemeOverride;
       const configInput: CliInput = {
         ...runtimeInput,
@@ -341,7 +376,7 @@ export function AppHost({
           configured,
           cwd,
           extensions,
-          initialThemeMode: currentBootstrap.initialThemeMode,
+          initialThemeMode: activeThemeController.themeMode,
           loadAtCwd: true,
           baseVcsCatalog,
         });
@@ -366,6 +401,8 @@ export function AppHost({
       try {
         const { applied, bootstrap, input: reloadInput, sessionVcs } = loaded;
         nextBootstrap = bootstrap;
+        // Read the latest appearance at commit time so a change during async loading still wins.
+        nextBootstrap.initialThemeMode = activeThemeController.themeMode;
         nextBootstrap.cliThemeOverride = nextCliThemeOverride;
         nextReviewCwd = reviewDescriptorResourceCwd(
           nextBootstrap.input,

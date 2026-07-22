@@ -13,6 +13,10 @@ import type { StartupNotice } from "../../core/process/startupNotice";
 import type { AppBootstrap } from "../../core/bootstrap";
 import type { PersistedViewPreferences } from "../../core/run/config";
 import type { InteractiveSessionInitialization } from "../../core/session/initialization";
+import type {
+  resolveSystemAppearanceMode,
+  subscribeToSystemAppearanceMode,
+} from "../../core/theme/systemAppearance";
 import type { ExtensionVcsHistoryReviewAction } from "../../extension-api/types";
 import { parseExtensionReviewDescriptor } from "../../core/reviewDescriptor";
 import type { ExtensionSession } from "../../extensions/session";
@@ -25,6 +29,7 @@ import { LogApp, type LogAppOutcome } from "../log/LogApp";
 import type { LogController } from "../log/controller";
 import { resolveHistoryAuthorLabel } from "../log/formatting";
 import { ThemeController } from "../theme/controller";
+import { trackLiveAppearance } from "../theme/liveAppearance";
 import { applySessionViewPreferences } from "./viewPreferences";
 
 export interface HistorySurfaceRoute {
@@ -132,6 +137,8 @@ export function HunkSessionHost({
   externalQuitSignal,
   onQuit,
   startupNoticeResolver,
+  systemAppearanceResolver,
+  systemAppearanceSubscriber,
   deps = {},
 }: {
   initialRoute: HunkSurfaceRoute;
@@ -139,17 +146,35 @@ export function HunkSessionHost({
   externalQuitSignal: AbortSignal;
   onQuit: (exitCode?: number) => void;
   startupNoticeResolver?: () => Promise<StartupNotice | null>;
+  /** Read macOS appearance; production passes the macOS resolver and tests leave it unset. */
+  systemAppearanceResolver?: typeof resolveSystemAppearanceMode;
+  /** Watch macOS appearance changes; production passes the macOS watcher and tests leave it unset. */
+  systemAppearanceSubscriber?: typeof subscribeToSystemAppearanceMode;
   deps?: HunkSessionHostDeps;
 }) {
   const renderer = useRenderer();
   const prepareReview = deps.prepareReview ?? prepareEmbeddedHistoryReview;
   const createReviewRuntime = deps.createReviewRuntime ?? createReviewSessionRuntime;
-  const [themeController] = useState(
+  const [themeController] = useState(() => {
+    // A review launch shows macOS appearance from its first frame. History startup keeps its own
+    // theme resolution, and the tracking below still records the live mode for reviews it opens.
+    const systemMode =
+      initialRoute.kind === "review" ? (systemAppearanceResolver?.() ?? null) : null;
+    return new ThemeController({
+      ...initialization.theme,
+      initialThemeMode: systemMode ?? initialization.theme.initialThemeMode ?? renderer.themeMode,
+      systemAppearanceResolved: systemMode !== null,
+    });
+  });
+  // The session tracks appearance once for every routed surface. AppHost tracks only a controller
+  // it owns, so a mounted review never installs a second watcher.
+  useEffect(
     () =>
-      new ThemeController({
-        ...initialization.theme,
-        initialThemeMode: initialization.theme.initialThemeMode ?? renderer.themeMode,
+      trackLiveAppearance(renderer, themeController, {
+        resolveSystemAppearance: systemAppearanceResolver,
+        subscribeSystemAppearance: systemAppearanceSubscriber,
       }),
+    [renderer, systemAppearanceResolver, systemAppearanceSubscriber, themeController],
   );
   const [route, setRoute] = useState<ActiveSurfaceRoute>(() =>
     initialRoute.kind === "history"
@@ -286,8 +311,11 @@ export function HunkSessionHost({
         extensionsEnabled: historyRoute.runtime.input.extensionsEnabled,
         extensionPaths: historyRoute.runtime.input.extensionPaths,
         extensionSession: historyRoute.runtime.extensionSession.current,
-        themeId: themeController.getSnapshot().themeId,
-        themeMode: themeController.themeMode,
+        // A review keeps only a theme this session chose: a pick, or `hunk log --theme`. Any other
+        // theme resolves from config like a fresh launch, so appearance-following themes keep
+        // following; the mode is always set so startup never probes the terminal this renderer owns.
+        themeId: themeController.sessionThemeId ?? historyRoute.runtime.cliThemeOverride,
+        themeMode: themeController.themeMode ?? "dark",
       };
       plan = await prepareReview(request, { signal });
       const historyReview = historyReviewDescriptor(historyRoute.runtime, outcome, action);

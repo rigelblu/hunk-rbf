@@ -31,6 +31,8 @@ export interface HistoryRuntime {
   promptSaveViewPreferences: boolean;
   /** Command-owned extension authority borrowed by embedded reviews. */
   extensionSession: ExtensionSession;
+  /** Theme named by `hunk log --theme`, which reviews opened from history keep as CLI authority. */
+  cliThemeOverride?: string;
   planReview(
     commit: ExtensionVcsHistoryCommit,
     options?: ExtensionVcsHistoryReviewOptions,

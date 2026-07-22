@@ -96,6 +96,7 @@ export async function loadConfiguredSessionBootstrap({
       vcsCatalog: applied.vcsCatalog,
       signal,
     })) as AppBootstrap;
+    bootstrap.configuredThemePreference = configured.input.options.theme;
     signal?.throwIfAborted();
     bootstrap.changeset = await applyExtensionChangesetTransforms(extensions, bootstrap.changeset);
     signal?.throwIfAborted();

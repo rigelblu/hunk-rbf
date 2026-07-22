@@ -45,6 +45,8 @@ export interface HistoryBootstrap {
   repoRoot: string;
   /** Command-owned extension authority borrowed by embedded reviews. */
   extensionSession: ExtensionSession;
+  /** Theme named by `hunk log --theme`, which reviews opened from history keep as CLI authority. */
+  cliThemeOverride?: string;
   notices: readonly string[];
   /** Surface-neutral catalog used by static history rendering. */
   customThemes: readonly NamedCustomThemeConfig[];
@@ -171,6 +173,7 @@ export async function loadHistoryBootstrap({
     startupCwd: cwd,
     repoRoot,
     extensionSession,
+    ...(input.theme ? { cliThemeOverride: input.theme } : {}),
     customThemes: sessionThemes.themes,
     initialization: createInteractiveSessionInitialization({
       theme: {

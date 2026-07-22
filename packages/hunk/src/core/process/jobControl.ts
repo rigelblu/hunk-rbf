@@ -1,4 +1,5 @@
 import type { CliRenderer, KeyEvent } from "@opentui/core";
+import { resumeTerminalSession, suspendTerminalSession } from "./focusReporting";
 
 type KeypressListener = (key: KeyEvent) => void;
 
@@ -94,7 +95,7 @@ export function installJobControlSuspendSupport(
   let disposed = false;
 
   const suspend = () => {
-    renderer.suspend();
+    suspendTerminalSession(renderer);
 
     try {
       // Blocks until the shell continues this job; see the note above.
@@ -104,7 +105,7 @@ export function installJobControlSuspendSupport(
     }
 
     if (!renderer.isDestroyed) {
-      renderer.resume();
+      resumeTerminalSession(renderer);
     }
   };
 

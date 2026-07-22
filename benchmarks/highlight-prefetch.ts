@@ -73,6 +73,7 @@ function createBootstrap(): AppBootstrap {
       ],
     },
     initialMode: "split",
+    configuredThemePreference: "midnight",
     initialTheme: "midnight",
   };
 }
