@@ -31,6 +31,7 @@ function createBootstrap(overrides: Partial<AppBootstrap> = {}): AppBootstrap {
       ],
     },
     initialMode: "split",
+    configuredThemePreference: undefined,
     initialShowAgentNotes: true,
     ...overrides,
   };

@@ -4,6 +4,10 @@ import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 import { formatCliError } from "./core/errors";
 import {
+  installTerminalFocusReporting,
+  type TerminalFocusReportingSupport,
+} from "./core/focusReporting";
+import {
   installJobControlInterruptSupport,
   installJobControlSuspendSupport,
   type JobControlInterruptSupport,
@@ -11,6 +15,10 @@ import {
 } from "./core/jobControl";
 import { pagePlainText } from "./core/pager";
 import { sanitizeTerminalText } from "./lib/terminalText";
+import {
+  resolveSystemAppearanceMode,
+  subscribeToSystemAppearanceMode,
+} from "./core/systemAppearance";
 import { shutdownSession } from "./core/shutdown";
 import { renderStaticDiffPager } from "./ui/staticDiffPager";
 import { prepareStartupPlan } from "./core/startup";
@@ -102,6 +110,11 @@ async function main() {
   let shuttingDown = false;
   let jobControlSuspendSupport: JobControlSuspendSupport = { dispose: () => undefined };
   let jobControlInterruptSupport: JobControlInterruptSupport = { dispose: () => undefined };
+  let terminalFocusReportingSupport: TerminalFocusReportingSupport = {
+    disable: () => undefined,
+    dispose: () => undefined,
+    enable: () => undefined,
+  };
 
   /** Tear down the renderer before exit so the primary terminal screen comes back cleanly. */
   function shutdown() {
@@ -115,6 +128,7 @@ async function main() {
     }
     jobControlInterruptSupport.dispose();
     jobControlSuspendSupport.dispose();
+    terminalFocusReportingSupport.dispose();
     hostClient.stop();
     shutdownSession({ root, renderer: appRenderer });
   }
@@ -122,6 +136,7 @@ async function main() {
   for (const signal of shutdownSignals) {
     process.once(signal, shutdown);
   }
+  terminalFocusReportingSupport = installTerminalFocusReporting(appRenderer, process.stdout);
   jobControlInterruptSupport = installJobControlInterruptSupport(appRenderer, shutdown);
   jobControlSuspendSupport = installJobControlSuspendSupport(appRenderer);
 
@@ -132,6 +147,8 @@ async function main() {
       hostClient={hostClient}
       onQuit={shutdown}
       startupNoticeResolver={resolveStartupUpdateNotice}
+      systemAppearanceResolver={resolveSystemAppearanceMode}
+      systemAppearanceSubscriber={subscribeToSystemAppearanceMode}
     />,
   );
 }

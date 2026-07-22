@@ -385,6 +385,7 @@ export interface AppBootstrap {
   input: CliInput;
   changeset: Changeset;
   initialMode: LayoutMode;
+  configuredThemePreference: ThemePreference | undefined;
   initialTheme?: string;
   initialThemeMode?: TerminalThemeMode;
   cliThemeOverride?: string;

@@ -14,7 +14,7 @@ export function isThemePairPreference(
   return typeof preference === "object" && preference !== null;
 }
 
-/** Return whether one preference needs the controlling terminal's startup appearance. */
+/** Return whether one preference follows the active system or terminal appearance. */
 export function themePreferenceFollowsAppearance(preference: ThemePreference | undefined) {
   return preference === "system" || preference === "auto" || isThemePairPreference(preference);
 }

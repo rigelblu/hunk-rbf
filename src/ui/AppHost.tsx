@@ -1,6 +1,12 @@
-import { useCallback, useRef, useState } from "react";
+import { CliRenderEvents, type ThemeMode } from "@opentui/core";
+import { useRenderer } from "@opentui/react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { resolveConfiguredCliInput } from "../core/config";
 import { loadAppBootstrap } from "../core/loaders";
+import type {
+  resolveSystemAppearanceMode,
+  subscribeToSystemAppearanceMode,
+} from "../core/systemAppearance";
 import { resolveRuntimeCliInput } from "../core/terminal";
 import { resolveConfiguredThemeInput } from "../core/themePreference";
 import type { AppBootstrap, CliInput } from "../core/types";
@@ -17,21 +23,47 @@ import type { HunkSessionBrokerClient } from "../hunk-session/types";
 import { App } from "./App";
 import { useStartupUpdateNotice } from "./hooks/useStartupUpdateNotice";
 
+const NO_SYSTEM_APPEARANCE: typeof resolveSystemAppearanceMode = () => null;
+const NO_SYSTEM_APPEARANCE_SUBSCRIPTION: typeof subscribeToSystemAppearanceMode = () => ({
+  dispose: () => undefined,
+});
+
 /** Keep one live Hunk app mounted while allowing daemon-driven session reloads. */
 export function AppHost({
   bootstrap,
   hostClient,
   onQuit = () => process.exit(0),
+  loadAppBootstrapImpl = loadAppBootstrap,
   startupNoticeResolver,
+  systemAppearanceResolver,
+  systemAppearanceSubscriber,
 }: {
   bootstrap: AppBootstrap;
   hostClient?: HunkSessionBrokerClient;
   onQuit?: () => void;
+  loadAppBootstrapImpl?: typeof loadAppBootstrap;
   startupNoticeResolver?: () => Promise<UpdateNotice | null>;
+  systemAppearanceResolver?: typeof resolveSystemAppearanceMode;
+  systemAppearanceSubscriber?: typeof subscribeToSystemAppearanceMode;
 }) {
+  const renderer = useRenderer();
+  const resolveSystemAppearance = systemAppearanceResolver ?? NO_SYSTEM_APPEARANCE;
+  const subscribeSystemAppearance = systemAppearanceSubscriber ?? NO_SYSTEM_APPEARANCE_SUBSCRIPTION;
   const [activeBootstrap, setActiveBootstrap] = useState(bootstrap);
   const [appVersion, setAppVersion] = useState(0);
+  const [initialAppearance] = useState(() => {
+    const systemMode = resolveSystemAppearance();
+    return {
+      mode: systemMode ?? renderer.themeMode ?? bootstrap.initialThemeMode,
+      systemResolved: systemMode !== null,
+    };
+  });
+  const [terminalThemeMode, setTerminalThemeMode] = useState<ThemeMode | undefined>(
+    initialAppearance.mode,
+  );
   const activeBootstrapRef = useRef(bootstrap);
+  const terminalThemeModeRef = useRef(initialAppearance.mode);
+  const systemAppearanceAuthoritativeRef = useRef(initialAppearance.systemResolved);
   const reloadQueueRef = useRef<Promise<void>>(Promise.resolve());
   const [sessionFileBounds] = useState(() =>
     createSessionReloadBounds(bootstrap, {
@@ -42,6 +74,59 @@ export function AppHost({
     enabled: !bootstrap.input.options.pager,
     resolver: startupNoticeResolver,
   });
+
+  useEffect(() => {
+    /** Preserve one latest valid mode across App remounts and queued reloads. */
+    const applyThemeMode = (mode: ThemeMode) => {
+      if (terminalThemeModeRef.current === mode) {
+        return;
+      }
+      terminalThemeModeRef.current = mode;
+      setTerminalThemeMode(mode);
+    };
+
+    /** Use terminal notifications only until macOS has supplied an authoritative appearance. */
+    const handleThemeMode = (mode: ThemeMode) => {
+      if (systemAppearanceAuthoritativeRef.current) {
+        return;
+      }
+      applyThemeMode(mode);
+    };
+
+    /** Reassert macOS appearance when the user returns to the terminal. */
+    const handleFocus = () => {
+      const systemMode = resolveSystemAppearance();
+      if (systemMode !== null) {
+        systemAppearanceAuthoritativeRef.current = true;
+        applyThemeMode(systemMode);
+      }
+    };
+
+    renderer.on(CliRenderEvents.FOCUS, handleFocus);
+    renderer.on(CliRenderEvents.THEME_MODE, handleThemeMode);
+    const systemAppearanceSubscription = subscribeSystemAppearance((mode) => {
+      systemAppearanceAuthoritativeRef.current = true;
+      applyThemeMode(mode);
+    });
+    // Subscribe before re-reading so a change between lazy initialization and this effect is
+    // either observed by the watcher or included in the post-subscription reconciliation read.
+    handleFocus();
+    // The renderer starts before React mounts. Subscribe first, then reconcile the current value
+    // only when a successful pre-render system read did not establish macOS authority.
+    if (!initialAppearance.systemResolved && renderer.themeMode !== null) {
+      handleThemeMode(renderer.themeMode);
+    }
+    return () => {
+      systemAppearanceSubscription.dispose();
+      renderer.off(CliRenderEvents.FOCUS, handleFocus);
+      renderer.off(CliRenderEvents.THEME_MODE, handleThemeMode);
+    };
+  }, [
+    initialAppearance.systemResolved,
+    renderer,
+    resolveSystemAppearance,
+    subscribeSystemAppearance,
+  ]);
 
   const reloadSession = useCallback(
     (nextInput: CliInput, options?: { resetApp?: boolean; sourcePath?: string }) => {
@@ -68,13 +153,14 @@ export function AppHost({
         const configured = resolveConfiguredCliInput(configInput, { cwd });
         const resolvedInput = resolveConfiguredThemeInput(
           configured.input,
-          currentBootstrap.initialThemeMode,
+          terminalThemeModeRef.current,
         );
-        const nextBootstrap = await loadAppBootstrap(resolvedInput, {
+        const nextBootstrap = await loadAppBootstrapImpl(resolvedInput, {
+          configuredThemePreference: configured.input.options.theme,
           cwd,
           customThemes: configured.customThemes,
         });
-        nextBootstrap.initialThemeMode = currentBootstrap.initialThemeMode;
+        nextBootstrap.initialThemeMode = terminalThemeModeRef.current;
         nextBootstrap.cliThemeOverride = nextCliThemeOverride;
         const nextSnapshot = createInitialSessionSnapshot(nextBootstrap);
 
@@ -118,7 +204,7 @@ export function AppHost({
       );
       return reloadResult;
     },
-    [hostClient, sessionFileBounds],
+    [hostClient, loadAppBootstrapImpl, sessionFileBounds],
   );
 
   return (
@@ -129,6 +215,7 @@ export function AppHost({
       noticeText={startupNoticeText}
       onQuit={onQuit}
       onReloadSession={reloadSession}
+      terminalThemeMode={terminalThemeMode}
     />
   );
 }

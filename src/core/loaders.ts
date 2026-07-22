@@ -25,12 +25,14 @@ import type {
   DiffToolCommandInput,
   FileCommandInput,
   PatchCommandInput,
+  ThemePreference,
   VcsShowCommandInput,
   VcsDiffCommandInput,
   VcsStashShowCommandInput,
 } from "./types";
 
 interface LoadAppBootstrapOptions {
+  configuredThemePreference?: ThemePreference;
   cwd?: string;
   customThemes?: CustomThemeRegistry;
   gitExecutable?: string;
@@ -419,8 +421,9 @@ async function loadPatchChangeset(
 /** Resolve CLI input into the fully loaded app bootstrap state. */
 export async function loadAppBootstrap(
   input: CliInput,
-  { cwd = process.cwd(), customThemes, gitExecutable = "git" }: LoadAppBootstrapOptions = {},
+  options: LoadAppBootstrapOptions = {},
 ): Promise<AppBootstrap> {
+  const { cwd = process.cwd(), customThemes, gitExecutable = "git" } = options;
   if (typeof input.options.theme !== "string" && input.options.theme !== undefined) {
     throw new Error("Expected paired theme input to be resolved before loading app content.");
   }
@@ -457,6 +460,12 @@ export async function loadAppBootstrap(
     input,
     changeset,
     initialMode: input.options.mode ?? "auto",
+    configuredThemePreference: Object.prototype.hasOwnProperty.call(
+      options,
+      "configuredThemePreference",
+    )
+      ? options.configuredThemePreference
+      : input.options.theme,
     initialTheme: input.options.theme,
     customThemes,
     initialShowLineNumbers: input.options.lineNumbers ?? true,

@@ -34,6 +34,15 @@ describe("terminal theme detection", () => {
     expect(themeModeForBackgroundColor({ red: 245, green: 245, blue: 245 })).toBe("light");
   });
 
+  test("keeps the documented startup boundary distinct from OpenTUI brightness", () => {
+    const boundaryColor = { red: 0, green: 176, blue: 224 };
+
+    expect(themeModeForBackgroundColor(boundaryColor)).toBe("dark");
+    expect(
+      (boundaryColor.red * 299 + boundaryColor.green * 587 + boundaryColor.blue * 114) / 1000,
+    ).toBeGreaterThan(128);
+  });
+
   test("detects terminal mode from the queried input stream", async () => {
     const input = new FakeThemeInput();
     let query = "";

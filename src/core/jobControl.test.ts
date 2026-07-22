@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { KeyEvent } from "@opentui/core";
+import { installTerminalFocusReporting } from "./focusReporting";
 import { installJobControlInterruptSupport, installJobControlSuspendSupport } from "./jobControl";
 
 function createTestKey(overrides: Partial<KeyEvent> = {}) {
@@ -27,7 +28,7 @@ function createTestKey(overrides: Partial<KeyEvent> = {}) {
   } as KeyEvent;
 }
 
-function createMockRenderer() {
+function createMockRenderer(terminalEvents: string[] = []) {
   const keypressListeners = new Set<(key: KeyEvent) => void>();
 
   return {
@@ -49,9 +50,11 @@ function createMockRenderer() {
       }
     },
     resume() {
+      terminalEvents.push("renderer-resume");
       this.resumeCalls += 1;
     },
     suspend() {
+      terminalEvents.push("renderer-suspend");
       this.suspendCalls += 1;
     },
   };
@@ -186,12 +189,22 @@ describe("installJobControlSuspendSupport", () => {
   });
 
   test("suspends the foreground process group on Ctrl-Z and resumes on SIGCONT", () => {
-    const renderer = createMockRenderer();
+    const terminalEvents: string[] = [];
+    const renderer = createMockRenderer(terminalEvents);
     const signals = createSignalHarness();
     const sentSignals: Array<{ pid: number; signal: NodeJS.Signals }> = [];
+    const focusSupport = installTerminalFocusReporting(renderer, {
+      write: (sequence) => {
+        terminalEvents.push(sequence === "\x1b[?1004h" ? "focus-enable" : "focus-disable");
+        return true;
+      },
+    });
 
     installJobControlSuspendSupport(renderer, {
-      kill: (pid, signal) => sentSignals.push({ pid, signal }),
+      kill: (pid, signal) => {
+        sentSignals.push({ pid, signal });
+        terminalEvents.push(signal);
+      },
       off: signals.off,
       once: signals.once,
       platform: "linux",
@@ -204,10 +217,25 @@ describe("installJobControlSuspendSupport", () => {
     expect(renderer.suspendCalls).toBe(1);
     expect(signals.listenerCount("SIGCONT")).toBe(1);
     expect(sentSignals).toEqual([{ pid: 0, signal: "SIGTSTP" }]);
+    expect(terminalEvents).toEqual([
+      "focus-enable",
+      "focus-disable",
+      "renderer-suspend",
+      "SIGTSTP",
+    ]);
 
     signals.emit("SIGCONT");
     expect(renderer.resumeCalls).toBe(1);
     expect(signals.listenerCount("SIGCONT")).toBe(0);
+    expect(terminalEvents).toEqual([
+      "focus-enable",
+      "focus-disable",
+      "renderer-suspend",
+      "SIGTSTP",
+      "renderer-resume",
+      "focus-enable",
+    ]);
+    focusSupport.dispose();
   });
 
   test("does not resume a destroyed renderer after SIGCONT", () => {
@@ -230,11 +258,19 @@ describe("installJobControlSuspendSupport", () => {
   });
 
   test("restores the renderer if SIGTSTP cannot be sent", () => {
-    const renderer = createMockRenderer();
+    const terminalEvents: string[] = [];
+    const renderer = createMockRenderer(terminalEvents);
     const signals = createSignalHarness();
+    const focusSupport = installTerminalFocusReporting(renderer, {
+      write: (sequence) => {
+        terminalEvents.push(sequence === "\x1b[?1004h" ? "focus-enable" : "focus-disable");
+        return true;
+      },
+    });
 
     installJobControlSuspendSupport(renderer, {
-      kill: () => {
+      kill: (_pid, signal) => {
+        terminalEvents.push(signal);
         throw new Error("unsupported signal");
       },
       off: signals.off,
@@ -246,6 +282,15 @@ describe("installJobControlSuspendSupport", () => {
     expect(renderer.suspendCalls).toBe(1);
     expect(renderer.resumeCalls).toBe(1);
     expect(signals.listenerCount("SIGCONT")).toBe(0);
+    expect(terminalEvents).toEqual([
+      "focus-enable",
+      "focus-disable",
+      "renderer-suspend",
+      "SIGTSTP",
+      "renderer-resume",
+      "focus-enable",
+    ]);
+    focusSupport.dispose();
   });
 
   test("dispose removes the keypress listener and pending SIGCONT listener", () => {

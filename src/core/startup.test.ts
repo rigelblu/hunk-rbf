@@ -13,6 +13,7 @@ function createBootstrap(input: CliInput): AppBootstrap {
       files: [],
     },
     initialMode: input.options.mode ?? "auto",
+    configuredThemePreference: input.options.theme,
   };
 }
 
@@ -339,7 +340,7 @@ describe("startup planning", () => {
       resolveConfiguredCliInputImpl: (input) => ({ input, customThemes }) as never,
       loadAppBootstrapImpl: async (input, options) => {
         expect(input).toBe(cliInput);
-        expect(options).toEqual({ customThemes });
+        expect(options).toEqual({ configuredThemePreference: "custom", customThemes });
         return {
           ...createBootstrap(input),
           customThemes,
@@ -448,6 +449,7 @@ describe("startup planning", () => {
       options: {},
     };
     let loadedTheme: CliInput["options"]["theme"];
+    let loadedPreference: AppBootstrap["configuredThemePreference"];
 
     const plan = await prepareStartupPlan(["bun", "hunk", "diff", "before.ts", "after.ts"], {
       parseCliImpl: async () => cliInput,
@@ -463,8 +465,9 @@ describe("startup planning", () => {
           },
         }) as never,
       detectTerminalThemeModeFromBackgroundImpl: async () => "light",
-      loadAppBootstrapImpl: async (input) => {
+      loadAppBootstrapImpl: async (input, options) => {
         loadedTheme = input.options.theme;
+        loadedPreference = options?.configuredThemePreference;
         return createBootstrap(input);
       },
       stdinIsTTY: true,
@@ -473,6 +476,7 @@ describe("startup planning", () => {
     });
 
     expect(loadedTheme).toBe("catppuccin-latte");
+    expect(loadedPreference).toEqual({ light: "catppuccin-latte", dark: "nord" });
     expect(plan).toMatchObject({
       kind: "app",
       cliInput: { options: { theme: "catppuccin-latte" } },

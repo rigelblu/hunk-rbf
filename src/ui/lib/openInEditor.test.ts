@@ -3,6 +3,7 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createTestDiffFile } from "../../../test/helpers/diff-helpers";
+import { installTerminalFocusReporting } from "../../core/focusReporting";
 import {
   buildEditorCommand,
   openSelectedFileInEditor,
@@ -201,6 +202,13 @@ describe("open in editor helpers", () => {
     });
 
     const renderer = createRenderer();
+    const focusWrites: string[] = [];
+    const focusSupport = installTerminalFocusReporting(renderer, {
+      write: (sequence) => {
+        focusWrites.push(String(sequence));
+        return true;
+      },
+    });
     const file = createTestDiffFile({ path: "example.ts" });
 
     expect(
@@ -220,6 +228,8 @@ describe("open in editor helpers", () => {
     ]);
     expect(renderer.suspend).toHaveBeenCalledTimes(1);
     expect(renderer.resume).toHaveBeenCalledTimes(1);
+    expect(focusWrites).toEqual(["\x1b[?1004h", "\x1b[?1004l", "\x1b[?1004h"]);
+    focusSupport.dispose();
   });
 
   test("uses deletion line numbers for deleted files", () => {
@@ -297,6 +307,13 @@ describe("open in editor helpers", () => {
     });
 
     const renderer = createRenderer();
+    const focusWrites: string[] = [];
+    const focusSupport = installTerminalFocusReporting(renderer, {
+      write: (sequence) => {
+        focusWrites.push(String(sequence));
+        return true;
+      },
+    });
     const file = createTestDiffFile({ path: "example.ts" });
 
     expect(
@@ -310,5 +327,7 @@ describe("open in editor helpers", () => {
 
     expect(renderer.suspend).toHaveBeenCalledTimes(1);
     expect(renderer.resume).toHaveBeenCalledTimes(1);
+    expect(focusWrites).toEqual(["\x1b[?1004h", "\x1b[?1004l", "\x1b[?1004h"]);
+    focusSupport.dispose();
   });
 });
