@@ -5,7 +5,14 @@ import {
 } from "@opentui/core";
 import { useRenderer, useTerminalDimensions } from "@opentui/react";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useState, useRef } from "react";
-import type { AppBootstrap, CliInput, LayoutMode, UserNoteLineTarget } from "../core/types";
+import { resolveThemePreference } from "../core/themePreference";
+import type {
+  AppBootstrap,
+  CliInput,
+  LayoutMode,
+  TerminalThemeMode,
+  UserNoteLineTarget,
+} from "../core/types";
 import { canReloadInput, computeWatchSignature } from "../core/watch";
 import type { HunkSessionBrokerClient, ReloadedSessionResult } from "../hunk-session/types";
 import { MenuBar } from "./components/chrome/MenuBar";
@@ -93,6 +100,7 @@ export function App({
   noticeText,
   onQuit = () => process.exit(0),
   onReloadSession,
+  terminalThemeMode,
 }: {
   bootstrap: AppBootstrap;
   hostClient?: HunkSessionBrokerClient;
@@ -102,6 +110,7 @@ export function App({
     nextInput: CliInput,
     options?: { resetApp?: boolean; sourcePath?: string },
   ) => Promise<ReloadedSessionResult>;
+  terminalThemeMode: TerminalThemeMode | undefined;
 }) {
   const SIDEBAR_MIN_WIDTH = 22;
   const DIFF_MIN_WIDTH = 48;
@@ -121,8 +130,6 @@ export function App({
   const [transientNoticeText, setTransientNoticeText] = useState<string | null>(null);
   const [layoutMode, setLayoutMode] = useState<LayoutMode>(bootstrap.initialMode);
   const [sessionThemeOverrideId, setSessionThemeOverrideId] = useState<string | null>(null);
-  // Soft reloads replace bootstrap without re-running startup terminal theme detection.
-  const [detectedThemeMode] = useState(() => bootstrap.initialThemeMode);
   const [showAgentNotes, setShowAgentNotes] = useState(bootstrap.initialShowAgentNotes ?? false);
   const [showLineNumbers, setShowLineNumbers] = useState(bootstrap.initialShowLineNumbers ?? true);
   const [wrapLines, setWrapLines] = useState(bootstrap.initialWrapLines ?? false);
@@ -159,16 +166,15 @@ export function App({
       setSessionThemeOverrideId(null);
     }
   }, [sessionThemeOverrideId, themeOptions]);
+  const configuredThemeId =
+    bootstrap.configuredThemePreference === undefined
+      ? bootstrap.initialTheme
+      : resolveThemePreference(bootstrap.configuredThemePreference, terminalThemeMode);
   const effectiveThemeId =
-    themeSelectorState.previewThemeId ?? sessionThemeOverrideId ?? bootstrap.initialTheme;
+    themeSelectorState.previewThemeId ?? sessionThemeOverrideId ?? configuredThemeId;
   const baseTheme = useMemo(
-    () =>
-      resolveTheme(
-        effectiveThemeId,
-        detectedThemeMode ?? renderer.themeMode,
-        bootstrap.customThemes,
-      ),
-    [effectiveThemeId, detectedThemeMode, renderer.themeMode, bootstrap.customThemes],
+    () => resolveTheme(effectiveThemeId, terminalThemeMode ?? null, bootstrap.customThemes),
+    [effectiveThemeId, terminalThemeMode, bootstrap.customThemes],
   );
   const renderSurfaces = useMemo(
     () => themeRenderSurfaces(baseTheme, Boolean(bootstrap.input.options.transparentBackground)),

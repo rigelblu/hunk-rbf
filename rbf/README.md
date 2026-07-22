@@ -9,16 +9,16 @@ Fork-specific product guidance for Hunk. The upstream project README remains at 
 - The upstream package version remains in the root `package.json` for upstream packaging and synchronization
 - Local fork releases update `rbf/RBF_VERSION` and `rbf/CHANGELOG.md` together without rewriting upstream release metadata
 
-# 🔵⋯ Follow terminal appearance
-`theme = "system"` and `--theme system` query the controlling terminal background at startup, choose `github-light-default` for light backgrounds and `github-dark-default` for dark backgrounds, and fall back to `github-dark-default` if the terminal does not answer. Existing `auto` values remain accepted as an alias for `system`. If `theme` is absent, Hunk keeps its existing `github-dark-default` default without querying the terminal.
+# 🔵⋯ Follow appearance
+`theme = "system"` and `--theme system` choose `github-light-default` for light appearance and `github-dark-default` for dark appearance. On macOS, Hunk treats the system appearance as authoritative and switches an open review live when macOS changes between light and dark. Elsewhere, or when native appearance is unavailable, Hunk follows the controlling terminal background. Existing `auto` values remain accepted as an alias for `system`. If `theme` is absent, Hunk keeps its existing `github-dark-default` default without following appearance.
 
-To follow terminal appearance with your own exact built-in themes, configure a complete pair:
+To follow appearance with your own exact built-in themes, configure a complete pair:
 
 ```toml
 theme = { light = "catppuccin-latte", dark = "nord" }
 ```
 
-Both members are required and must be built-in theme ids. Each config layer replaces the whole `theme` value, so a later scalar or complete pair wins without inheriting one member from an earlier pair. A missing or unusable terminal response selects the configured dark member. Hunk chooses once at startup; changing terminal appearance while a review is open does not switch it live.
+Both members are required and must be built-in theme ids. Each config layer replaces the whole `theme` value, so a later scalar or complete pair wins without inheriting one member from an earlier pair. Hunk switches between the configured members as the authoritative appearance changes. A failed native refresh keeps the last known appearance; when neither native nor terminal appearance is available at startup, Hunk selects the configured dark member.
 
 # 🔵⋯ Use multiple named custom themes
 Define personal or project-owned palettes in Hunk's normal global or repository config, then select a named id directly or use named ids in the startup appearance pair:

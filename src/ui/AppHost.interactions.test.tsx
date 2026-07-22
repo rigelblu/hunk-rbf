@@ -2,8 +2,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, mock, test } from "bun:test";
+import { CliRenderEvents } from "@opentui/core";
+import { MouseButtons } from "@opentui/core/testing";
+import { useRenderer } from "@opentui/react";
 import { testRender } from "@opentui/react/test-utils";
-import { act } from "react";
+import { act, useLayoutEffect, useState } from "react";
 import { SESSION_BROKER_REGISTRATION_VERSION } from "@hunk/session-broker-core";
 import type {
   HunkSessionBrokerClient,
@@ -11,7 +14,13 @@ import type {
   HunkSessionServerMessage,
   HunkSessionSnapshot,
 } from "../hunk-session/types";
-import type { AppBootstrap, CliInput, LayoutMode, TerminalThemeMode } from "../core/types";
+import type {
+  AppBootstrap,
+  CliInput,
+  LayoutMode,
+  TerminalThemeMode,
+  ThemePreference,
+} from "../core/types";
 import { createTestVcsAppBootstrap } from "../../test/helpers/app-bootstrap";
 import { capturedTestColorToHex } from "../../test/helpers/test-color-helpers";
 import { createTestDiffFile as buildTestDiffFile, lines } from "../../test/helpers/diff-helpers";
@@ -187,6 +196,7 @@ async function createThemePairTestBootstrap({
     },
   };
   const bootstrap = await loadAppBootstrap(resolvedInput, {
+    configuredThemePreference: configured.input.options.theme,
     cwd: repo,
     customThemes: configured.customThemes,
   });
@@ -203,15 +213,42 @@ async function settleThemeReloadTest(setup: Awaited<ReturnType<typeof testRender
   }
 }
 
-/** Set the OpenTUI test renderer's terminal appearance before forcing an App rerender. */
+/** Apply and emit one OpenTUI terminal appearance change through the production event seam. */
 function setTestRendererThemeMode(
   setup: Awaited<ReturnType<typeof testRender>>,
   mode: TerminalThemeMode,
 ) {
   const renderer = setup.renderer as unknown as {
+    emit: (event: CliRenderEvents, mode: TerminalThemeMode) => boolean;
     themeModeState: { applyThemeMode: (nextMode: TerminalThemeMode) => TerminalThemeMode | null };
   };
-  renderer.themeModeState.applyThemeMode(mode);
+  const changedMode = renderer.themeModeState.applyThemeMode(mode);
+  if (changedMode) {
+    renderer.emit(CliRenderEvents.THEME_MODE, changedMode);
+  }
+}
+
+/** Update OpenTUI's current mode before AppHost installs its passive renderer listener. */
+function PreAppHostEffectThemeMode({ mode }: { mode: TerminalThemeMode }) {
+  const renderer = useRenderer() as unknown as {
+    themeModeState: { applyThemeMode: (nextMode: TerminalThemeMode) => TerminalThemeMode | null };
+  };
+
+  useLayoutEffect(() => {
+    renderer.themeModeState.applyThemeMode(mode);
+  }, [mode, renderer]);
+
+  return null;
+}
+
+/** Find the screen position of the first occurrence of text in a captured frame. */
+function locateFrameText(frame: string, needle: string) {
+  const rows = frame.split("\n");
+  for (let y = 0; y < rows.length; y += 1) {
+    const x = rows[y]?.indexOf(needle) ?? -1;
+    if (x >= 0) return { x, y };
+  }
+  return null;
 }
 
 function createBootstrap(initialMode: LayoutMode = "split", pager = false): AppBootstrap {
@@ -1504,6 +1541,7 @@ describe("App interactions", () => {
             ],
           },
           initialMode: "split",
+          configuredThemePreference: "github-light-default",
           initialTheme: "github-light-default",
           initialShowLineNumbers: false,
           initialWrapLines: true,
@@ -1877,6 +1915,656 @@ describe("App interactions", () => {
     }
   });
 
+  test("renderer appearance events switch a pair without resetting selected review state", async () => {
+    const bootstrap = createBootstrap();
+    bootstrap.configuredThemePreference = {
+      light: "catppuccin-latte",
+      dark: "nord",
+    };
+    bootstrap.initialTheme = "catppuccin-latte";
+    bootstrap.initialThemeMode = "light";
+    const { getLatestSnapshot, hostClient } = createMockHostClient();
+    const setup = await testRender(<AppHost bootstrap={bootstrap} hostClient={hostClient} />, {
+      width: 220,
+      height: 24,
+    });
+
+    try {
+      await flush(setup);
+      await act(async () => {
+        await setup.mockInput.typeText(".");
+      });
+      await waitForSnapshot(
+        setup,
+        getLatestSnapshot,
+        (snapshot) => snapshot.selectedFileId === "beta",
+      );
+
+      let frame = await openThemeSelectorTest(setup);
+      expect(
+        frame
+          .split("\n")
+          .some((line) => line.includes("catppuccin-latte") && line.includes("active")),
+      ).toBe(true);
+      await closeThemeSelectorTest(setup);
+
+      await act(async () => {
+        setTestRendererThemeMode(setup, "dark");
+      });
+      await flush(setup);
+
+      const snapshot = getLatestSnapshot();
+      expect(snapshot?.selectedFileId).toBe("beta");
+      frame = await openThemeSelectorTest(setup);
+      expect(
+        frame.split("\n").some((line) => line.includes("nord") && line.includes("active")),
+      ).toBe(true);
+    } finally {
+      await act(async () => {
+        setup.renderer.destroy();
+      });
+    }
+  });
+
+  test("AppHost reconciles a pre-effect renderer mode and removes its listeners on unmount", async () => {
+    const bootstrap = createBootstrap();
+    bootstrap.configuredThemePreference = {
+      light: "catppuccin-latte",
+      dark: "nord",
+    };
+    bootstrap.initialTheme = "catppuccin-latte";
+    bootstrap.initialThemeMode = "light";
+    let unmountAppHost = () => {};
+
+    function MountHarness() {
+      const [mounted, setMounted] = useState(true);
+      unmountAppHost = () => setMounted(false);
+      return (
+        <>
+          {mounted ? <AppHost bootstrap={bootstrap} /> : null}
+          <PreAppHostEffectThemeMode mode="dark" />
+        </>
+      );
+    }
+
+    const setup = await testRender(<MountHarness />, { width: 220, height: 24 });
+
+    try {
+      await flush(setup);
+      let frame = await openThemeSelectorTest(setup);
+      expect(
+        frame.split("\n").some((line) => line.includes("nord") && line.includes("active")),
+      ).toBe(true);
+      await closeThemeSelectorTest(setup);
+      expect(setup.renderer.listenerCount(CliRenderEvents.FOCUS)).toBe(1);
+      expect(setup.renderer.listenerCount(CliRenderEvents.THEME_MODE)).toBe(1);
+
+      await act(async () => {
+        unmountAppHost();
+      });
+      await flush(setup);
+      expect(setup.renderer.listenerCount(CliRenderEvents.FOCUS)).toBe(0);
+      expect(setup.renderer.listenerCount(CliRenderEvents.THEME_MODE)).toBe(0);
+    } finally {
+      await act(async () => {
+        setup.renderer.destroy();
+      });
+    }
+  });
+
+  test("a successful pre-render system read wins over the renderer snapshot", async () => {
+    const bootstrap = createBootstrap();
+    bootstrap.configuredThemePreference = {
+      light: "catppuccin-latte",
+      dark: "nord",
+    };
+    bootstrap.initialTheme = "nord";
+    bootstrap.initialThemeMode = "dark";
+    let systemReads = 0;
+
+    function MountHarness() {
+      return (
+        <>
+          <AppHost
+            bootstrap={bootstrap}
+            systemAppearanceResolver={() => {
+              systemReads += 1;
+              return "light";
+            }}
+          />
+          <PreAppHostEffectThemeMode mode="dark" />
+        </>
+      );
+    }
+
+    const setup = await testRender(<MountHarness />, { width: 220, height: 24 });
+
+    try {
+      await flush(setup);
+      const frame = await openThemeSelectorTest(setup);
+      expect(
+        frame
+          .split("\n")
+          .some((line) => line.includes("catppuccin-latte") && line.includes("active")),
+      ).toBe(true);
+      expect(systemReads).toBe(2);
+    } finally {
+      await act(async () => {
+        setup.renderer.destroy();
+      });
+    }
+  });
+
+  test("a post-subscription read closes the startup appearance race", async () => {
+    const bootstrap = createBootstrap();
+    bootstrap.configuredThemePreference = {
+      light: "catppuccin-latte",
+      dark: "nord",
+    };
+    bootstrap.initialTheme = "catppuccin-latte";
+    bootstrap.initialThemeMode = "light";
+    const systemModes: TerminalThemeMode[] = ["light", "dark"];
+    let systemReads = 0;
+    const setup = await testRender(
+      <AppHost
+        bootstrap={bootstrap}
+        systemAppearanceResolver={() => systemModes[systemReads++] ?? "dark"}
+      />,
+      { width: 220, height: 24 },
+    );
+
+    try {
+      await flush(setup);
+      const frame = await openThemeSelectorTest(setup);
+      expect(
+        frame.split("\n").some((line) => line.includes("nord") && line.includes("active")),
+      ).toBe(true);
+      expect(systemReads).toBe(2);
+    } finally {
+      await act(async () => {
+        setup.renderer.destroy();
+      });
+    }
+  });
+
+  test("a successful system read remains authoritative after later renderer events", async () => {
+    const bootstrap = createBootstrap();
+    bootstrap.configuredThemePreference = {
+      light: "catppuccin-latte",
+      dark: "nord",
+    };
+    bootstrap.initialTheme = "nord";
+    bootstrap.initialThemeMode = "dark";
+    let systemMode: TerminalThemeMode | null = "light";
+    const systemAppearanceResolver = () => systemMode;
+    const setup = await testRender(
+      <AppHost bootstrap={bootstrap} systemAppearanceResolver={systemAppearanceResolver} />,
+      { width: 220, height: 24 },
+    );
+
+    const expectActiveTheme = async (themeId: string) => {
+      const frame = await openThemeSelectorTest(setup);
+      expect(
+        frame.split("\n").some((line) => line.includes(themeId) && line.includes("active")),
+      ).toBe(true);
+      await closeThemeSelectorTest(setup);
+    };
+
+    try {
+      await flush(setup);
+      await expectActiveTheme("catppuccin-latte");
+
+      systemMode = "dark";
+      await act(async () => {
+        setup.renderer.emit(CliRenderEvents.FOCUS);
+        setup.renderer.emit(CliRenderEvents.FOCUS);
+      });
+      await flush(setup);
+      await expectActiveTheme("nord");
+
+      await act(async () => {
+        setTestRendererThemeMode(setup, "light");
+      });
+      await flush(setup);
+      await expectActiveTheme("nord");
+
+      await act(async () => {
+        setup.renderer.emit(CliRenderEvents.FOCUS);
+      });
+      await flush(setup);
+      await expectActiveTheme("nord");
+
+      systemMode = null;
+      await act(async () => {
+        setup.renderer.emit(CliRenderEvents.THEME_MODE, "light");
+        setup.renderer.emit(CliRenderEvents.FOCUS);
+      });
+      await flush(setup);
+      await expectActiveTheme("nord");
+    } finally {
+      await act(async () => {
+        setup.renderer.destroy();
+      });
+    }
+  });
+
+  test("a macOS preference event switches the pair while Hunk remains focused", async () => {
+    const bootstrap = createBootstrap();
+    bootstrap.configuredThemePreference = {
+      light: "catppuccin-latte",
+      dark: "nord",
+    };
+    bootstrap.initialTheme = "catppuccin-latte";
+    bootstrap.initialThemeMode = "light";
+    let emitSystemMode: (mode: TerminalThemeMode) => void = () => undefined;
+    let subscriptionDisposed = false;
+    const setup = await testRender(
+      <AppHost
+        bootstrap={bootstrap}
+        systemAppearanceResolver={() => "light"}
+        systemAppearanceSubscriber={(onMode) => {
+          emitSystemMode = onMode;
+          return {
+            dispose: () => {
+              subscriptionDisposed = true;
+            },
+          };
+        }}
+      />,
+      { width: 220, height: 24 },
+    );
+
+    try {
+      await flush(setup);
+      await act(async () => {
+        emitSystemMode("dark");
+      });
+      await flush(setup);
+
+      let frame = await openThemeSelectorTest(setup);
+      expect(
+        frame.split("\n").some((line) => line.includes("nord") && line.includes("active")),
+      ).toBe(true);
+      await closeThemeSelectorTest(setup);
+
+      await act(async () => {
+        setTestRendererThemeMode(setup, "light");
+      });
+      await flush(setup);
+      frame = await openThemeSelectorTest(setup);
+      expect(
+        frame.split("\n").some((line) => line.includes("nord") && line.includes("active")),
+      ).toBe(true);
+    } finally {
+      await act(async () => {
+        setup.renderer.destroy();
+      });
+    }
+
+    expect(subscriptionDisposed).toBe(true);
+  });
+
+  test("live appearance applies only to preferences whose existing contract follows it", async () => {
+    const cases: Array<{
+      name: string;
+      preference: ThemePreference | undefined;
+      initialTheme: string;
+      nextMode: TerminalThemeMode;
+      expectedTheme: string;
+    }> = [
+      {
+        name: "absent",
+        preference: undefined,
+        initialTheme: "github-dark-default",
+        nextMode: "light",
+        expectedTheme: "github-dark-default",
+      },
+      {
+        name: "system",
+        preference: "system",
+        initialTheme: "github-dark-default",
+        nextMode: "light",
+        expectedTheme: "github-light-default",
+      },
+      {
+        name: "auto",
+        preference: "auto",
+        initialTheme: "github-dark-default",
+        nextMode: "light",
+        expectedTheme: "github-light-default",
+      },
+      {
+        name: "pair",
+        preference: { light: "catppuccin-latte", dark: "nord" },
+        initialTheme: "catppuccin-latte",
+        nextMode: "dark",
+        expectedTheme: "nord",
+      },
+      {
+        name: "fixed scalar",
+        preference: "dracula",
+        initialTheme: "dracula",
+        nextMode: "light",
+        expectedTheme: "dracula",
+      },
+      {
+        name: "unknown scalar",
+        preference: "future-theme",
+        initialTheme: "future-theme",
+        nextMode: "light",
+        expectedTheme: "github-light-default",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const bootstrap = createBootstrap();
+      bootstrap.configuredThemePreference = testCase.preference;
+      bootstrap.initialTheme = testCase.initialTheme;
+      bootstrap.initialThemeMode = "dark";
+      const setup = await testRender(<AppHost bootstrap={bootstrap} />, {
+        width: 220,
+        height: 24,
+      });
+
+      try {
+        await flush(setup);
+        await act(async () => {
+          setTestRendererThemeMode(setup, testCase.nextMode);
+        });
+        await flush(setup);
+
+        const frame = await openThemeSelectorTest(setup);
+        const activeLine = frame
+          .split("\n")
+          .find((line) => line.includes(testCase.expectedTheme) && line.includes("active"));
+        expect({ name: testCase.name, activeLine }).toEqual({
+          name: testCase.name,
+          activeLine: expect.any(String),
+        });
+      } finally {
+        await act(async () => {
+          setup.renderer.destroy();
+        });
+      }
+    }
+  });
+
+  test("appearance events preserve hunk selection and vertical review position", async () => {
+    const bootstrap = createMouseScrollSelectionBootstrap();
+    bootstrap.configuredThemePreference = { light: "catppuccin-latte", dark: "nord" };
+    bootstrap.initialTheme = "catppuccin-latte";
+    bootstrap.initialThemeMode = "light";
+    const { getLatestSnapshot, hostClient } = createMockHostClient();
+    const setup = await testRender(<AppHost bootstrap={bootstrap} hostClient={hostClient} />, {
+      width: 220,
+      height: 12,
+    });
+
+    try {
+      await flush(setup);
+      await pressHunkNavigationKey(setup, "]", 2);
+      const snapshot = await waitForSnapshot(
+        setup,
+        getLatestSnapshot,
+        (currentSnapshot) =>
+          currentSnapshot.selectedFilePath === "second.ts" &&
+          currentSnapshot.selectedHunkIndex === 1,
+      );
+
+      expect(snapshot).toMatchObject({ selectedFilePath: "second.ts", selectedHunkIndex: 1 });
+      const selectedState = {
+        selectedFilePath: snapshot?.selectedFilePath,
+        selectedHunkIndex: snapshot?.selectedHunkIndex,
+        selectedHunkNewRange: snapshot?.selectedHunkNewRange,
+        selectedHunkOldRange: snapshot?.selectedHunkOldRange,
+      };
+      const visibleLineBefore = firstVisibleAddedLineNumber(setup.captureCharFrame());
+      expect(visibleLineBefore).not.toBeNull();
+
+      await act(async () => {
+        setTestRendererThemeMode(setup, "dark");
+        setup.renderer.emit(CliRenderEvents.THEME_MODE, "dark");
+      });
+      await flush(setup);
+
+      expect(getLatestSnapshot()).toMatchObject(selectedState);
+      expect(firstVisibleAddedLineNumber(setup.captureCharFrame())).toBe(visibleLineBefore);
+    } finally {
+      await act(async () => {
+        setup.renderer.destroy();
+      });
+    }
+  });
+
+  test("appearance events preserve horizontal position and terminal text selection", async () => {
+    const bootstrap = createWrapScrollBootstrap();
+    bootstrap.configuredThemePreference = { light: "catppuccin-latte", dark: "nord" };
+    bootstrap.initialTheme = "catppuccin-latte";
+    bootstrap.initialThemeMode = "light";
+    bootstrap.initialCopyDecorations = true;
+    const setup = await testRender(<AppHost bootstrap={bootstrap} />, { width: 92, height: 20 });
+
+    try {
+      await flush(setup);
+      for (let index = 0; index < 8; index += 1) {
+        await act(async () => {
+          await setup.mockMouse.scroll(60, 10, "down", { modifiers: { shift: true } });
+        });
+        await flush(setup);
+        if (setup.captureCharFrame().includes("viewport anchoring")) break;
+      }
+
+      const frameBefore = setup.captureCharFrame();
+      expect(frameBefore).toContain("viewport anchoring");
+      const visibleLineBefore = firstVisibleAddedLineNumber(frameBefore);
+      const target = locateFrameText(frameBefore, "viewport anchoring");
+      expect(target).not.toBeNull();
+      const copied: string[] = [];
+      setup.renderer.isOsc52Supported = () => true;
+      setup.renderer.copyToClipboardOSC52 = (text) => {
+        copied.push(text);
+        return true;
+      };
+      await act(async () => {
+        await setup.mockMouse.pressDown(target!.x, target!.y, MouseButtons.LEFT);
+        await setup.mockMouse.moveTo(target!.x + "viewport".length, target!.y);
+      });
+      await flush(setup);
+
+      await act(async () => {
+        setTestRendererThemeMode(setup, "dark");
+        await setup.mockMouse.release(target!.x + "viewport".length, target!.y, MouseButtons.LEFT);
+      });
+      await flush(setup);
+
+      const frameAfter = setup.captureCharFrame();
+      expect(frameAfter).toContain("viewport anchoring");
+      expect(firstVisibleAddedLineNumber(frameAfter)).toBe(visibleLineBefore);
+      expect(copied.length).toBeGreaterThan(0);
+      expect(copied.join("\n")).toContain("viewport");
+    } finally {
+      await act(async () => {
+        setup.renderer.destroy();
+      });
+    }
+  });
+
+  test("appearance events preserve layout, filter, sidebar, preview, and session theme policy", async () => {
+    const bootstrap = createBootstrap();
+    bootstrap.configuredThemePreference = { light: "catppuccin-latte", dark: "nord" };
+    bootstrap.initialTheme = "catppuccin-latte";
+    bootstrap.initialThemeMode = "light";
+    let systemMode: TerminalThemeMode = "light";
+    const setup = await testRender(
+      <AppHost bootstrap={bootstrap} systemAppearanceResolver={() => systemMode} />,
+      { width: 240, height: 24 },
+    );
+
+    try {
+      await flush(setup);
+      await act(async () => {
+        await setup.mockInput.typeText("2");
+      });
+      await flush(setup);
+      await act(async () => {
+        await setup.mockInput.pressTab();
+      });
+      await flush(setup);
+      await act(async () => {
+        await setup.mockInput.typeText("beta");
+      });
+      await flush(setup);
+      await act(async () => {
+        await setup.mockInput.pressTab();
+      });
+      await flush(setup);
+      await act(async () => {
+        await setup.mockInput.typeText("s");
+      });
+      await flush(setup);
+
+      let frame = setup.captureCharFrame();
+      expect(frame).toContain("filter=beta");
+      expect((frame.match(/beta\.ts/g) ?? []).length).toBe(1);
+
+      frame = await openThemeSelectorTest(setup);
+      await act(async () => {
+        await setup.mockInput.pressArrow("down");
+      });
+      frame = await waitForFrame(setup, (currentFrame) =>
+        currentFrame.includes("›  catppuccin-macchiato"),
+      );
+      const previewThemeId = "catppuccin-macchiato";
+
+      systemMode = "dark";
+      await act(async () => {
+        setup.renderer.emit(CliRenderEvents.FOCUS);
+      });
+      await flush(setup);
+      expect(setup.captureCharFrame()).toContain(`›  ${previewThemeId}`);
+
+      await closeThemeSelectorTest(setup);
+      frame = await openThemeSelectorTest(setup);
+      expect(
+        frame.split("\n").some((line) => line.includes("nord") && line.includes("active")),
+      ).toBe(true);
+      await act(async () => {
+        await setup.mockInput.pressArrow("down");
+      });
+      frame = await waitForFrame(setup, (currentFrame) => currentFrame.includes("›  one-dark-pro"));
+      const overrideThemeId = "one-dark-pro";
+      await act(async () => {
+        await setup.mockInput.pressEnter();
+      });
+      await flush(setup);
+      systemMode = "light";
+      await act(async () => {
+        setup.renderer.emit(CliRenderEvents.FOCUS);
+      });
+      await flush(setup);
+
+      frame = await openThemeSelectorTest(setup);
+      expect(
+        frame.split("\n").some((line) => line.includes(overrideThemeId) && line.includes("active")),
+      ).toBe(true);
+      await closeThemeSelectorTest(setup);
+
+      frame = setup.captureCharFrame();
+      expect(frame).toContain("filter=beta");
+      expect((frame.match(/beta\.ts/g) ?? []).length).toBe(1);
+      await act(async () => {
+        await setup.mockInput.pressKey("F10");
+      });
+      await flush(setup);
+      await act(async () => {
+        await setup.mockInput.pressArrow("right");
+      });
+      frame = await waitForFrame(setup, (currentFrame) => currentFrame.includes("Stacked view"));
+      expect(frame).toContain("[x] Stacked view");
+      expect(frame).toContain("[ ] Sidebar");
+    } finally {
+      await act(async () => {
+        setup.renderer.destroy();
+      });
+    }
+  });
+
+  test("a focus appearance arriving during hard reload wins without duplicating listeners", async () => {
+    const repo = mkdtempSync(join(process.cwd(), ".hunk-theme-mode-race-"));
+    const left = join(repo, "before.ts");
+    const right = join(repo, "after.ts");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    writeFileSync(left, "export const answer = 41;\n");
+    writeFileSync(right, "export const answer = 42;\n");
+    writeThemePairTestConfig(repo, "catppuccin-latte", "nord");
+
+    const bootstrap = await createThemePairTestBootstrap({ left, mode: "light", repo, right });
+    const { dispatchCommand, hostClient } = createMockHostClient({ cwd: repo, repoRoot: repo });
+    let markLoadStarted: () => void = () => {};
+    const loadStarted = new Promise<void>((resolve) => {
+      markLoadStarted = resolve;
+    });
+    let releaseLoad: () => void = () => {};
+    const loadBarrier = new Promise<void>((resolve) => {
+      releaseLoad = resolve;
+    });
+    const loadAppBootstrapImpl: typeof loadAppBootstrap = async (input, options) => {
+      markLoadStarted();
+      await loadBarrier;
+      return loadAppBootstrap(input, options);
+    };
+    let systemMode: TerminalThemeMode = "light";
+    const setup = await testRender(
+      <AppHost
+        bootstrap={bootstrap}
+        hostClient={hostClient}
+        loadAppBootstrapImpl={loadAppBootstrapImpl}
+        systemAppearanceResolver={() => systemMode}
+      />,
+      { width: 220, height: 24 },
+    );
+
+    try {
+      await flush(setup);
+      expect(setup.renderer.listenerCount(CliRenderEvents.FOCUS)).toBe(1);
+      expect(setup.renderer.listenerCount(CliRenderEvents.THEME_MODE)).toBe(1);
+
+      let reloadPromise: ReturnType<typeof dispatchCommand> | undefined;
+      await act(async () => {
+        reloadPromise = dispatchCommand({
+          type: "command",
+          requestId: "reload-theme-mode-race",
+          command: "reload_session",
+          input: {
+            sessionId: "session-1",
+            nextInput: { kind: "diff", left, right, options: { mode: "split" } },
+          },
+        });
+        await loadStarted;
+      });
+
+      systemMode = "dark";
+      await act(async () => {
+        setup.renderer.emit(CliRenderEvents.FOCUS);
+        releaseLoad();
+        await reloadPromise;
+      });
+      await settleThemeReloadTest(setup);
+
+      const frame = await openThemeSelectorTest(setup);
+      expect(
+        frame.split("\n").some((line) => line.includes("nord") && line.includes("active")),
+      ).toBe(true);
+      expect(setup.renderer.listenerCount(CliRenderEvents.FOCUS)).toBe(1);
+      expect(setup.renderer.listenerCount(CliRenderEvents.THEME_MODE)).toBe(1);
+    } finally {
+      await act(async () => {
+        setup.renderer.destroy();
+      });
+      rmSync(repo, { force: true, recursive: true });
+    }
+  });
+
   test("soft reload applies a changed paired base and preserves a selector override", async () => {
     const repo = mkdtempSync(join(process.cwd(), ".hunk-theme-pair-reload-"));
     const left = join(repo, "before.ts");
@@ -2103,6 +2791,7 @@ describe("App interactions", () => {
 
   test("unknown scalar theme uses the renderer appearance fallback", async () => {
     const bootstrap = createBootstrap();
+    bootstrap.configuredThemePreference = "future-theme";
     bootstrap.initialTheme = "future-theme";
     bootstrap.initialThemeMode = undefined;
     const setup = await testRender(<AppHost bootstrap={bootstrap} />, {
@@ -2111,7 +2800,10 @@ describe("App interactions", () => {
     });
 
     try {
-      setTestRendererThemeMode(setup, "light");
+      await flush(setup);
+      await act(async () => {
+        setTestRendererThemeMode(setup, "light");
+      });
       await flush(setup);
 
       const frame = await openThemeSelectorTest(setup);
@@ -2129,6 +2821,7 @@ describe("App interactions", () => {
 
   test("custom theme stays active in the theme selector when bootstrap provides a custom palette", async () => {
     const bootstrap = createBootstrap();
+    bootstrap.configuredThemePreference = "custom";
     bootstrap.initialTheme = "custom";
     bootstrap.customThemes = {
       custom: {
@@ -2587,6 +3280,7 @@ describe("App interactions", () => {
         files: [createTestDiffFile("space", "space.ts", before, after)],
       },
       initialMode: "split",
+      configuredThemePreference: "github-dark-default",
       initialTheme: "github-dark-default",
     };
 
@@ -2640,6 +3334,7 @@ describe("App interactions", () => {
         files: [createTestDiffFile("pageup", "pageup.ts", before, after)],
       },
       initialMode: "split",
+      configuredThemePreference: "github-dark-default",
       initialTheme: "github-dark-default",
     };
 
@@ -2698,6 +3393,7 @@ describe("App interactions", () => {
         files: [createTestDiffFile("half", "half.ts", before, after)],
       },
       initialMode: "split",
+      configuredThemePreference: "github-dark-default",
       initialTheme: "github-dark-default",
     };
 
@@ -2771,6 +3467,7 @@ describe("App interactions", () => {
         files: [createTestDiffFile("g", "g.ts", before, after)],
       },
       initialMode: "split",
+      configuredThemePreference: "github-dark-default",
       initialTheme: "github-dark-default",
     };
 
@@ -2833,6 +3530,7 @@ describe("App interactions", () => {
         files: [createTestDiffFile("pager-g", "pager-g.ts", before, after)],
       },
       initialMode: "split",
+      configuredThemePreference: "github-dark-default",
       initialTheme: "github-dark-default",
     };
 

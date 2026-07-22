@@ -1,4 +1,5 @@
 import type { CliRenderer, KeyEvent } from "@opentui/core";
+import { resumeTerminalSession, suspendTerminalSession } from "./focusReporting";
 
 type SignalListener = () => void;
 type KeypressListener = (key: KeyEvent) => void;
@@ -102,11 +103,11 @@ export function installJobControlSuspendSupport(
     resumeOnContinue = () => {
       resumeOnContinue = null;
       if (!renderer.isDestroyed) {
-        renderer.resume();
+        resumeTerminalSession(renderer);
       }
     };
 
-    renderer.suspend();
+    suspendTerminalSession(renderer);
     once("SIGCONT", resumeOnContinue);
 
     try {
@@ -115,7 +116,7 @@ export function installJobControlSuspendSupport(
       // If the platform/runtime refuses SIGTSTP, leave the app usable instead of half-suspended.
       clearPendingContinue();
       if (!renderer.isDestroyed) {
-        renderer.resume();
+        resumeTerminalSession(renderer);
       }
     }
   };

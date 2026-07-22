@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { basename, resolve, win32 } from "node:path";
 import type { CliRenderer } from "@opentui/core";
+import { resumeTerminalSession, suspendTerminalSession } from "../../core/focusReporting";
 import type { DiffFile } from "../../core/types";
 
 export interface EditorCommand {
@@ -115,7 +116,7 @@ export function openSelectedFileInEditor({
 
   const shouldSuspend = shouldSuspendForEditor(editor);
   if (shouldSuspend) {
-    renderer.suspend();
+    suspendTerminalSession(renderer);
   }
 
   let exitCode = 0;
@@ -132,7 +133,7 @@ export function openSelectedFileInEditor({
   }
 
   if (shouldSuspend && !renderer.isDestroyed) {
-    renderer.resume();
+    resumeTerminalSession(renderer);
   }
 
   if (failureMessage) {

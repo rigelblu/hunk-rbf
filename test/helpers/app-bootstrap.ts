@@ -54,6 +54,7 @@ export function createTestVcsAppBootstrap({
       title,
     },
     initialMode,
+    configuredThemePreference: vcsOptions.theme ?? initialTheme,
     initialCopyDecorations,
     initialShowAgentNotes,
     initialShowHunkHeaders,

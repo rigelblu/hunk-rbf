@@ -20,6 +20,7 @@ function bootstrapFor(input: CliInput, sourceLabel: string): AppBootstrap {
       files: [],
     },
     initialMode: "split",
+    configuredThemePreference: input.options.theme,
   };
 }
 
