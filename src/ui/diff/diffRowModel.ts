@@ -13,6 +13,8 @@ export interface RenderSpan {
   text: string;
   fg?: string;
   bg?: string;
+  /** Alpha-last word overlay resolved against the final row surface at paint time. */
+  bgOverlay?: string;
 }
 
 export interface SplitLineCell {

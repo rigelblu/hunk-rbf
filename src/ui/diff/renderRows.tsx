@@ -2,11 +2,7 @@ import { Fragment, isValidElement, memo, type ReactNode } from "react";
 import { parseColor, StyledText, type TextChunk } from "@opentui/core";
 import type { DiffFile } from "../../core/changeset/model";
 import type { UserNoteLineTarget } from "../../core/liveComments";
-import {
-  TRANSPARENT_BACKGROUND,
-  type AppTheme,
-  type ThemeRenderSurfaces,
-} from "../themes";
+import type { AppTheme, ThemeRenderSurfaces } from "../themes";
 import {
   resolveSplitCellGeometry,
   resolveSplitPaneWidths,
@@ -52,7 +48,7 @@ import {
 } from "../lib/text";
 import type { CopySelectedRowRange } from "../lib/diffSpatial";
 import type { CursorLine } from "../../core/run/commandInputs";
-import { resolveSpanColors } from "./spanColors";
+import { resolveSpanBackgrounds, resolveSpanColors } from "./spanColors";
 
 export interface CursorHighlight {
   /** The render plan anchor of the row the cursor rests on, shared with reveal lookups. */
@@ -109,7 +105,12 @@ export function fitText(text: string, width: number) {
 /** Append a styled span while preserving color-run coalescing. */
 function appendRenderSpan(target: RenderSpan[], span: RenderSpan) {
   const previous = target.at(-1);
-  if (previous && previous.fg === span.fg && previous.bg === span.bg) {
+  if (
+    previous &&
+    previous.fg === span.fg &&
+    previous.bg === span.bg &&
+    previous.bgOverlay === span.bgOverlay
+  ) {
     previous.text += span.text;
   } else {
     target.push(span);
@@ -316,14 +317,19 @@ function appendFixedInlineChunks(
   }
 
   for (const span of trimmed) {
-    const emittedBackground = span.bg ?? fallbackBg;
-    const opaqueBackground =
-      !span.bg || span.bg === TRANSPARENT_BACKGROUND ? opaqueFallbackBg : span.bg;
-    const renderedBg = highlightBg ? highlightBg(opaqueBackground) : emittedBackground;
+    const backgrounds = resolveSpanBackgrounds(
+      span.bg,
+      span.bgOverlay,
+      fallbackBg,
+      opaqueFallbackBg,
+    );
+    const renderedBg = highlightBg
+      ? highlightBg(backgrounds.contrastBackground)
+      : backgrounds.emittedBackground;
     const colors = resolveSpanColors(
       span.fg ?? fallbackColor,
       renderedBg,
-      highlightBg ? renderedBg : opaqueBackground,
+      highlightBg ? renderedBg : backgrounds.contrastBackground,
     );
     chunks.push({
       __isChunk: true,
@@ -377,13 +383,16 @@ function appendPlainInlineChunks(
   }
 
   for (const span of trimmed) {
-    const emittedBackground = span.bg ?? fallbackBg;
-    const opaqueBackground =
-      !span.bg || span.bg === TRANSPARENT_BACKGROUND ? opaqueFallbackBg : span.bg;
+    const backgrounds = resolveSpanBackgrounds(
+      span.bg,
+      span.bgOverlay,
+      fallbackBg,
+      opaqueFallbackBg,
+    );
     const colors = resolveSpanColors(
       span.fg ?? fallbackColor,
-      emittedBackground,
-      opaqueBackground,
+      backgrounds.emittedBackground,
+      backgrounds.contrastBackground,
     );
     chunks.push({
       __isChunk: true,
@@ -571,18 +580,21 @@ function renderInlineSpans(
       ? highlightBg
       : undefined;
   const needsBlending = !fullHighlightBg && highlightBg && selectionColRange;
-  const finalColors = (foreground: string, spanBg: string | undefined, highlighted = false) => {
-    const emittedBaseBg = spanBg ?? fallbackBg;
-    const opaqueBaseBg =
-      !spanBg || spanBg === TRANSPARENT_BACKGROUND ? opaqueFallbackBg : spanBg;
+  const finalColors = (
+    foreground: string,
+    spanBg: string | undefined,
+    spanOverlay: string | undefined,
+    highlighted = false,
+  ) => {
+    const backgrounds = resolveSpanBackgrounds(spanBg, spanOverlay, fallbackBg, opaqueFallbackBg);
     const emittedBackground =
       highlighted || fullHighlightBg
-        ? (highlighted ? highlightBg : fullHighlightBg)!(opaqueBaseBg)
-        : emittedBaseBg;
+        ? (highlighted ? highlightBg : fullHighlightBg)!(backgrounds.contrastBackground)
+        : backgrounds.emittedBackground;
     return resolveSpanColors(
       foreground,
       emittedBackground,
-      highlighted || fullHighlightBg ? emittedBackground : opaqueBaseBg,
+      highlighted || fullHighlightBg ? emittedBackground : backgrounds.contrastBackground,
     );
   };
   const paddingAmount = Math.max(0, width - usedWidth);
@@ -608,7 +620,7 @@ function renderInlineSpans(
 
   for (const span of trimmed) {
     if (!needsBlending) {
-      const colors = finalColors(span.fg ?? fallbackColor, span.bg);
+      const colors = finalColors(span.fg ?? fallbackColor, span.bg, span.bgOverlay);
       elements.push(
         <span
           key={`${keyPrefix}:${elementIndex++}`}
@@ -628,7 +640,7 @@ function renderInlineSpans(
 
     if (spanEnd <= selectionColRange.start || spanStart >= selectionColRange.end) {
       // Span is entirely outside the selection — render with original styling.
-      const colors = finalColors(span.fg ?? fallbackColor, span.bg);
+      const colors = finalColors(span.fg ?? fallbackColor, span.bg, span.bgOverlay);
       elements.push(
         <span
           key={`${keyPrefix}:${elementIndex++}`}
@@ -647,7 +659,7 @@ function renderInlineSpans(
 
     if (localSelStart >= localSelEnd) {
       // No overlap after clamping — render original.
-      const colors = finalColors(span.fg ?? fallbackColor, span.bg);
+      const colors = finalColors(span.fg ?? fallbackColor, span.bg, span.bgOverlay);
       elements.push(
         <span
           key={`${keyPrefix}:${elementIndex++}`}
@@ -666,7 +678,7 @@ function renderInlineSpans(
     const suffix = sliceTextByWidth(span.text, localSelEnd, spanWidth - localSelEnd).text;
 
     if (prefix) {
-      const colors = finalColors(span.fg ?? fallbackColor, span.bg);
+      const colors = finalColors(span.fg ?? fallbackColor, span.bg, span.bgOverlay);
       elements.push(
         <span
           key={`${keyPrefix}:${elementIndex++}`}
@@ -678,7 +690,7 @@ function renderInlineSpans(
       );
     }
     if (selected) {
-      const colors = finalColors(span.fg ?? fallbackColor, span.bg, true);
+      const colors = finalColors(span.fg ?? fallbackColor, span.bg, span.bgOverlay, true);
       elements.push(
         <span
           key={`${keyPrefix}:${elementIndex++}`}
@@ -690,7 +702,7 @@ function renderInlineSpans(
       );
     }
     if (suffix) {
-      const colors = finalColors(span.fg ?? fallbackColor, span.bg);
+      const colors = finalColors(span.fg ?? fallbackColor, span.bg, span.bgOverlay);
       elements.push(
         <span
           key={`${keyPrefix}:${elementIndex++}`}
@@ -719,7 +731,7 @@ function renderInlineSpans(
         const afterSel = paddingAmount - beforeSel - Math.max(0, inSel);
 
         if (beforeSel > 0) {
-          const colors = finalColors(fallbackColor, undefined);
+          const colors = finalColors(fallbackColor, undefined, undefined);
           elements.push(
             <span
               key={`${keyPrefix}:pad-before`}
@@ -731,19 +743,15 @@ function renderInlineSpans(
           );
         }
         if (inSel > 0) {
-          const colors = finalColors(fallbackColor, undefined, true);
+          const colors = finalColors(fallbackColor, undefined, undefined, true);
           elements.push(
-            <span
-              key={`${keyPrefix}:pad-sel`}
-              fg={colors.foreground}
-              bg={colors.emittedBackground}
-            >
+            <span key={`${keyPrefix}:pad-sel`} fg={colors.foreground} bg={colors.emittedBackground}>
               {" ".repeat(inSel)}
             </span>,
           );
         }
         if (afterSel > 0) {
-          const colors = finalColors(fallbackColor, undefined);
+          const colors = finalColors(fallbackColor, undefined, undefined);
           elements.push(
             <span
               key={`${keyPrefix}:pad-after`}
@@ -755,7 +763,7 @@ function renderInlineSpans(
           );
         }
       } else {
-        const colors = finalColors(fallbackColor, undefined);
+        const colors = finalColors(fallbackColor, undefined, undefined);
         elements.push(
           <span key={`${keyPrefix}:pad`} fg={colors.foreground} bg={colors.emittedBackground}>
             {" ".repeat(paddingAmount)}
@@ -765,7 +773,7 @@ function renderInlineSpans(
     }
   } else if (!paddingMerged && paddingAmount > 0) {
     // Keep a separate padding span when the final content style differs from the cell fallback.
-    const colors = finalColors(fallbackColor, undefined);
+    const colors = finalColors(fallbackColor, undefined, undefined);
     elements.push(
       <span key={`${keyPrefix}:pad`} fg={colors.foreground} bg={colors.emittedBackground}>
         {" ".repeat(paddingAmount)}
@@ -2719,8 +2727,7 @@ export const DiffRowView = memo(
     onStartUserNoteAtHunk,
     onToggleGap,
   }: DiffRowViewProps) {
-    const resolvedThemeSurfaces =
-      themeSurfaces ?? { emittedTheme: theme!, opaqueTheme: theme! };
+    const resolvedThemeSurfaces = themeSurfaces ?? { emittedTheme: theme!, opaqueTheme: theme! };
     return renderRow(
       row,
       width,

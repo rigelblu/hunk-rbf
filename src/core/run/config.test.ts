@@ -648,6 +648,42 @@ describe("config resolution", () => {
     ).toThrow("Expected custom_theme.accent to be a hex color like #112233.");
   });
 
+  test("accepts partial alpha only for custom word-highlight backgrounds", () => {
+    const home = createTempDir("hunk-config-home-");
+    mkdirSync(join(home, ".config", "hunk"), { recursive: true });
+    const configPath = join(home, ".config", "hunk", "config.toml");
+    writeFileSync(
+      configPath,
+      [
+        "[themes.alpha]",
+        'addedContentBg = "#2E9E4859"',
+        'removedContentBg = "#78081ACC"',
+        'accent = "#112233FF"',
+      ].join("\n"),
+    );
+
+    const resolved = resolveConfiguredCliInput(createPatchPagerInput(), {
+      cwd: createTempDir("hunk-config-cwd-"),
+      env: { HOME: home },
+    });
+    expect(resolved.customThemes).toEqual([
+      {
+        id: "alpha",
+        addedContentBg: "#2e9e4859",
+        removedContentBg: "#78081acc",
+        accent: "#112233",
+      },
+    ]);
+
+    writeFileSync(configPath, ["[themes.alpha]", 'accent = "#11223380"'].join("\n"));
+    expect(() =>
+      resolveConfiguredCliInput(createPatchPagerInput(), {
+        cwd: createTempDir("hunk-config-cwd-"),
+        env: { HOME: home },
+      }),
+    ).toThrow("Partial alpha is supported only for addedContentBg and removedContentBg");
+  });
+
   test("rejects invalid Shiki scope colors", () => {
     const home = createTempDir("hunk-config-home-");
     mkdirSync(join(home, ".config", "hunk"), { recursive: true });

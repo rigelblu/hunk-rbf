@@ -593,6 +593,32 @@ describe("Pierre diff rows", () => {
     expect(addedWordSpan?.bg).toBe(TRANSPARENT_BACKGROUND);
   });
 
+  test("carries alpha word overlays into the normalized row model", async () => {
+    const file = createDiffFile();
+    const theme = {
+      ...resolveTheme("github-dark-default", null),
+      addedContentOverlay: "#2e9e4859",
+      removedContentOverlay: "#78081acc",
+    };
+    const highlighted = await loadHighlightedDiff(file, theme);
+    const rows = buildSplitRows(file, highlighted, theme);
+    const changedRow = rows.find(
+      (row) =>
+        row.type === "split-line" && row.left.kind === "deletion" && row.right.kind === "addition",
+    );
+
+    expect(changedRow?.type).toBe("split-line");
+    if (!changedRow || changedRow.type !== "split-line") {
+      throw new Error("Expected a split-line change row");
+    }
+    expect(changedRow.left.spans.find((span) => span.text.includes("41"))?.bgOverlay).toBe(
+      "#78081acc",
+    );
+    expect(changedRow.right.spans.find((span) => span.text.includes("42"))?.bgOverlay).toBe(
+      "#2e9e4859",
+    );
+  });
+
   test("expands highlighted tabs across syntax span boundaries for each configured width", async () => {
     const metadata = parseDiffFromFile(
       { name: "tabs.ts", contents: "let a\t= 1;\n", cacheKey: "tabs-before" },

@@ -153,9 +153,7 @@ try {
     env: commandEnv,
   });
   if (version.stdout !== `${cliVersion}\n`) {
-    throw new Error(
-      `Expected installed hunk --version to print ${cliVersion}.\n${version.stdout}`,
-    );
+    throw new Error(`Expected installed hunk --version to print ${cliVersion}.\n${version.stdout}`);
   }
 
   // The bare command keeps naming the review skill; every bundled skill must

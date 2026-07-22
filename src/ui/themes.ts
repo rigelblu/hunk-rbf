@@ -4,6 +4,7 @@ import { resolveSyntaxScopeOverrides } from "../core/theme/legacySyntaxScopes";
 import type { NamedCustomThemeConfig } from "../extension-api/types";
 import {
   blendHex,
+  compositeHexOverlay,
   contrastRatio,
   ensureMinimumContrast,
   hexColorDistance,
@@ -297,6 +298,22 @@ function buildCustomTheme(customTheme: NamedCustomThemeConfig) {
     (customTheme.diffRemovedColor
       ? blendHex(customTheme.diffRemovedColor, contextBg, rowTint)
       : baseTheme.removedBg);
+  const addedContentOverlay =
+    customTheme.addedContentBg?.length === 9 ? customTheme.addedContentBg : undefined;
+  const removedContentOverlay =
+    customTheme.removedContentBg?.length === 9 ? customTheme.removedContentBg : undefined;
+  const addedContentBg = addedContentOverlay
+    ? (compositeHexOverlay(addedContentOverlay, addedBg) ?? addedBg)
+    : (customTheme.addedContentBg ??
+      (customTheme.diffAddedColor
+        ? blendHex(customTheme.diffAddedColor, addedBg, contentTint)
+        : baseTheme.addedContentBg));
+  const removedContentBg = removedContentOverlay
+    ? (compositeHexOverlay(removedContentOverlay, removedBg) ?? removedBg)
+    : (customTheme.removedContentBg ??
+      (customTheme.diffRemovedColor
+        ? blendHex(customTheme.diffRemovedColor, removedBg, contentTint)
+        : baseTheme.removedContentBg));
   const themeBase: ThemeBase = {
     ...baseTheme,
     id: customTheme.id,
@@ -317,16 +334,10 @@ function buildCustomTheme(customTheme: NamedCustomThemeConfig) {
     movedAddedBg: customTheme.movedAddedBg ?? baseTheme.movedAddedBg,
     movedRemovedBg: customTheme.movedRemovedBg ?? baseTheme.movedRemovedBg,
     contextBg,
-    addedContentBg:
-      customTheme.addedContentBg ??
-      (customTheme.diffAddedColor
-        ? blendHex(customTheme.diffAddedColor, addedBg, contentTint)
-        : baseTheme.addedContentBg),
-    removedContentBg:
-      customTheme.removedContentBg ??
-      (customTheme.diffRemovedColor
-        ? blendHex(customTheme.diffRemovedColor, removedBg, contentTint)
-        : baseTheme.removedContentBg),
+    addedContentBg,
+    removedContentBg,
+    addedContentOverlay,
+    removedContentOverlay,
     contextContentBg: customTheme.contextContentBg ?? baseTheme.contextContentBg,
     addedSignColor:
       customTheme.addedSignColor ??

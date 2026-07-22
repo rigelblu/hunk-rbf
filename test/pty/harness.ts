@@ -249,6 +249,13 @@ export function createPtyHarness() {
     return isolatedConfigHome;
   }
 
+  /** Create an isolated Hunk config home for one launch-specific PTY scenario. */
+  function createConfigHome(config: string) {
+    const dir = makeTempDir("hunk-tuistory-custom-config-");
+    writeText(join(dir, "hunk", "config.toml"), config);
+    return dir;
+  }
+
   function cleanup() {
     while (tempDirs.length > 0) {
       const dir = tempDirs.pop();
@@ -1034,6 +1041,7 @@ end
   return {
     cleanup,
     countMatches,
+    createConfigHome,
     createAgentFilePair,
     createAgentNavigationRepoFixture,
     createGapAnnotatedAgentFilePair,

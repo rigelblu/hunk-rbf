@@ -297,6 +297,26 @@ describe("themes", () => {
     expect(custom.addedSignColor).toBe("#334455");
   });
 
+  test("retains alpha word overlays while exposing an opaque fallback palette", () => {
+    const custom = resolveTheme(
+      "alpha",
+      null,
+      createTestCustomThemes(
+        {
+          base: "github-dark-default",
+          addedContentBg: "#2e9e4859",
+          removedContentBg: "#78081acc",
+        },
+        "alpha",
+      ),
+    );
+
+    expect(custom.addedContentOverlay).toBe("#2e9e4859");
+    expect(custom.removedContentOverlay).toBe("#78081acc");
+    expect(custom.addedContentBg).toMatch(/^#[0-9a-f]{6}$/);
+    expect(custom.removedContentBg).toMatch(/^#[0-9a-f]{6}$/);
+  });
+
   test("lists custom themes after the bundled themes in declaration order", () => {
     const customThemes = [
       { id: "custom", base: "nord" },

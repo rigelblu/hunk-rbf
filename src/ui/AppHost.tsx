@@ -254,8 +254,7 @@ export function AppHost({
         },
       });
       const incomingCliThemeOverride = nextInput.options.theme;
-      const nextCliThemeOverride =
-        incomingCliThemeOverride ?? currentBootstrap.cliThemeOverride;
+      const nextCliThemeOverride = incomingCliThemeOverride ?? currentBootstrap.cliThemeOverride;
       const configInput: CliInput = {
         ...runtimeInput,
         options: {

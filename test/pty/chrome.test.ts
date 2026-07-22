@@ -14,6 +14,42 @@ afterEach(() => {
 });
 
 describe("PTY chrome", () => {
+  test("alpha-aware custom themes load through real PTY startup", async () => {
+    const fixture = harness.createLongWrapFilePair();
+    const configHome = harness.createConfigHome(
+      [
+        'theme = "pty-alpha"',
+        "",
+        "[themes.pty-alpha]",
+        'base = "github-dark-default"',
+        'addedContentBg = "#2e9e4859"',
+        'removedContentBg = "#78081acc"',
+      ].join("\n"),
+    );
+    const session = await harness.launchHunk({
+      args: ["diff", fixture.before, fixture.after, "--mode", "stack"],
+      cols: 110,
+      rows: 18,
+      env: { XDG_CONFIG_HOME: configHome },
+    });
+
+    try {
+      const initial = await session.waitForText(/View\s+Navigate\s+Agent\s+Help/, {
+        timeout: 15_000,
+      });
+      expect(initial).toContain("this is a very long");
+
+      await session.press("t");
+      const selector = await session.waitForText(/pty-alpha/, {
+        timeout: 5_000,
+      });
+      expect(selector).toContain("Theme selector");
+      expect(selector).toContain("pty-alpha");
+    } finally {
+      session.close();
+    }
+  });
+
   test("top menu mouse navigation can open themes, toggle agent notes, and open help", async () => {
     const fixture = harness.createAgentFilePair();
     const session = await harness.launchHunk({
@@ -32,7 +68,9 @@ describe("PTY chrome", () => {
     });
 
     try {
-      const initial = await session.waitForText(/Adds bonus export\./, { timeout: 15_000 });
+      const initial = await session.waitForText(/Adds bonus export\./, {
+        timeout: 15_000,
+      });
       expect(initial).toContain("Highlights the follow-up addition for review.");
 
       await session.click(/View/);
@@ -40,7 +78,9 @@ describe("PTY chrome", () => {
       expect(viewMenu).toContain("Themes…");
 
       await session.click(/Themes…/);
-      const themeSelector = await session.waitForText(/github-light-default/, { timeout: 5_000 });
+      const themeSelector = await session.waitForText(/github-light-default/, {
+        timeout: 5_000,
+      });
       expect(themeSelector).toContain("Theme selector");
 
       await session.click(/github-light-default/);
@@ -55,7 +95,9 @@ describe("PTY chrome", () => {
       expect(themeSelected).toContain("Adds bonus export.");
 
       await session.click(/Agent/, { first: true });
-      const agentMenu = await session.waitForText(/Next annotated file/, { timeout: 5_000 });
+      const agentMenu = await session.waitForText(/Next annotated file/, {
+        timeout: 5_000,
+      });
       expect(agentMenu).toContain("Agent notes");
 
       await session.click(/Agent notes/);
@@ -73,7 +115,9 @@ describe("PTY chrome", () => {
       await session.click(/Help/);
       await session.waitForText(/Controls help/, { timeout: 5_000 });
       await session.click(/Controls help/);
-      const helpDialog = await session.waitForText(/Navigation/, { timeout: 5_000 });
+      const helpDialog = await session.waitForText(/Navigation/, {
+        timeout: 5_000,
+      });
 
       // The key column is rendered from the commands' resolved chords.
       expect(helpDialog).toContain("g / Home");

@@ -1,5 +1,32 @@
 import { describe, expect, test } from "bun:test";
-import { blendHex, contrastRatio, ensureMinimumContrast, relativeLuminance } from "./color";
+import {
+  blendHex,
+  compositeHexOverlay,
+  contrastRatio,
+  ensureMinimumContrast,
+  relativeLuminance,
+} from "./color";
+
+describe("compositeHexOverlay", () => {
+  test.each([
+    ["#2e9e4859", "#dce8de", "#9fceaa"],
+    ["#78081acc", "#efdddb", "#903341"],
+    ["#2e9e4859", "#182d23", "#205430"],
+    ["#78081acc", "#431720", "#6d0b1b"],
+    ["#ff000080", "#0000ff", "#80007f"],
+    ["#abcdef00", "#112233", "#112233"],
+    ["#abcdefFF", "#112233", "#abcdef"],
+  ])("composites %s over %s as %s", (overlay, background, expected) => {
+    expect(compositeHexOverlay(overlay, background)).toBe(expected);
+  });
+
+  test("rejects invalid overlays and non-opaque backgrounds", () => {
+    expect(compositeHexOverlay("#112233", "#ffffff")).toBeUndefined();
+    expect(compositeHexOverlay("#11223380", "transparent")).toBeUndefined();
+    expect(compositeHexOverlay("11223380", "#ffffff")).toBeUndefined();
+    expect(compositeHexOverlay("#11223380", "ffffff")).toBeUndefined();
+  });
+});
 
 describe("ensureMinimumContrast", () => {
   test("matches canonical WCAG luminance and contrast identities", () => {
