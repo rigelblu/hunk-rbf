@@ -57,7 +57,7 @@ Press `t` to select each named theme, then inspect diff meaning, selection, line
 Named custom themes can provide semantic add and remove colors instead of hand-tuning every diff surface:
 
 ```toml
-[custom_themes.my-light]
+[themes.my-light]
 base = "github-light-default"
 diffAddedColor = "#3daa8e"
 diffRemovedColor = "#b4647a"
@@ -70,7 +70,7 @@ Hunk derives omitted row and word-highlight backgrounds from those colors. Expli
 Custom themes accept alpha-last `#RRGGBBAA` values for added and removed word highlights:
 
 ```toml
-[custom_themes.my-dark]
+[themes.my-dark]
 base = "github-dark-default"
 addedContentBg = "#2e9e4859"
 removedContentBg = "#78081acc"

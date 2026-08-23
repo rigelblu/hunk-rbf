@@ -10,6 +10,16 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 
 ---
 
+# 🔵⋯ v0.6.0 (2026-08-23)
+## 🟠⋯ 🚨 Breaking Changes for End Users
+
+- 2026-08-23 - config (technical) | rename `[custom_themes.<id>]` tables to the upstream-native `[themes.<id>]` form (#hk-9)
+
+## 🟠⋯ Fixed for Technical Users
+- 2026-08-23 - fix (technical) | report the fork release version instead of the upstream package version
+
+---
+
 # 🔵⋯ v0.5.0 (2026-07-22)
 
 ## 🟠⋯ Added for End Users
