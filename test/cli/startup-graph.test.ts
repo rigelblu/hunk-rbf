@@ -59,7 +59,8 @@ function traceEagerExternals(entrypoint: string) {
   const externals = new Map<string, string[]>();
 
   const walk = (file: string, chain: string[]) => {
-    if (visited.has(file) || file.endsWith(".json")) {
+    // Only script modules import anything: skip JSON and text imports such as `rbf/RBF_VERSION`.
+    if (visited.has(file) || !/\.[cm]?[jt]sx?$/.test(file)) {
       return;
     }
     visited.add(file);

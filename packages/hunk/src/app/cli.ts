@@ -57,7 +57,11 @@ import {
 } from "../session/agent/errors";
 import { DEFAULT_FILE_GAP, DEFAULT_HUNK_GAP, parseReviewGap } from "../core/run/reviewGap";
 import { DEFAULT_TAB_WIDTH, parseTabWidth } from "../core/run/tabWidth";
-import { resolveCliVersion } from "../core/run/version";
+import {
+  formatCliVersionLine,
+  resolveCliVersion,
+  resolveUpstreamVersion,
+} from "../core/run/version";
 import {
   DEFAULT_WHEEL_SCROLL_LINES,
   parseWheelScrollLines,
@@ -584,9 +588,9 @@ export function createCliReferenceCommand(key: keyof typeof CLI_REFERENCE_COMMAN
   return command;
 }
 
-/** Render plain-text version output for `hunk --version`. */
+/** Render plain-text version output for `hunk --version`, `hunk -v`, and `hunk version`. */
 function renderCliVersion() {
-  return `${resolveCliVersion()}\n`;
+  return `${formatCliVersionLine({ upstream: resolveUpstreamVersion(), fork: resolveCliVersion() })}\n`;
 }
 
 /** Render one bundled skill path for shell usage. */

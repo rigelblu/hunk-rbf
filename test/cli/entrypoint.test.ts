@@ -156,8 +156,13 @@ describe("CLI entrypoint contracts", () => {
     expect(stdout).not.toContain("\u001b[?1049h");
   });
 
-  test("prints the package version for --version without terminal takeover sequences", () => {
-    const expectedVersion = require("../../packages/hunk/package.json").version;
+  test("prints both version identities for --version without terminal takeover sequences", () => {
+    const upstreamVersion = require("../../packages/hunk/package.json").version;
+    const forkVersion = readFileSync(
+      join(import.meta.dir, "..", "..", "rbf", "RBF_VERSION"),
+      "utf8",
+    ).trim();
+    const expectedVersion = `hunk ${upstreamVersion} (Hunk RBF ${forkVersion})`;
     const proc = Bun.spawnSync(["bun", "run", "packages/hunk/src/main.tsx", "--version"], {
       cwd: process.cwd(),
       stdin: "ignore",
@@ -509,8 +514,9 @@ describe("CLI entrypoint contracts", () => {
       );
 
       expect(proc.exitCode).toBe(0);
+      // Hunk RBF's `--version` names both upstream and fork versions from v0.7.0 on.
       expect(Buffer.from(proc.stdout).toString("utf8")).toMatch(
-        /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\n$/,
+        /^hunk \d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)? \(Hunk RBF \d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\)\n$/,
       );
       expect(Buffer.from(proc.stderr).toString("utf8")).toBe("preparing\n");
     } finally {

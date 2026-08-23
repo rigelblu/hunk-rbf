@@ -9,5 +9,5 @@
     "rootDir": "./packages"
   },
   "include": [],
-  "files": ["packages/hunk/src/opentui/index.ts"]
+  "files": ["packages/hunk/src/opentui/index.ts", "packages/hunk/src/rbf-version.d.ts"]
 }
