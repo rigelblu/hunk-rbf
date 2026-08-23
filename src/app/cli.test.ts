@@ -9,7 +9,11 @@ import {
   parseCli,
   WATCH_OPTION,
 } from "./cli";
-import { resolveCliVersion } from "../core/run/version";
+import {
+  formatCliVersionLine,
+  resolveCliVersion,
+  resolveUpstreamVersion,
+} from "../core/run/version";
 
 const tempDirs: string[] = [];
 
@@ -81,8 +85,10 @@ describe("parseCli", () => {
     expect(explicit).toEqual(bare);
   });
 
-  test("resolves the package version metadata", () => {
-    expect(resolveCliVersion()).toBe(require("../../package.json").version);
+  test("resolves the fork version metadata", async () => {
+    const expectedVersion = (await Bun.file("rbf/RBF_VERSION").text()).trim();
+
+    expect(resolveCliVersion()).toBe(expectedVersion);
   });
 
   test("registers each command's runtime options from its reference metadata", () => {
@@ -101,12 +107,20 @@ describe("parseCli", () => {
     }
   });
 
-  test("prints the package version for --version and version", async () => {
-    const expectedVersion = require("../../package.json").version;
+  test("prints both version identities for --version, -v, and version", async () => {
+    const forkVersion = (await Bun.file("rbf/RBF_VERSION").text()).trim();
+    const upstreamVersion = (
+      JSON.parse(await Bun.file("package.json").text()) as { version: string }
+    ).version;
     const flag = await parseCli(["bun", "hunk", "--version"]);
+    const shortFlag = await parseCli(["bun", "hunk", "-v"]);
     const command = await parseCli(["bun", "hunk", "version"]);
 
-    expect(flag).toEqual({ kind: "help", text: `${expectedVersion}\n` });
+    expect(flag).toEqual({
+      kind: "help",
+      text: `hunk ${upstreamVersion} (Hunk RBF ${forkVersion})\n`,
+    });
+    expect(shortFlag).toEqual(flag);
     expect(command).toEqual(flag);
   });
 
@@ -232,7 +246,10 @@ describe("parseCli", () => {
     const version = await parseCli(["bun", "hunk", "--fast", "--version"]);
 
     expect(help).toMatchObject({ kind: "help" });
-    expect(version).toEqual({ kind: "help", text: `${resolveCliVersion()}\n` });
+    expect(version).toEqual({
+      kind: "help",
+      text: `${formatCliVersionLine({ upstream: resolveUpstreamVersion(), fork: resolveCliVersion() })}\n`,
+    });
   });
 
   test("accepts leading --fast and --experimental in either order", async () => {

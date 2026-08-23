@@ -8,5 +8,5 @@
     "rootDir": "./src"
   },
   "include": [],
-  "files": ["src/opentui/index.ts"]
+  "files": ["src/opentui/index.ts", "src/rbf-version.d.ts"]
 }

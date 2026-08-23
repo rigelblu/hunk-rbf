@@ -152,8 +152,13 @@ try {
   const version = run([installedHunk, "--version"], {
     env: commandEnv,
   });
-  if (version.stdout !== `${cliVersion}\n`) {
-    throw new Error(`Expected installed hunk --version to print ${cliVersion}.\n${version.stdout}`);
+  // `hunk --version` prints both identities from v0.7.0 on; a bare semver here would mean
+  // the installed binary lost its upstream compatibility label.
+  const expectedVersionLine = `hunk ${packageVersion} (Hunk RBF ${cliVersion})`;
+  if (version.stdout !== `${expectedVersionLine}\n`) {
+    throw new Error(
+      `Expected installed hunk --version to print ${expectedVersionLine}.\n${version.stdout}`,
+    );
   }
 
   // The bare command keeps naming the review skill; every bundled skill must
