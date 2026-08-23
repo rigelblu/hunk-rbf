@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createPtyHarness, dragMouse, lineIndexOf } from "./harness";
+import { resolveCanonicalPath } from "../../packages/hunk/src/core/run/paths";
 
 const harness = createPtyHarness();
 const REVIEW_TRIAGE_EXTENSION = resolve(
@@ -57,6 +58,11 @@ function readTrustState(configHome: string): Record<string, string> {
     extensionTrust?: Record<string, string>;
   };
   return parsed.extensionTrust ?? {};
+}
+
+/** Read one trust decision using the canonical repo key Hunk persists. */
+function readTrustDecision(configHome: string, repoRoot: string) {
+  return readTrustState(configHome)[resolveCanonicalPath(repoRoot)];
 }
 
 /**
@@ -470,7 +476,7 @@ describe("PTY extensions", () => {
       expect(reloaded).not.toContain("beta.ts");
       expect(reloaded).toContain("alpha.ts");
 
-      expect(readTrustState(configHome)[fixture.dir]).toBe("trusted");
+      expect(readTrustDecision(configHome, fixture.dir)).toBe("trusted");
     } finally {
       session.close();
     }
@@ -528,7 +534,7 @@ describe("PTY extensions", () => {
       expect(dismissed).toContain("beta.ts");
       expect(dismissed).not.toContain("REPO EXTENSION ACTIVE");
 
-      expect(readTrustState(configHome)[fixture.dir]).toBeUndefined();
+      expect(readTrustDecision(configHome, fixture.dir)).toBeUndefined();
     } finally {
       session.close();
     }
@@ -560,7 +566,7 @@ describe("PTY extensions", () => {
       expect(denied).toContain("beta.ts");
       expect(denied).not.toContain("REPO EXTENSION ACTIVE");
 
-      expect(readTrustState(configHome)[fixture.dir]).toBe("denied");
+      expect(readTrustDecision(configHome, fixture.dir)).toBe("denied");
     } finally {
       session.close();
     }
