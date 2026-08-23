@@ -8,33 +8,43 @@
 # deliberately, inspect unexpected fork-owned collisions, then run your verify command.
 #
 # Requires an 'upstream' git remote carrying the upstream branch (default: main;
-# set UPSTREAM_BRANCH to override). To gate a clean rebase on a build/test suite,
-# set UPSTREAM_SYNC_VERIFY_CMD or pass --verify-cmd — the project supplies its own.
+# set UPSTREAM_BRANCH to override). A clean rebase runs Hunk's automated verification
+# suite by default; override it with UPSTREAM_SYNC_VERIFY_CMD or --verify-cmd.
 
 set -euo pipefail
 
 check_only=false
 skip_verify=false
 log_path=""
-verify_cmd="${UPSTREAM_SYNC_VERIFY_CMD:-}"
+default_verify_cmd="bun run format:check && bun run typecheck && bun run lint && bun run test && bun run test:integration && bun run test:tty-smoke"
+verify_cmd="$default_verify_cmd"
+use_isolated_verify_home=true
+if [[ -n "${UPSTREAM_SYNC_VERIFY_CMD:-}" ]]; then
+  verify_cmd="$UPSTREAM_SYNC_VERIFY_CMD"
+  use_isolated_verify_home=false
+fi
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/upstream-sync.sh [options]
+Usage: rbf/scripts/upstream-sync.sh [options]
 
 Fetch the 'upstream' remote, rebase this fork's stack onto its main branch, and
 report any conflicts with their divergence classification.
 
 Options:
   --check-only        Fetch and report divergence and classification; no rebase.
-  --verify-cmd <cmd>  Shell command to run after a clean rebase (build/test gates).
+  --verify-cmd <cmd>  Shell command to run after a clean rebase.
   --skip-verify       Skip the verify command after a clean rebase.
   --log-path <path>   Sync log. Default: $HOME/Library/Logs/<repo>-upstream-sync.log.
   -h, --help          Show this help.
 
 Environment:
   UPSTREAM_BRANCH           Upstream branch to track (default: main).
-  UPSTREAM_SYNC_VERIFY_CMD  Default for --verify-cmd.
+  UPSTREAM_SYNC_VERIFY_CMD  Override Hunk's default automated verification suite.
+
+Hunk's default suite runs with an isolated temporary HOME so local config cannot
+change CLI, extension, theme, or VCS test behavior. Custom verify commands keep
+the caller's environment.
 USAGE
 }
 
@@ -60,6 +70,7 @@ while [[ $# -gt 0 ]]; do
     --verify-cmd)
       require_value "$1" "${2:-}"
       verify_cmd="$2"
+      use_isolated_verify_home=false
       shift 2
       ;;
     --log-path)
@@ -101,6 +112,21 @@ log() {
 
 run_logged() {
   "$@" 2>&1 | tee -a "$log_path"
+}
+
+run_verify() {
+  if [[ "$use_isolated_verify_home" != true ]]; then
+    run_logged bash -c "$verify_cmd"
+    return
+  fi
+
+  local verify_home
+  local verify_status=0
+  verify_home="$(mktemp -d "${TMPDIR:-/tmp}/hunk-upstream-sync.XXXXXX")"
+  log "Using isolated verification home: $verify_home"
+  env -u XDG_CONFIG_HOME -u JJ_CONFIG HOME="$verify_home" bash -c "$verify_cmd" 2>&1 | tee -a "$log_path" || verify_status=$?
+  rm -rf -- "$verify_home"
+  return "$verify_status"
 }
 
 upstream_branch="${UPSTREAM_BRANCH:-main}"
@@ -262,7 +288,9 @@ run_logged jj log -r "${fork_base}..${stack_tip}" --no-graph -T 'change_id.short
 
 log ""
 log "== rebase =="
-if ! run_logged jj rebase -b @ -d "$upstream_ref"; then
+# The fork's published revisions are immutable under the normal jj policy. The
+# merge-base check above bounds this rewrite to the fork stack being transplanted.
+if ! run_logged jj rebase -b @ -d "$upstream_ref" --ignore-immutable; then
   log "Error: jj rebase failed. Undo rebase/local-history changes with: jj op restore $pre_op"
   exit 1
 fi
@@ -284,7 +312,7 @@ if [[ -z "$conflicted_revs" ]]; then
     log "No verify command configured — set UPSTREAM_SYNC_VERIFY_CMD or pass --verify-cmd to gate on build/test."
   else
     log "Running verify command: $verify_cmd"
-    if ! run_logged bash -c "$verify_cmd"; then
+    if ! run_verify; then
       log "Error: verify command failed after rebase. Inspect, or undo rebase/local-history changes with: jj op restore $pre_op"
       exit 1
     fi

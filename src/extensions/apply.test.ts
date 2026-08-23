@@ -8,7 +8,7 @@ import {
   HUNK_DEFAULT_VCS_DETECTION_PRIORITY,
 } from "../extension-api/types";
 import type { Changeset, DiffFile } from "../core/changeset/model";
-import { extendVcsCatalog } from "../core/vcs";
+import { detectVcs, extendVcsCatalog } from "../core/vcs";
 import type { VcsAdapter } from "../core/vcs/types";
 import { getBundledVcsCatalog } from "../app/vcsCatalog";
 import { HUNK_FILES_PANE_KEY } from "./extensionIds";
@@ -617,10 +617,11 @@ describe("resolveSessionVcsId", () => {
 
   test("falls back to detection and reports an id nothing owns", () => {
     const resolved = resolveSessionVcsId("hg", process.cwd(), BASE_VCS_CATALOG);
+    const detectedVcsId = detectVcs(process.cwd(), BASE_VCS_CATALOG)?.id;
 
     expect(resolved.unknownVcsId).toBe("hg");
-    // The repo Hunk lives in is a Git checkout, so detection lands there.
-    expect(resolved.vcsId).toBe("git");
+    expect(detectedVcsId).toBeDefined();
+    expect(resolved.vcsId).toBe(detectedVcsId);
   });
 
   test("leaves an unset id alone", () => {

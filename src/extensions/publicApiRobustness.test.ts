@@ -258,9 +258,11 @@ describe("registerVcsAdapter with junk", () => {
     });
 
     const adapters = registry.vcsAdapters.map((entry) => entry.adapter);
-    // Hunk's own repo is a Git checkout, so a throwing extension adapter must
-    // not prevent Git from being detected.
-    expect(detectVcs(process.cwd(), extendVcsCatalog(BASE_VCS_CATALOG, adapters))?.id).toBe("git");
+    const detectedVcsId = detectVcs(process.cwd(), BASE_VCS_CATALOG)?.id;
+    expect(detectedVcsId).toBeDefined();
+    expect(detectVcs(process.cwd(), extendVcsCatalog(BASE_VCS_CATALOG, adapters))?.id).toBe(
+      detectedVcsId,
+    );
   });
 
   test("an adapter whose operations are unusable reports unsupported, not a TypeError", () => {
