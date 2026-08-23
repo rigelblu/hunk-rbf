@@ -456,34 +456,6 @@ describe("config resolution", () => {
     expect(resolved.startupNotices).toBeUndefined();
   });
 
-  test("loads deprecated [custom_themes.<id>] tables for migration", () => {
-    const home = createTempDir("hunk-config-home-");
-    mkdirSync(join(home, ".config", "hunk"), { recursive: true });
-    writeFileSync(
-      join(home, ".config", "hunk", "config.toml"),
-      [
-        'theme = { light = "my-light", dark = "my-dark" }',
-        "",
-        "[custom_themes.my-light]",
-        'base = "github-light-default"',
-        "",
-        "[custom_themes.my-dark]",
-        'base = "github-dark-default"',
-      ].join("\n"),
-    );
-
-    const resolved = resolveConfiguredCliInput(createPatchPagerInput(), {
-      cwd: createTempDir("hunk-config-cwd-"),
-      env: { HOME: home },
-    });
-
-    expect(resolved.customThemes.map((theme) => theme.id)).toEqual(["my-light", "my-dark"]);
-    expect(resolved.startupNotices).toContainEqual({
-      key: "deprecated:custom-themes-table",
-      message: "Deprecated [custom_themes.<id>] loaded • migrate to [themes.<id>]",
-    });
-  });
-
   test("layers named themes so repo config overrides the user layer per theme id", () => {
     const home = createTempDir("hunk-config-home-");
     const repo = createTempDir("hunk-config-repo-");
