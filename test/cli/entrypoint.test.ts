@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -121,8 +129,13 @@ describe("CLI entrypoint contracts", () => {
     expect(stdout).not.toContain("\u001b[?1049h");
   });
 
-  test("prints the package version for --version without terminal takeover sequences", () => {
-    const expectedVersion = require("../../package.json").version;
+  test("prints both version identities for --version without terminal takeover sequences", () => {
+    const upstreamVersion = require("../../package.json").version;
+    const forkVersion = readFileSync(
+      join(import.meta.dir, "..", "..", "rbf", "RBF_VERSION"),
+      "utf8",
+    ).trim();
+    const expectedVersion = `hunk ${upstreamVersion} (Hunk RBF ${forkVersion})`;
     const proc = Bun.spawnSync(["bun", "run", "src/main.tsx", "--version"], {
       cwd: process.cwd(),
       stdin: "ignore",

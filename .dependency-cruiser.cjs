@@ -172,7 +172,12 @@ module.exports = {
   options: {
     doNotFollow: { path: "node_modules" },
     // Production graph only: tests are colocated and free to reach across boundaries.
-    exclude: { path: ["\\.test\\.(ts|tsx)$", "(^|/)node_modules/"] },
+    // Ambient declarations are excluded too: nothing imports a `.d.ts`, so `no-dead-modules`
+    // reads every one as unreachable. That is a category error rather than a finding — a
+    // declaration file has no dependencies to hold a boundary hostage, and the compiler, not
+    // an import, is its consumer. TEST_ONLY_MODULES would be the wrong home for the same
+    // reason: tests are not what keeps it alive either.
+    exclude: { path: ["\\.test\\.(ts|tsx)$", "\\.d\\.ts$", "(^|/)node_modules/"] },
     tsConfig: { fileName: "tsconfig.json" },
     tsPreCompilationDeps: true,
     enhancedResolveOptions: {
