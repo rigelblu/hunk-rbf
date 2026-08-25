@@ -10,6 +10,16 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 
 ---
 
+# 🔵⋯ v0.7.0 (2026-08-24)
+
+## 🟠⋯ 🚨 Breaking Changes for Technical Users
+- 2026-08-24 - feat (technical) | read either version from a script without a bare semver to parse — no version command prints one any more; take the first field after `hunk` for upstream, or the `Hunk RBF` parenthetical for the fork (#hk-10)
+
+## 🟠⋯ Added for End Users
+- 2026-08-24 - feat (ux) | see both upstream compatibility and fork release identity when I check the version (#hk-10)
+
+---
+
 # 🔵⋯ v0.6.0 (2026-08-23)
 ## 🟠⋯ 🚨 Breaking Changes for End Users
 
