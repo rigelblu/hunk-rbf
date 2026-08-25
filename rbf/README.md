@@ -6,7 +6,32 @@ Fork-specific product guidance for Hunk. The upstream project README remains at 
 
 # 🔵⋯ Versions
 
-- The fork version lives in `rbf/RBF_VERSION` and is reported by `hunk --version`
+`hunk --version`, `hunk -v`, and `hunk version` all print the same single line, naming both identities:
+
+```text
+$ hunk --version
+hunk 0.19.0 (Hunk RBF 0.7.0)
+```
+
+The first number is the upstream Hunk release this fork is built against. The parenthetical is the fork's own release. They advance independently, so neither is "ahead" of the other — quote the whole line in a bug report and it says exactly which build you have.
+
+If one source is malformed, only that value reads `0.0.0-unknown`. The other still shows its real version, and neither ever substitutes for the other.
+
+## 🟠⋯ Reading a version from a script
+**From `v0.7.0` on, no version command prints a bare semver.** A script that runs `hunk --version` and compares the output to a version number will stop matching. There is no flag to restore the old shape; read the value you want instead:
+
+| What you want                          | How to read it                                                  |
+| :------------------------------------- | :-------------------------------------------------------------- |
+| Upstream compatibility version         | `hunk --version \| awk '{print $2}'`                            |
+| Fork release, from an installed binary | `hunk --version \| awk -F'Hunk RBF ' '{print $2}' \| tr -d ')'` |
+| Fork release, inside a checkout        | `cat rbf/RBF_VERSION`                                           |
+
+The middle read is the one to use when all you have is the binary — an installed Hunk RBF does not ship `rbf/RBF_VERSION`.
+
+One known consequence: the upstream `install.sh` already-current check reduces this line to a value that never matches a bare version, so it re-downloads instead of skipping. It prints no error and installs correctly; it just does redundant work. Hunk RBF is installed with `bun run install:bin`, so this affects only an upstream installer pointed at a fork binary.
+
+## 🟠⋯ Where each version lives
+- The fork release version lives in `rbf/RBF_VERSION`
 - The upstream package version remains in the root `package.json` for upstream packaging and synchronization
 - Local fork releases update `rbf/RBF_VERSION` and `rbf/CHANGELOG.md` together without rewriting upstream release metadata
 
