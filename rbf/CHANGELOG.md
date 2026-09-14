@@ -6,7 +6,10 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 
 # 🔵⋯ [Unreleased]
 
-(empty)
+## 🟠⋯ Fixed for Technical Users
+
+- 2026-09-14 - doc (fix technical) | the generated config reference lists the `custom_theme.diffAddedColor` and `custom_theme.diffRemovedColor` keys the fork added, so the website check passes again (#hk-13)
+- 2026-09-14 - ci (fix technical) | `rbf/scripts/upstream-sync.sh` runs `check:docs` in its default verify command, so a sync can't pass with stale generated docs (#hk-13)
 
 ---
 

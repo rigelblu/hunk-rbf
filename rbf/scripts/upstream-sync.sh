@@ -16,7 +16,7 @@ set -euo pipefail
 check_only=false
 skip_verify=false
 log_path=""
-default_verify_cmd="bun run format:check && bun run typecheck && bun run lint && bun run test && bun run test:integration && bun run test:tty-smoke"
+default_verify_cmd="bun run format:check && bun run typecheck && bun run lint && bun run check:docs && bun run test && bun run test:integration && bun run test:tty-smoke"
 verify_cmd="$default_verify_cmd"
 use_isolated_verify_home=true
 if [[ -n "${UPSTREAM_SYNC_VERIFY_CMD:-}" ]]; then
