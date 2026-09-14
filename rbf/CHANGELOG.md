@@ -30,6 +30,28 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 - 2026-09-14 - feat (ux) | check or restart the session daemon with `hunk daemon status` and `hunk daemon restart` (#hk-13)
 - 2026-09-14 - feat (ux) | read syntax-highlighted code in extension file views (#hk-13)
 
+## 🟠⋯ Improved for End Users
+
+The sync changed these Hunk RBF behaviors to fit upstream's new code. Their commits keep their original messages, so this list records what each one does now.
+
+- 2026-09-14 - feat (improve ux) | a review opened from `hunk log` follows macOS appearance with your light/dark pair, unless you picked a theme or passed `hunk log --theme`; the history list itself uses the pair's dark theme — ported in `hk-3` and `hk-1` (#hk-13)
+- 2026-09-14 - feat (improve ux) | a custom theme's word-highlight backgrounds come from its explicit `addedContentBg` or `removedContentBg`, then from `diffAddedColor` or `diffRemovedColor`, then from its base theme's upstream-tinted backgrounds — ported in `hk-6` (#hk-13)
+- 2026-09-14 - feat (improve ux) | highlighted code keeps 4.5:1 contrast on the extension current line under `--transparent-background`, and text an extension dims on purpose can drop to upstream's 1.6:1 floor — ported in `hk-6` (#hk-13)
+- 2026-09-14 - feat (improve ux) | diff signs keep Hunk RBF's 1%-step contrast rescue instead of upstream's 2% steps, so 10 of 65 built-in themes differ from upstream by at most 4 RGB units in sign-derived colors — ported in `hk-6` (#hk-13)
+
+## 🟠⋯ Fixed for End Users
+
+- 2026-09-14 - fix (ux) | a light/dark pair keeps following macOS appearance after `r`, a watch reload, or returning from the editor — before, the first refresh froze it — ported in `hk-3` (#hk-13)
+- 2026-09-14 - fix (ux) | Hunk exits cleanly when its terminal disconnects, instead of exiting 1 while turning focus reporting off — ported in `hk-3` (#hk-13)
+
+## 🟠⋯ 🚨 Breaking Changes for Technical Users
+
+- 2026-09-14 - feat (BREAKING technical) | extensions receive `theme_changed` only when the user commits a theme, as upstream documents — an appearance switch no longer sends it — ported in `hk-3` (#hk-13)
+
+## 🟠⋯ Improved for Technical Users
+
+- 2026-09-14 - feat (improve technical) | an extension line mark that sets a background replaces the alpha word overlay, and a dim mark keeps it — ported in `hk-7` (#hk-13)
+
 ---
 
 # 🔵⋯ v0.7.0 (2026-08-24)
