@@ -335,6 +335,8 @@ These deprecated IDs remain accepted by `theme` and `custom_theme.base`, then no
 | `custom_theme.accentMuted`         | Override the accentMuted semantic color.         |
 | `custom_theme.text`                | Override the text semantic color.                |
 | `custom_theme.muted`               | Override the muted semantic color.               |
+| `custom_theme.diffAddedColor`      | Override the diffAddedColor semantic color.      |
+| `custom_theme.diffRemovedColor`    | Override the diffRemovedColor semantic color.    |
 | `custom_theme.addedBg`             | Override the addedBg semantic color.             |
 | `custom_theme.removedBg`           | Override the removedBg semantic color.           |
 | `custom_theme.movedAddedBg`        | Override the movedAddedBg semantic color.        |
