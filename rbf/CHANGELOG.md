@@ -10,22 +10,45 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 
 ---
 
+# 🔵⋯ v0.8.0 (2026-09-14)
+
+## 🟠⋯ 🚨 Breaking Changes for End Users
+
+- 2026-09-14 - feat (BREAKING ux) | compare two files inside a jj repository with `hunk diff --files <a> <b>` — there, `hunk diff <a> <b>` now compares two revisions (#hk-13)
+- 2026-09-14 - feat (BREAKING ux) | press `1` for the unified layout and `2` for split, and read `unified` where the layout used to say `stack` — `mode = "stack"` still works (#hk-13)
+
+## 🟠⋯ Added for End Users
+
+- 2026-09-14 - big feat (ux) | use upstream Hunk 0.22.0 plus ten unreleased upstream commits (`ee556ac8`), with every Hunk RBF feature working as before (#hk-13)
+- 2026-09-14 - feat (ux) | find text in a review with `/` search (#hk-13)
+- 2026-09-14 - feat (ux) | browse history in the redesigned `hunk log`, with its menu and theme picker (#hk-13)
+- 2026-09-14 - feat (ux) | see review status and answer inline prompts in the new status line (#hk-13)
+- 2026-09-14 - feat (ux) | set how far the mouse wheel scrolls (#hk-13)
+- 2026-09-14 - feat (ux) | check or restart the session daemon with `hunk daemon status` and `hunk daemon restart` (#hk-13)
+- 2026-09-14 - feat (ux) | read syntax-highlighted code in extension file views (#hk-13)
+
+---
+
 # 🔵⋯ v0.7.0 (2026-08-24)
 
 ## 🟠⋯ 🚨 Breaking Changes for Technical Users
+
 - 2026-08-24 - feat (technical) | read either version from a script without a bare semver to parse — no version command prints one any more; take the first field after `hunk` for upstream, or the `Hunk RBF` parenthetical for the fork (#hk-10)
 
 ## 🟠⋯ Added for End Users
+
 - 2026-08-24 - feat (ux) | see both upstream compatibility and fork release identity when I check the version (#hk-10)
 
 ---
 
 # 🔵⋯ v0.6.0 (2026-08-23)
+
 ## 🟠⋯ 🚨 Breaking Changes for End Users
 
 - 2026-08-23 - config (technical) | rename `[custom_themes.<id>]` tables to the upstream-native `[themes.<id>]` form (#hk-9)
 
 ## 🟠⋯ Fixed for Technical Users
+
 - 2026-08-23 - fix (technical) | report the fork release version instead of the upstream package version
 
 ---

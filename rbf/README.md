@@ -10,7 +10,7 @@ Fork-specific product guidance for Hunk. The upstream project README remains at 
 
 ```text
 $ hunk --version
-hunk 0.19.0 (Hunk RBF 0.7.0)
+hunk 0.22.0 (Hunk RBF 0.8.0)
 ```
 
 The first number is the upstream Hunk release this fork is built against. The parenthetical is the fork's own release. They advance independently, so neither is "ahead" of the other — quote the whole line in a bug report and it says exactly which build you have.
@@ -18,6 +18,7 @@ The first number is the upstream Hunk release this fork is built against. The pa
 If one source is malformed, only that value reads `0.0.0-unknown`. The other still shows its real version, and neither ever substitutes for the other.
 
 ## 🟠⋯ Reading a version from a script
+
 **From `v0.7.0` on, no version command prints a bare semver.** A script that runs `hunk --version` and compares the output to a version number will stop matching. There is no flag to restore the old shape; read the value you want instead:
 
 | What you want                          | How to read it                                                  |
@@ -31,8 +32,9 @@ The middle read is the one to use when all you have is the binary — an install
 One known consequence: the upstream `install.sh` already-current check reduces this line to a value that never matches a bare version, so it re-downloads instead of skipping. It prints no error and installs correctly; it just does redundant work. Hunk RBF is installed with `bun run install:bin`, so this affects only an upstream installer pointed at a fork binary.
 
 ## 🟠⋯ Where each version lives
+
 - The fork release version lives in `rbf/RBF_VERSION`
-- The upstream package version remains in the root `package.json` for upstream packaging and synchronization
+- The upstream package version lives in `packages/hunk/package.json`, which upstream owns for its packaging and synchronization
 - Local fork releases update `rbf/RBF_VERSION` and `rbf/CHANGELOG.md` together without rewriting upstream release metadata
 
 # 🔵⋯ Follow appearance
@@ -72,8 +74,10 @@ Named ids appear in the theme selector and work anywhere a theme id is accepted.
 Use the focused theme fixture to compare both members of a personal pair against the same review:
 
 ```sh
-hunk diff test/fixtures/themes/rose-pine/before.ts test/fixtures/themes/rose-pine/after.ts
+hunk diff --files test/fixtures/themes/rose-pine/before.ts test/fixtures/themes/rose-pine/after.ts
 ```
+
+Inside a jj repository, `hunk diff <a> <b>` compares two revisions, so `--files` is what compares two files.
 
 Press `t` to select each named theme, then inspect diff meaning, selection, line numbers, and syntax in light and dark terminal appearances. Keep personal palette values in user configuration rather than copying them into Hunk source or release artifacts.
 

@@ -36,6 +36,7 @@ rb-drive — not in this repo. Don't start cold; resume.
 
 - Run `docs-to-changelog <scope> rbf/CHANGELOG.md` for RBF user-facing changes; never omit the changelog path
 - Keep fork release notes and usage guidance in `rbf/CHANGELOG.md` and `rbf/README.md`; leave the root equivalents aligned with upstream
-- Use `rbf/RBF_VERSION` as the fork release version; do not bump the root `package.json` for a local RBF release
+- Use `rbf/RBF_VERSION` as the fork release version; do not bump `packages/hunk/package.json` for a local RBF release
+- Build and release with the Bun upstream pins: stop unless `bun --version` matches the `packageManager` field in `packages/hunk/package.json`
 - Keep `rbf/RBF_VERSION`, the RBF changelog heading, feature brief, ship plan, and released test-suite entries on the same version
 - Use Changesets only when intentionally preparing an upstream package release
