@@ -49,4 +49,6 @@ result
 .video-work/
 
 # rbf
+.rb-drive-remote
+.rb-drive-public-share
 rb-drive
