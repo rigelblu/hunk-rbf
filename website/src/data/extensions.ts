@@ -29,7 +29,8 @@ export type ExtensionCategory =
   | "Line highlighter"
   | "File view"
   | "VCS backend"
-  | "Changeset transform";
+  | "Changeset transform"
+  | "Language";
 
 /** One directory listing, before build-time repository metadata is merged in. */
 export interface ExtensionListing {
@@ -65,15 +66,6 @@ export type ExtensionEntry = ExtensionListing & ExtensionActivity;
  * it with the sort control.
  */
 export const EXTENSION_CATALOG: readonly ExtensionListing[] = [
-  {
-    repo: "modem-dev/hunk-gh",
-    name: "hunk-gh",
-    summary:
-      "Opens a GitHub pull request, commit, or comparison diff in Hunk straight from the command line, without installing the GitHub CLI.",
-    categories: ["Command"],
-    version: "0.1.0",
-    apiVersion: 10,
-  },
   {
     repo: "modem-dev/hunk-hg",
     name: "hunk-hg",
@@ -150,6 +142,14 @@ export const EXTENSION_CATALOG: readonly ExtensionListing[] = [
     apiVersion: 6,
   },
   {
+    repo: "HackAttack/hunk-starlark",
+    name: "hunk-starlark",
+    summary: "Highlights Bazel, Buck2, and other Starlark files as Python.",
+    categories: ["Language"],
+    version: "1.0.0",
+    apiVersion: 9,
+  },
+  {
     repo: "jacegodk/hunk-viewed",
     name: "hunk-viewed",
     summary:
@@ -174,6 +174,15 @@ export const EXTENSION_CATALOG: readonly ExtensionListing[] = [
     categories: ["Pane", "Theme", "Line highlighter", "Command", "VCS backend"],
     version: "0.1.0",
     apiVersion: 5,
+  },
+  {
+    repo: "morinokami/hunk-triage",
+    name: "hunk-triage",
+    summary:
+      "Classifies changed files with TypeSafe's Jev and regroups the file pane by review priority, from core changes down to generated and unclassified.",
+    categories: ["Pane", "Changeset transform"],
+    version: "0.1.0",
+    apiVersion: 25,
   },
   {
     repo: "muzomer/hunk-commit",

@@ -94,6 +94,7 @@ export async function loadHistoryBootstrap({
       ...(input.theme ? { theme: input.theme } : {}),
       extensions: input.extensionsEnabled,
       ...(input.extensionPaths.length ? { extensionPaths: [...input.extensionPaths] } : {}),
+      extensionSelectionOverrides: [...(input.extensionSelectionOverrides ?? [])],
     },
   };
   const resolved = await resolveConfiguredExtensions({

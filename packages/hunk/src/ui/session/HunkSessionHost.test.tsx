@@ -309,6 +309,7 @@ test("shares committed themes across history and repeated review surfaces", asyn
 
     await act(async () => setup.mockInput.pressEnter());
     await settle(setup);
+    // The unconfigured default `github-dark-default` is selected; one step down lands on `github-dark-dimmed`.
     expect(requests[0]?.themeId).toBe("github-dark-dimmed");
 
     await act(async () => setup.mockInput.typeText("t"));

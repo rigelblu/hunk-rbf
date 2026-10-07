@@ -3,10 +3,14 @@ import {
   DEFAULT_DARK_THEME_ID,
   DEFAULT_LIGHT_THEME_ID,
 } from "./theme/catalog";
+import { TERMINAL_THEME_ID } from "./theme/terminalColors";
 import type { TerminalThemeMode } from "./theme/detection";
 import type { CliInput, CommonOptions } from "./run/commandInputs";
 
-const BUNDLED_THEME_IDS_FOR_MESSAGES: readonly string[] = BUNDLED_SHIKI_THEME_IDS;
+const BUNDLED_THEME_IDS_FOR_MESSAGES: readonly string[] = [
+  TERMINAL_THEME_ID,
+  ...BUNDLED_SHIKI_THEME_IDS,
+];
 
 export interface ThemePairPreference {
   light: string;

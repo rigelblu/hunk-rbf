@@ -25,18 +25,24 @@ export function useThemeSelectorController({
   themeController,
   transparentBackground,
 }: UseThemeSelectorControllerOptions) {
-  const { themeId: committedThemeId, customThemes } = useSyncExternalStore(
-    themeController.subscribe,
-    themeController.getSnapshot,
-  );
-  const themeMode = themeController.themeMode;
+  const {
+    themeId: committedThemeId,
+    customThemes,
+    themeMode,
+    terminalColors,
+  } = useSyncExternalStore(themeController.subscribe, themeController.getSnapshot);
   const [state, setState] = useState<ThemeSelectorControllerState>(() => ({
     open: false,
     previewThemeId: null,
     selectedThemeId: null,
   }));
 
-  const themeOptions = useMemo(() => availableThemes(customThemes), [customThemes]);
+  // `terminalColors` is not passed along: the `terminal` theme reads the probed colors itself,
+  // and listing it as a dependency re-derives every theme after the terminal switches schemes.
+  const themeOptions = useMemo(
+    () => availableThemes(customThemes, themeMode ?? null),
+    [customThemes, themeMode, terminalColors],
+  );
   // Below a preview, a session pick beats the configured preference resolved against the live
   // appearance, which beats the committed launch theme.
   const displayedThemeId =
@@ -47,7 +53,7 @@ export function useThemeSelectorController({
     committedThemeId;
   const committedTheme = useMemo(
     () => resolveTheme(displayedThemeId, themeMode ?? null, customThemes),
-    [customThemes, displayedThemeId, themeMode],
+    [customThemes, displayedThemeId, themeMode, terminalColors],
   );
   const committedIndex = themeOptions.findIndex((theme) => theme.id === committedTheme.id);
   const storedSelectedIndex = themeOptions.findIndex((theme) => theme.id === state.selectedThemeId);
@@ -63,9 +69,9 @@ export function useThemeSelectorController({
   const baseTheme = useMemo(
     () =>
       previewThemeId
-        ? resolveTheme(previewThemeId, themeController.themeMode ?? null, customThemes)
+        ? resolveTheme(previewThemeId, themeMode ?? null, customThemes)
         : committedTheme,
-    [committedTheme, customThemes, previewThemeId, themeController.themeMode],
+    [committedTheme, customThemes, previewThemeId, themeMode, terminalColors],
   );
   const renderSurfaces = useMemo(
     () => themeRenderSurfaces(baseTheme, transparentBackground),

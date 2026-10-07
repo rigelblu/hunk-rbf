@@ -589,7 +589,7 @@ describe("ui helpers", () => {
     ).toBe(16);
   });
 
-  test("resolveTheme falls back to GitHub defaults while exposing semantic syntax colors", () => {
+  test("resolveTheme falls back to default appearance themes while exposing semantic syntax colors", () => {
     const dracula = resolveTheme("dracula", null);
     const missingLight = resolveTheme("missing", "light");
     const missingDark = resolveTheme("missing", "dark");
@@ -610,8 +610,8 @@ describe("ui helpers", () => {
     const missingCustom = resolveTheme("custom", null);
 
     expect(dracula.id).toBe("dracula");
-    expect(missingLight.id).toBe("github-light-default");
-    expect(missingDark.id).toBe("github-dark-default");
+    expect(missingLight).toMatchObject({ id: "github-light-default", appearance: "light" });
+    expect(missingDark).toMatchObject({ id: "github-dark-default", appearance: "dark" });
     expect(autoLight.id).toBe("github-light-default");
     expect(autoDark.id).toBe("github-dark-default");
     expect(custom.id).toBe("custom");

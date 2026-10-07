@@ -6,6 +6,15 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 
 # 🔵⋯ [Unreleased]
 
+## 🟠⋯ Added for End Users
+
+- 2026-10-07 - feat (ux) | use upstream Hunk 0.23.0 plus pinned fixes (`252f59dd`) while retaining the fork's configured appearance pairs, named themes, derived diff colors, alpha highlights and dual version identity (#hk-14)
+- 2026-10-07 - feat (ux) | choose `terminal` to draw from the terminal's live palette, including as a member of an appearance pair (#hk-14)
+
+## 🟠⋯ Improved for Technical Users
+
+- 2026-10-07 - feat (technical) | use upstream's bundled GitHub review, extension selection switches and clearer session selector errors with the exact-match v16 daemon protocol (#hk-14)
+
 ## 🟠⋯ Fixed for Technical Users
 
 - 2026-09-14 - doc (fix technical) | the generated config reference lists the `custom_theme.diffAddedColor` and `custom_theme.diffRemovedColor` keys the fork added, so the website check passes again (#hk-13)

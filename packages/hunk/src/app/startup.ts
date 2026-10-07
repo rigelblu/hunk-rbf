@@ -6,7 +6,8 @@ import { HunkUserError } from "../core/run/errors";
 import type { loadAppBootstrap } from "../core/changeset/loaders";
 import { looksLikePatchInput } from "../core/process/pager";
 import { sanitizeTerminalText } from "../lib/terminalText";
-import { detectTerminalThemeModeFromBackground } from "../core/theme/detection";
+import { detectTerminalColors, themeModeForTerminalColors } from "../core/theme/detection";
+import { setDetectedTerminalColors, TERMINAL_THEME_ID } from "../core/theme/terminalColors";
 import {
   resolveConfiguredThemeInput,
   themePreferenceFollowsAppearance,
@@ -139,7 +140,7 @@ export interface StartupDeps {
   loadStartupExtensionsImpl?: typeof loadStartupExtensions;
   usesPipedPatchInputImpl?: typeof usesPipedPatchInput;
   openControllingTerminalImpl?: typeof openControllingTerminal;
-  detectTerminalThemeModeFromBackgroundImpl?: typeof detectTerminalThemeModeFromBackground;
+  detectTerminalColorsImpl?: typeof detectTerminalColors;
   stdinIsTTY?: boolean;
   stdoutIsTTY?: boolean;
   stdout?: NodeJS.WriteStream;
@@ -170,6 +171,7 @@ function applyDelegatedExtensionFlags(
       ...input,
       extensionsEnabled: invocation.extensionsEnabled,
       extensionPaths: [...invocation.extensionPaths],
+      extensionSelectionOverrides: [...(invocation.extensionSelectionOverrides ?? [])],
     };
   }
   if (!("options" in input)) return input;
@@ -180,6 +182,7 @@ function applyDelegatedExtensionFlags(
       extensions: invocation.extensionsEnabled,
       extensionPaths:
         invocation.extensionPaths.length > 0 ? [...invocation.extensionPaths] : undefined,
+      extensionSelectionOverrides: [...(invocation.extensionSelectionOverrides ?? [])],
     },
   } as ParsedCliInput;
 }
@@ -210,8 +213,7 @@ export async function prepareStartupPlan(
     deps.resolveConfiguredCliInputImpl ?? resolveConfiguredCliInput;
   const usesPipedPatchInputImpl = deps.usesPipedPatchInputImpl ?? usesPipedPatchInput;
   const openControllingTerminalImpl = deps.openControllingTerminalImpl ?? openControllingTerminal;
-  const detectTerminalThemeModeFromBackgroundImpl =
-    deps.detectTerminalThemeModeFromBackgroundImpl ?? detectTerminalThemeModeFromBackground;
+  const detectTerminalColorsImpl = deps.detectTerminalColorsImpl ?? detectTerminalColors;
   const stdinIsTTY = deps.stdinIsTTY ?? Boolean(process.stdin.isTTY);
   const stdoutIsTTY = deps.stdoutIsTTY ?? Boolean(process.stdout.isTTY);
   const stdout = deps.stdout ?? process.stdout;
@@ -253,9 +255,6 @@ export async function prepareStartupPlan(
 
   if (parsedCliInput.kind === "extension-cli") {
     const invocation = parsedCliInput;
-    if (!invocation.extensionsEnabled) {
-      throw new Error(`Unknown command: ${invocation.commandName}`);
-    }
     const baseVcsCatalog = await loadBaseVcsCatalog();
     const resolveExtensionCliBootstrapImpl =
       deps.resolveExtensionCliBootstrapImpl ??
@@ -274,6 +273,27 @@ export async function prepareStartupPlan(
     try {
       const registered = resolved.commands.commands.get(invocation.commandName);
       if (!registered) {
+        const bundledDefinition = (
+          await import("../extensions/default/core")
+        ).findBundledCoreExtensionByCommand(invocation.commandName);
+        if (bundledDefinition) {
+          const decision = (
+            await import("../core/run/extensionSelection")
+          ).resolveExtensionSelection({
+            id: bundledDefinition.selectionId,
+            kind: "bundled",
+            userDisabled: resolved.configured.extensions.userDisabled,
+            repoDisabled: resolved.configured.extensions.repoDisabled,
+            cliOverrides: invocation.extensionSelectionOverrides,
+          });
+          if (!decision.enabled) {
+            throw new HunkUserError(`Extension "${bundledDefinition.selectionId}" is disabled.`, [
+              `Enable it for this run by adding \`--enable-extension ${bundledDefinition.selectionId}\` before \`${invocation.commandName}\`.`,
+              `Enable it permanently by removing ${bundledDefinition.selectionId} from [extensions].disabled.`,
+            ]);
+          }
+        }
+
         const suggestions: string[] = [];
         // The registry is already loaded, so name what the loaded extensions do offer rather
         // than reporting only the token that failed.
@@ -584,18 +604,20 @@ export async function prepareStartupPlan(
   let initialThemeMode: AppBootstrap["initialThemeMode"] = deps.terminalThemeMode;
   if (
     !initialThemeMode &&
-    themePreferenceFollowsAppearance(configured.input.options.theme) &&
+    (themePreferenceFollowsAppearance(configured.input.options.theme) ||
+      cliInput.options.theme === TERMINAL_THEME_ID) &&
     stdoutIsTTY
   ) {
     const themeInput = controllingTerminal?.stdin ?? (stdinIsTTY ? process.stdin : null);
     if (themeInput) {
-      initialThemeMode =
-        (await whileStartupOwnsExtensions(() =>
-          detectTerminalThemeModeFromBackgroundImpl({
-            input: themeInput,
-            output: stdout,
-          }),
-        )) ?? undefined;
+      const terminalColors = await whileStartupOwnsExtensions(() =>
+        detectTerminalColorsImpl({
+          input: themeInput,
+          output: stdout,
+        }),
+      );
+      setDetectedTerminalColors(terminalColors ?? undefined);
+      initialThemeMode = themeModeForTerminalColors(terminalColors);
     }
   }
 
