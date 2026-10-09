@@ -10,7 +10,7 @@ Fork-specific product guidance for Hunk. The upstream project README remains at 
 
 ```text
 $ hunk --version
-hunk 0.22.0 (Hunk RBF 0.8.0)
+hunk 0.23.0 (Hunk RBF 0.8.0)
 ```
 
 The first number is the upstream Hunk release this fork is built against. The parenthetical is the fork's own release. They advance independently, so neither is "ahead" of the other — quote the whole line in a bug report and it says exactly which build you have.
@@ -47,7 +47,13 @@ To follow appearance with your own exact built-in themes, configure a complete p
 theme = { light = "catppuccin-latte", dark = "nord" }
 ```
 
-Both members are required and must be built-in theme ids. Each config layer replaces the whole `theme` value, so a later scalar or complete pair wins without inheriting one member from an earlier pair. Hunk switches between the configured members as the authoritative appearance changes. A failed native refresh keeps the last known appearance; when neither native nor terminal appearance is available at startup, Hunk selects the configured dark member.
+Both members are required and must name available themes, including built-in, named custom, and `terminal` themes. Each config layer replaces the whole `theme` value, so a later scalar or complete pair wins without inheriting one member from an earlier pair. Hunk switches between the configured members as the authoritative appearance changes. A failed native refresh keeps the last known appearance; when neither native nor terminal appearance is available at startup, Hunk selects the configured dark member.
+
+# 🔵⋯ Use the terminal palette
+
+Set `theme = "terminal"` or pass `--theme terminal` to draw from the terminal's foreground, background, and ANSI palette. Palette notifications and window resizes refresh those colors during the session, including changes between two palettes with the same light/dark mode. Terminals that do not answer color queries use a bounded xterm-style fallback palette.
+
+A complete appearance pair can include `terminal`. Successful macOS reads choose the pair member; the terminal member draws from the terminal's actual colors even when its palette differs from macOS appearance. Later native read failures keep the last native mode. A theme accepted in the picker overrides the configured preference until quit; automatic appearance changes do not create a preference-save request.
 
 # 🔵⋯ Use multiple named custom themes
 

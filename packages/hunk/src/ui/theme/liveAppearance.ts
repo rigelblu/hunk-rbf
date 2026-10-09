@@ -36,7 +36,12 @@ export function trackLiveAppearance(
 
   /** Reassert macOS appearance when the user returns to the terminal. */
   const handleFocus = () => {
-    const systemMode = resolveSystemAppearance?.() ?? null;
+    let systemMode: TerminalThemeMode | null = null;
+    try {
+      systemMode = resolveSystemAppearance?.() ?? null;
+    } catch {
+      systemMode = null;
+    }
     if (systemMode !== null) controller.reportSystemThemeMode(systemMode);
   };
   const handleThemeMode = (mode: TerminalThemeMode) => controller.reportTerminalThemeMode(mode);

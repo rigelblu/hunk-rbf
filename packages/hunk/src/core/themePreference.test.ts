@@ -45,4 +45,14 @@ describe("theme preferences", () => {
 
     expect(resolved.options.theme).toBe("catppuccin-latte");
   });
+
+  test("accepts terminal as a valid pair member in validateThemePairPreference", () => {
+    const { validateThemePairPreference } = require("./themePreference");
+    expect(() =>
+      validateThemePairPreference({ light: "terminal", dark: "github-dark-default" }, []),
+    ).not.toThrow();
+    expect(() =>
+      validateThemePairPreference({ light: "github-light-default", dark: "terminal" }, []),
+    ).not.toThrow();
+  });
 });

@@ -180,6 +180,8 @@ export function AppHost({
   // than becoming an explicit choice.
   const launchExtensionsEnabled = initialBootstrap.input.options.extensions;
   const launchExtensionPaths = initialBootstrap.input.options.extensionPaths;
+  const launchExtensionSelectionOverrides =
+    initialBootstrap.input.options.extensionSelectionOverrides;
   const [sessionFileBounds] = useState(() =>
     createSessionReloadBounds(initialBootstrap, { cwd: initialBootstrap.reloadContext.cwd }),
   );
@@ -298,6 +300,7 @@ export function AppHost({
           fast: launchFast,
           extensions: launchExtensionsEnabled,
           extensionPaths: launchExtensionPaths,
+          extensionSelectionOverrides: launchExtensionSelectionOverrides,
         },
       });
       // A refresh echoes the committed theme back as input. Once a bootstrap records its configured
@@ -523,6 +526,7 @@ export function AppHost({
       launchFast,
       launchExtensionsEnabled,
       launchExtensionPaths,
+      launchExtensionSelectionOverrides,
       producer,
       sessionFileBounds,
     ],

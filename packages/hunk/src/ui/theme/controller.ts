@@ -1,19 +1,27 @@
-import type { TerminalThemeMode } from "../../core/theme/detection";
+import { themeModeForTerminalColors, type TerminalThemeMode } from "../../core/theme/detection";
+import {
+  getDetectedTerminalColors,
+  setDetectedTerminalColors,
+  type TerminalColors,
+} from "../../core/theme/terminalColors";
 import type { NamedCustomThemeConfig } from "../../extension-api/types";
 import { availableThemes, resolveTheme } from "../themes";
 
 export interface ThemeSnapshot {
   themeId: string;
   customThemes: readonly NamedCustomThemeConfig[];
+  themeMode: TerminalThemeMode | undefined;
+  terminalColors: TerminalColors | undefined;
 }
 
 /**
- * Own the committed theme, the live light/dark appearance, and the reloadable catalog across one
- * Hunk session.
+ * Own the committed theme, the live light/dark appearance, reloadable catalog, and live terminal
+ * colors across one Hunk session.
  *
  * The committed identity is the launch theme until the picker commits one, and appearance never
  * changes it, so quit prompts and routed surfaces only see what the user chose. Surfaces derive
- * the appearance-following theme they display from `themeMode`.
+ * the appearance-following theme they display from `themeMode`. Terminal color updates adopt
+ * fresh palette colors while preserving authoritative system appearance.
  */
 export class ThemeController {
   readonly initialThemeId: string;
@@ -38,7 +46,12 @@ export class ThemeController {
     this.initialThemeId = resolveTheme(initialTheme, initialThemeMode ?? null, customThemes).id;
     this.liveThemeMode = initialThemeMode ?? undefined;
     this.systemAppearanceAuthoritative = systemAppearanceResolved;
-    this.snapshot = { themeId: this.initialThemeId, customThemes: customThemes ?? [] };
+    this.snapshot = {
+      themeId: this.initialThemeId,
+      customThemes: customThemes ?? [],
+      themeMode: this.liveThemeMode,
+      terminalColors: getDetectedTerminalColors(),
+    };
   }
 
   /** Return the latest valid light or dark appearance reported for this session. */
@@ -75,7 +88,9 @@ export class ThemeController {
 
   /** Record one terminal appearance report, which counts only until macOS appearance is read. */
   reportTerminalThemeMode(mode: TerminalThemeMode) {
-    if (!this.systemAppearanceAuthoritative) this.applyThemeMode(mode);
+    if (!this.systemAppearanceAuthoritative) {
+      this.applyThemeMode(mode);
+    }
   }
 
   /**
@@ -87,11 +102,31 @@ export class ThemeController {
     if (customThemes === this.snapshot.customThemes) return;
     const pickRemoved =
       this.pickedThemeId !== null &&
-      !availableThemes(customThemes).some((theme) => theme.id === this.pickedThemeId);
+      !availableThemes(customThemes, this.liveThemeMode ?? null).some(
+        (theme) => theme.id === this.pickedThemeId,
+      );
     if (pickRemoved) this.pickedThemeId = null;
     this.publish({
+      ...this.snapshot,
       themeId: pickRemoved ? this.initialThemeId : this.snapshot.themeId,
       customThemes,
+    });
+  }
+
+  /** Adopt freshly probed terminal colors after the user's terminal switched themes. */
+  updateTerminalColors(terminalColors: TerminalColors) {
+    if (terminalColors === this.snapshot.terminalColors) return;
+    setDetectedTerminalColors(terminalColors);
+    if (!this.systemAppearanceAuthoritative) {
+      const mode = themeModeForTerminalColors(terminalColors);
+      if (mode) {
+        this.liveThemeMode = mode;
+      }
+    }
+    this.publish({
+      ...this.snapshot,
+      terminalColors,
+      themeMode: this.liveThemeMode,
     });
   }
 
@@ -99,9 +134,7 @@ export class ThemeController {
   private applyThemeMode(mode: TerminalThemeMode) {
     if (mode === this.liveThemeMode) return;
     this.liveThemeMode = mode;
-    // The committed fields stay the same; a fresh snapshot object is what tells subscribed
-    // surfaces to render again and read the new `themeMode`.
-    this.publish({ ...this.snapshot });
+    this.publish({ ...this.snapshot, themeMode: this.liveThemeMode });
   }
 
   /** Swap in one snapshot and notify every subscribed surface. */

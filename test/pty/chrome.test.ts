@@ -56,6 +56,8 @@ describe("PTY chrome", () => {
     const session = await harness.launchHunk({
       args: [
         "diff",
+        "--theme",
+        "github-dark-default",
         "--files",
         fixture.before,
         fixture.after,
@@ -75,14 +77,17 @@ describe("PTY chrome", () => {
       });
       expect(initial).toContain("Highlights the follow-up addition for review.");
 
-      await session.click(/View/);
-      const viewMenu = await session.waitForText(/Themes…/, { timeout: 5_000 });
-      expect(viewMenu).toContain("Themes…");
-
-      await session.click(/Themes…/);
-      const themeSelector = await session.waitForText(/github-light-default/, {
+      const viewMenu = await harness.clickAndWaitForText(session, /View/, /Themes…/, {
         timeout: 5_000,
       });
+      expect(viewMenu).toContain("Themes…");
+
+      const themeSelector = await harness.clickAndWaitForText(
+        session,
+        /Themes…/,
+        /github-light-default/,
+        { timeout: 5_000 },
+      );
       expect(themeSelector).toContain("Theme selector");
 
       await session.click(/github-light-default/);
@@ -96,8 +101,8 @@ describe("PTY chrome", () => {
       );
       expect(themeSelected).toContain("Adds bonus export.");
 
-      await session.click(/Agent/, { first: true });
-      const agentMenu = await session.waitForText(/Next annotated file/, {
+      const agentMenu = await harness.clickAndWaitForText(session, /Agent/, /Next annotated file/, {
+        first: true,
         timeout: 5_000,
       });
       expect(agentMenu).toContain("Agent notes");
@@ -109,15 +114,16 @@ describe("PTY chrome", () => {
         5_000,
       );
 
-      await session.click(/Agent/, { first: true });
-      await session.waitForText(/Agent notes/, { timeout: 5_000 });
-      await session.click(/Agent notes/);
-      await session.waitForText(/Adds bonus export\./, { timeout: 5_000 });
+      await harness.clickAndWaitForText(session, /Agent/, /Agent notes/, {
+        first: true,
+        timeout: 5_000,
+      });
+      await harness.clickAndWaitForText(session, /Agent notes/, /Adds bonus export\./, {
+        timeout: 5_000,
+      });
 
-      await session.click(/Help/);
-      await session.waitForText(/Controls help/, { timeout: 5_000 });
-      await session.click(/Controls help/);
-      const helpDialog = await session.waitForText(/Navigation/, {
+      await harness.clickAndWaitForText(session, /Help/, /Controls help/, { timeout: 5_000 });
+      const helpDialog = await harness.clickAndWaitForText(session, /Controls help/, /Navigation/, {
         timeout: 5_000,
       });
 
@@ -141,8 +147,7 @@ describe("PTY chrome", () => {
 
     try {
       await session.waitForText(/View\s+Navigate\s+Agent\s+Help/, { timeout: 15_000 });
-      await session.press("t");
-      await session.waitForText(/Theme selector/, { timeout: 5_000 });
+      await harness.pressAndWaitForText(session, "t", /Theme selector/, { timeout: 5_000 });
 
       // OS key repeat arrives as a rapid stream while React/OpenTUI drains each preview render.
       for (let index = 0; index < 100; index += 1) {
@@ -178,15 +183,20 @@ describe("PTY chrome", () => {
     try {
       await session.waitForText(/line60/, { timeout: 15_000 });
 
-      await session.press("t");
-      await session.waitForText(/Theme selector/, { timeout: 5_000 });
-      await session.press("down");
-      await session.waitForText(/›\s+github-dark-dimmed/, { timeout: 5_000 });
-      await session.press("enter");
-      await harness.waitForSnapshot(session, (text) => !text.includes("Theme selector"), 5_000);
+      await harness.pressAndWaitForText(session, "t", /Theme selector/, { timeout: 5_000 });
+      await harness.pressAndWaitForText(session, "down", /›\s+github-dark-dimmed/, {
+        timeout: 5_000,
+      });
+      await harness.pressAndWaitForSnapshot(
+        session,
+        "enter",
+        (text) => !text.includes("Theme selector"),
+        5_000,
+      );
 
-      await session.press("q");
-      const prompt = await session.waitForText(/Save view preferences\?/, { timeout: 5_000 });
+      const prompt = await harness.pressAndWaitForText(session, "q", /Save view preferences\?/, {
+        timeout: 5_000,
+      });
       expect(prompt).toContain('- theme = "github-dark-default"');
       expect(prompt).toContain('+ theme = "github-dark-dimmed"');
       expect(prompt).toContain("enter/s save");
@@ -310,9 +320,9 @@ describe("PTY chrome", () => {
         timeout: 15_000,
       });
 
-      await session.press("?");
-      const help = await harness.waitForSnapshot(
+      const help = await harness.pressAndWaitForSnapshot(
         session,
+        "?",
         (text) =>
           (text.includes("Keyboard help") || text.includes("Controls help")) &&
           text.includes("move through lines and notes"),
@@ -383,27 +393,27 @@ describe("PTY chrome", () => {
 
       expect(initial).toMatch(/▌.*▌/);
 
-      await session.press("f10");
-      const fileMenu = await harness.waitForSnapshot(
+      const fileMenu = await harness.pressAndWaitForSnapshot(
         session,
+        "f10",
         (text) => text.includes("Toggle files/filter focus") && text.includes("Quit"),
         5_000,
       );
 
       expect(fileMenu).toContain("Reload");
 
-      await session.press("right");
-      const viewMenu = await harness.waitForSnapshot(
+      const viewMenu = await harness.pressAndWaitForSnapshot(
         session,
+        "right",
         (text) => text.includes("Split view") && text.includes("Unified view"),
         5_000,
       );
 
       expect(viewMenu).toContain("Auto layout");
 
-      await session.press("enter");
-      const unified = await harness.waitForSnapshot(
+      const unified = await harness.pressAndWaitForSnapshot(
         session,
+        "enter",
         (text) => !/▌.*▌/.test(text) && text.includes("1   -  export const alpha = 1;"),
         5_000,
       );

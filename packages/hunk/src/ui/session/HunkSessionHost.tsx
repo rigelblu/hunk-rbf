@@ -30,6 +30,7 @@ import type { LogController } from "../log/controller";
 import { resolveHistoryAuthorLabel } from "../log/formatting";
 import { ThemeController } from "../theme/controller";
 import { trackLiveAppearance } from "../theme/liveAppearance";
+import { watchTerminalColors } from "../theme/terminalColorWatcher";
 import { applySessionViewPreferences } from "./viewPreferences";
 
 export interface HistorySurfaceRoute {
@@ -175,6 +176,17 @@ export function HunkSessionHost({
         subscribeSystemAppearance: systemAppearanceSubscriber,
       }),
     [renderer, systemAppearanceResolver, systemAppearanceSubscriber, themeController],
+  );
+  // Follow terminal theme switches (Omarchy, herdr, tmux, or a terminal's own light/dark toggle)
+  // for the whole session, so history and review surfaces repaint together.
+  useEffect(
+    () =>
+      watchTerminalColors({
+        renderer,
+        current: () => themeController.getSnapshot().terminalColors,
+        onChange: (colors) => themeController.updateTerminalColors(colors),
+      }),
+    [renderer, themeController],
   );
   const [route, setRoute] = useState<ActiveSurfaceRoute>(() =>
     initialRoute.kind === "history"

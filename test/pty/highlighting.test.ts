@@ -38,7 +38,16 @@ describe("PTY syntax highlighting", () => {
     const fixture = createHighlightTestFiles(2);
     try {
       const session = await harness.launchHunk({
-        args: ["diff", "--files", fixture.before, fixture.after, "--mode", "unified"],
+        args: [
+          "diff",
+          "--theme",
+          "github-dark-default",
+          "--files",
+          fixture.before,
+          fixture.after,
+          "--mode",
+          "unified",
+        ],
         cwd: fixture.dir,
         cols: 100,
         rows: 24,
@@ -60,7 +69,17 @@ describe("PTY syntax highlighting", () => {
   test("keeps key input responsive while a large added file highlights", async () => {
     const fixture = createHighlightTestFiles(8_000);
     const session = await harness.launchHunk({
-      args: ["diff", "--files", fixture.before, fixture.after, "--fast", "--mode", "unified"],
+      args: [
+        "diff",
+        "--theme",
+        "github-dark-default",
+        "--files",
+        fixture.before,
+        fixture.after,
+        "--fast",
+        "--mode",
+        "unified",
+      ],
       cwd: fixture.dir,
       cols: 120,
       rows: 24,
@@ -103,7 +122,7 @@ describe("PTY syntax highlighting", () => {
   test("keeps code after a hidden Elixir heredoc opener out of the string token state", async () => {
     const fixture = harness.createElixirHeredocRepoFixture();
     const session = await harness.launchHunk({
-      args: ["diff", "--mode", "unified"],
+      args: ["diff", "--theme", "github-dark-default", "--mode", "unified"],
       cwd: fixture.dir,
       cols: 100,
       rows: 24,
