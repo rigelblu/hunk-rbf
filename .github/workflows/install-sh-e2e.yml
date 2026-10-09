@@ -41,7 +41,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
+          # Match install.sh, which downloads upstream assets even in forks.
+          tag="$(gh release view --repo modem-dev/hunk --json tagName --jq .tagName)"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
 
       - name: Install into a sandbox home
