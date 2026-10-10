@@ -25,7 +25,7 @@ describe("history bootstrap cursor ownership", () => {
     mkdirSync(join(configHome, "hunk"), { recursive: true });
     writeFileSync(
       configPath,
-      'theme = "github-dark-dimmed"\nline_numbers = false\nprompt_save_view_preferences = false\n\n[keybindings]\n"hunk.history.nextCommit" = "ctrl+n"\n',
+      'theme = "github-dark-dimmed"\nline_numbers = false\nhistory_auto_refresh = true\nprompt_save_view_preferences = false\n\n[keybindings]\n"hunk.history.nextCommit" = "ctrl+n"\n',
     );
     const closeCounts: number[] = [];
     let opens = 0;
@@ -76,6 +76,7 @@ describe("history bootstrap cursor ownership", () => {
           customThemes: [],
         },
         viewPreferences: bootstrap.initialViewPreferences,
+        historyAutoRefreshEnabled: true,
       });
       expect(bootstrap.initialViewPreferences).toMatchObject({
         theme: "github-dark-dimmed",
@@ -90,8 +91,10 @@ describe("history bootstrap cursor ownership", () => {
       await expect(bootstrap.reopenSource(cancelled.signal)).rejects.toThrow();
       expect(opens).toBe(1);
 
-      await bootstrap.reopenSource();
+      const replacement = await bootstrap.reopenSource();
       expect(opens).toBe(2);
+      expect(closeCounts).toEqual([0, 0]);
+      await bootstrap.acceptSource(replacement);
       expect(closeCounts).toEqual([1, 0]);
       await bootstrap.close();
       await bootstrap.close();

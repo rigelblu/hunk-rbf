@@ -9,6 +9,7 @@ import type {
   ExtensionVcsHistoryRangeSelection,
   ExtensionVcsHistoryReviewAction,
   ExtensionVcsHistoryReviewOptions,
+  ExtensionVcsWatchPlan,
   NamedCustomThemeConfig,
 } from "../../extension-api/types";
 
@@ -43,8 +44,12 @@ export interface HistoryRuntime {
     options?: ExtensionVcsHistoryReviewOptions,
     signal?: AbortSignal,
   ): Promise<ExtensionVcsHistoryRangeReviewAction>;
+  historyWatchPlan?: ExtensionVcsWatchPlan;
+  historyWatchSignature?: (signal?: AbortSignal) => string | Promise<string>;
   /** Replace the current provider cursor for an explicit interactive refresh. */
   reopenSource(signal?: AbortSignal): Promise<VcsHistorySource>;
+  /** Commit a successfully primed replacement cursor and close the prior cursor. */
+  acceptSource?(source: VcsHistorySource): Promise<void>;
   close(): Promise<void>;
 }
 

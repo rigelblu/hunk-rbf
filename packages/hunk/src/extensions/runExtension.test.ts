@@ -13,8 +13,8 @@ function bundledMetadata(id: string) {
 }
 
 describe("runExtensionFactory", () => {
-  test("advertises code-document file views through extension API v28", () => {
-    expect(HUNK_EXTENSION_API_VERSION).toBe(28);
+  test("advertises history watch hooks through extension API v29", () => {
+    expect(HUNK_EXTENSION_API_VERSION).toBe(29);
   });
 
   test("applies a synchronous factory before returning, with nothing to await", () => {
@@ -1034,6 +1034,37 @@ describe("toInternalVcsAdapter history boundary", () => {
         { cwd: "/repo" },
       ),
     ).rejects.toThrow("must return a revision-range action");
+  });
+
+  test("wraps optional history watch hooks and converts provider failures", async () => {
+    const plan = { coverage: "hybrid" as const, targets: [] };
+    const adapter = toInternalVcsAdapter({
+      id: "history-watch",
+      name: "History watch",
+      detect: () => null,
+      history: {
+        open: () => ({ read: async () => ({ commits: [], done: true }), close() {} }),
+        planReview: (commit) => ({ kind: "revision-show", revisionId: commit.revisionId }),
+        watchPlan: () => plan,
+        watchSignature: async (_input, { signal }) => {
+          signal?.throwIfAborted();
+          return "signature";
+        },
+      },
+    });
+    expect(adapter.history!.watchPlan!({}, { cwd: "/repo" })).toEqual(plan);
+    await expect(adapter.history!.watchSignature!({}, { cwd: "/repo" })).resolves.toBe("signature");
+    const legacy = toInternalVcsAdapter({
+      id: "legacy-history",
+      name: "Legacy history",
+      detect: () => null,
+      history: {
+        open: () => ({ read: async () => ({ commits: [], done: true }), close() {} }),
+        planReview: (commit) => ({ kind: "revision-show", revisionId: commit.revisionId }),
+      },
+    });
+    expect(legacy.history!.watchPlan).toBeUndefined();
+    expect(legacy.history!.watchSignature).toBeUndefined();
   });
 
   test("copies and sanitizes bounded history pages", async () => {

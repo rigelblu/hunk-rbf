@@ -76,6 +76,29 @@ const jjTest = Bun.which("jj") ? test : test.skip;
 
 describe("JjVcsAdapter", () => {
   jjTest(
+    "watches operation metadata and fingerprints the selected history",
+    async () => {
+      const repo = createTempJjRepo("hunk-jj-history-watch-");
+      writeFileSync(join(repo, "file.txt"), "first\n");
+      jj(repo, "commit", "-m", "first");
+      const before = await JjVcsAdapter.history!.watchSignature!({}, { cwd: repo });
+      const plan = JjVcsAdapter.history!.watchPlan!({}, { cwd: repo });
+      jj(repo, "bookmark", "create", "feature", "-r", "@");
+      const afterRefOnlyChange = await JjVcsAdapter.history!.watchSignature!({}, { cwd: repo });
+
+      writeFileSync(join(repo, "file.txt"), "second\n");
+      jj(repo, "commit", "-m", "second");
+      const after = await JjVcsAdapter.history!.watchSignature!({}, { cwd: repo });
+
+      expect(plan.coverage).toBe("hybrid");
+      expect(plan.targets[0]?.directory).toBe(join(repo, ".jj", "repo", "op_heads"));
+      expect(afterRefOnlyChange).not.toBe(before);
+      expect(after).not.toBe(before);
+    },
+    JjAdapterIntegrationTestTimeoutMs,
+  );
+
+  jjTest(
     "detects Jujutsu repositories from nested directories",
     () => {
       const repo = createTempJjRepo("hunk-jj-adapter-detect-");

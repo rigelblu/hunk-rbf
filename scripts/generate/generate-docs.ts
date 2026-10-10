@@ -266,7 +266,11 @@ export function renderConfigReference() {
       option.runtimeDefault !== undefined
         ? `\`${String(option.runtimeDefault)}\``
         : (option.defaultValue ?? "—");
-    const scopeDetails = option.userOnly ? "\n- **Scope:** user config only" : "";
+    const scopeDetails = option.userOnly
+      ? "\n- **Scope:** user config only"
+      : option.topLevelOnly
+        ? "\n- **Scope:** top-level user or repository config only"
+        : "";
     return `**\`${option.key}\`**\n\n${option.description}\n\n- **Type:** ${option.type}\n- **Accepted:** ${option.accepted}\n- **Built-in default:** ${defaultValue}${scopeDetails}${aliasDetails}`;
   });
   const sectionRows = Object.entries(CONFIG_COMMAND_SECTIONS).map(

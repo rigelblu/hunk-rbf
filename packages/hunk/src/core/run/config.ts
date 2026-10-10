@@ -341,6 +341,8 @@ export interface ConfigReferenceOption {
   readonly runtimeKeys?: readonly string[];
   /** Machine-local input preferences do not resolve from repository config. */
   readonly userOnly?: boolean;
+  /** Preferences for a separate command surface cannot inherit review command tables. */
+  readonly topLevelOnly?: boolean;
 }
 
 /**
@@ -389,6 +391,16 @@ export const CONFIG_REFERENCE_OPTIONS: readonly ConfigReferenceOption[] = [
     accepted: "`true` or `false`",
     runtimeDefault: false,
     description: "Reload supported review inputs when their source changes.",
+  },
+  {
+    key: "history_auto_refresh",
+    property: "historyAutoRefresh",
+    type: "boolean",
+    accepted: "`true` or `false`",
+    runtimeDefault: false,
+    description:
+      "Start interactive `hunk log` with automatic history refresh enabled where the provider supports it. F10 can override it for the current session; review `watch` is separate.",
+    topLevelOnly: true,
   },
   {
     key: "exclude_untracked",
@@ -1060,13 +1072,16 @@ function normalizeConfigReferenceValue(property: keyof CommonOptions, value: unk
 /** Read the view preferences stored at one TOML object level. */
 function readConfigPreferences(
   source: Record<string, unknown>,
-  { includeUserOnly = true }: { includeUserOnly?: boolean } = {},
+  {
+    includeUserOnly = true,
+    includeTopLevelOnly = true,
+  }: { includeUserOnly?: boolean; includeTopLevelOnly?: boolean } = {},
 ): ConfiguredCommonOptions {
   const preferences: ConfiguredCommonOptions = {};
   const mutable = preferences as Record<string, unknown>;
 
   for (const option of CONFIG_REFERENCE_OPTIONS) {
-    if (option.userOnly && !includeUserOnly) {
+    if ((option.userOnly && !includeUserOnly) || (option.topLevelOnly && !includeTopLevelOnly)) {
       continue;
     }
 
@@ -1116,6 +1131,7 @@ function mergeOptions(
     agentContext: overrides.agentContext ?? base.agentContext,
     pager: overrides.pager ?? base.pager,
     watch: overrides.watch ?? base.watch,
+    historyAutoRefresh: overrides.historyAutoRefresh ?? base.historyAutoRefresh,
     experimental: overrides.experimental ?? base.experimental,
     fast: overrides.fast ?? base.fast,
     excludeUntracked: overrides.excludeUntracked ?? base.excludeUntracked,
@@ -1152,12 +1168,18 @@ function resolveConfigLayer(
 
   const commandSection = CONFIG_COMMAND_SECTIONS[input.kind] ? source[input.kind] : undefined;
   if (isRecord(commandSection)) {
-    resolved = mergeOptions(resolved, readConfigPreferences(commandSection, { includeUserOnly }));
+    resolved = mergeOptions(
+      resolved,
+      readConfigPreferences(commandSection, { includeUserOnly, includeTopLevelOnly: false }),
+    );
   }
 
   const pagerSection = source.pager;
   if (input.options.pager && isRecord(pagerSection)) {
-    resolved = mergeOptions(resolved, readConfigPreferences(pagerSection, { includeUserOnly }));
+    resolved = mergeOptions(
+      resolved,
+      readConfigPreferences(pagerSection, { includeUserOnly, includeTopLevelOnly: false }),
+    );
   }
 
   return resolved;
@@ -1397,6 +1419,8 @@ export function resolveConfiguredCliInput(
     agentContext: input.options.agentContext,
     pager: input.options.pager ?? false,
     watch: input.options.watch ?? resolvedOptions.watch ?? false,
+    historyAutoRefresh:
+      input.options.historyAutoRefresh ?? resolvedOptions.historyAutoRefresh ?? false,
     experimental: input.options.experimental ?? false,
     fast: input.options.fast ?? false,
     excludeUntracked: resolvedOptions.excludeUntracked ?? false,
