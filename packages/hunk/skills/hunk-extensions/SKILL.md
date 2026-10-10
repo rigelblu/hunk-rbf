@@ -119,7 +119,7 @@ for all user extensions. Bundled capabilities use separate host-owned selection 
 | Reload after an external agent changes reviewed inputs   | `ctx.review.requestReload()` in an event     |
 | Read user-supplied settings                              | `hunk.config` (`[extension.<id>]` table)     |
 | Snapshot stable files and every saved review note        | `ctx.review.snapshot()` in a command         |
-| Branch on the API generation (currently `28`)            | `hunk.apiVersion`                            |
+| Branch on the API generation (currently `29`)            | `hunk.apiVersion`                            |
 
 Registration is only valid while the factory runs — Hunk seals the API object
 afterwards.
@@ -128,6 +128,12 @@ Promise-returning VCS `watchSignature` hooks and watch cancellation require API
 version 25. Declare `{"hunk": {"apiVersion": 25}}` in the manifest, or branch on
 `hunk.apiVersion` and return signatures synchronously on older hosts. Use async
 I/O and honor `ctx.signal` on API 25; existing synchronous hooks remain supported.
+
+API version 29 adds optional `history.watchSignature(input, ctx)` and
+`history.watchPlan(input, ctx)` hooks. A signature enables automatic `hunk log`
+refresh; the event plan is optional and its absence uses polling. History providers
+without a signature remain compatible and keep manual refresh. Declare
+`{"hunk": {"apiVersion": 29}}` when the extension requires these hooks.
 
 ### Generic CLI handlers
 

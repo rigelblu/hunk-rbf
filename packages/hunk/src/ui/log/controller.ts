@@ -38,6 +38,39 @@ export interface LogSnapshot {
   presentation: LogPresentation;
 }
 
+/** Find a row by immutable revision id, then by one unambiguous provider logical id. */
+function findHistoryRowIndex(
+  rows: readonly HistoryGraphRow[],
+  identity: { revisionId: string; logicalId?: string } | undefined,
+) {
+  if (!identity) return -1;
+  const exactIndex = rows.findIndex((row) => row.commit.revisionId === identity.revisionId);
+  if (exactIndex >= 0 || !identity.logicalId) return exactIndex;
+  let logicalIndex = -1;
+  for (const [index, row] of rows.entries()) {
+    if (row.commit.logicalId !== identity.logicalId) continue;
+    if (logicalIndex >= 0) return -1;
+    logicalIndex = index;
+  }
+  return logicalIndex;
+}
+
+/** Wait for enough history to know a logical id has exactly one match. */
+function isHistoryIdentitySettled(
+  rows: readonly HistoryGraphRow[],
+  identity: { revisionId: string; logicalId?: string },
+  historyDone: boolean,
+) {
+  if (rows.some((row) => row.commit.revisionId === identity.revisionId)) return true;
+  if (!identity.logicalId) return historyDone;
+  let matches = 0;
+  for (const row of rows) {
+    if (row.commit.logicalId === identity.logicalId) matches += 1;
+    if (matches > 1) return true;
+  }
+  return historyDone;
+}
+
 /** Retain interactive log state independently of renderer mount/unmount cycles. */
 export class LogController {
   private source: HistoryRuntime["source"];
@@ -45,8 +78,8 @@ export class LogController {
   private listeners = new Set<() => void>();
   private generation = 0;
   private abort = new AbortController();
-  private loadingPromise: Promise<void> | null = null;
-  private refreshPromise: Promise<void> | null = null;
+  private loadingPromise: Promise<boolean> | null = null;
+  private refreshPromise: Promise<boolean> | null = null;
   private navigationTarget: number | null = null;
   private navigationPromise: Promise<void> | null = null;
   private selectionGeneration = 0;
@@ -83,6 +116,11 @@ export class LogController {
   /** Return the immutable render snapshot. */
   getSnapshot = () => this.snapshot;
 
+  /** Report navigation that has been requested but has not reached its row yet. */
+  isNavigating() {
+    return this.navigationTarget !== null;
+  }
+
   /** Subscribe one mounted surface to controller changes. */
   subscribe = (listener: () => void) => {
     this.listeners.add(listener);
@@ -97,13 +135,14 @@ export class LogController {
   /** Load one bounded page, preserving symbolic graph state across page boundaries. */
   async loadMore() {
     if (this.loadingPromise) return this.loadingPromise;
-    if (this.closed || this.snapshot.historyDone) return;
+    if (this.closed) return false;
+    if (this.snapshot.historyDone) return true;
     const generation = this.generation;
     this.publish({ loading: true });
     const loading = (async () => {
       try {
         const page = await this.source.read({ limit: 256, signal: this.abort.signal });
-        if (generation !== this.generation || this.closed) return;
+        if (generation !== this.generation || this.closed) return false;
         if (!page.done && page.commits.length === 0)
           throw new Error("VCS history returned an empty page before EOF.");
         const planned = planHistoryPage(page.commits, this.checkpoint);
@@ -114,20 +153,23 @@ export class LogController {
           historyDone: page.done,
           notice: rows.length === 0 && page.done ? "No commits found." : this.snapshot.notice,
         });
+        return true;
       } catch (error) {
         if (!this.abort.signal.aborted && generation === this.generation) {
           this.publish({
             historyDone: true,
             notice: sanitizeTerminalLine(error instanceof Error ? error.message : String(error)),
           });
+          return false;
         }
+        return false;
       } finally {
         if (generation === this.generation && !this.closed) this.publish({ loading: false });
       }
     })();
     this.loadingPromise = loading;
     try {
-      await loading;
+      return await loading;
     } finally {
       if (this.loadingPromise === loading) this.loadingPromise = null;
     }
@@ -359,25 +401,31 @@ export class LogController {
     if (key === "graph") this.clampViewport(this.viewportBodyHeight);
   }
 
-  /** Refresh the provider cursor while reconciling selection by immutable revision id. */
-  async refresh() {
+  /** Refresh the provider cursor while reconciling selection by immutable or logical identity. */
+  async refresh(shouldApply: () => boolean = () => true) {
     if (this.refreshPromise) return this.refreshPromise;
-    const refreshing = this.performRefresh();
+    const refreshing = this.performRefresh(shouldApply);
     this.refreshPromise = refreshing;
     try {
-      await refreshing;
+      return await refreshing;
     } finally {
       if (this.refreshPromise === refreshing) this.refreshPromise = null;
     }
   }
 
-  private async performRefresh() {
-    if (this.closed) return;
-    const selectedId = this.snapshot.rows[this.snapshot.selected]?.commit.revisionId;
-    const anchorId =
+  private async performRefresh(shouldApply: () => boolean): Promise<boolean> {
+    if (this.closed || !shouldApply()) return false;
+    const selectedCommit = this.snapshot.rows[this.snapshot.selected]?.commit;
+    const anchorCommit =
       this.snapshot.selectionAnchor === null
         ? undefined
-        : this.snapshot.rows[this.snapshot.selectionAnchor]?.commit.revisionId;
+        : this.snapshot.rows[this.snapshot.selectionAnchor]?.commit;
+    const selectedIdentity = selectedCommit
+      ? { revisionId: selectedCommit.revisionId, logicalId: selectedCommit.logicalId }
+      : undefined;
+    const anchorIdentity = anchorCommit
+      ? { revisionId: anchorCommit.revisionId, logicalId: anchorCommit.logicalId }
+      : undefined;
     const visualSelectionActive = this.snapshot.visualSelectionActive;
     const viewportOffset = this.snapshot.selected - this.snapshot.top;
     this.generation += 1;
@@ -388,6 +436,9 @@ export class LogController {
     this.abort.abort();
     await this.loadingPromise;
     this.loadingPromise = null;
+    if (this.snapshot.loading && !this.closed && generation === this.generation) {
+      this.publish({ loading: false });
+    }
     this.abort = new AbortController();
     let replacement: HistoryRuntime["source"];
     try {
@@ -396,69 +447,123 @@ export class LogController {
       if (!this.closed && generation === this.generation) {
         this.setNotice(error instanceof Error ? error.message : String(error));
       }
-      return;
+      return false;
     }
-    if (this.closed || generation !== this.generation) {
+    if (this.closed || generation !== this.generation || !shouldApply()) {
       await replacement.close();
-      return;
+      if (!this.closed && generation === this.generation) this.abort = new AbortController();
+      return false;
     }
-    this.source = replacement;
-    this.checkpoint = createHistoryLaneCheckpoint();
-    this.publish({
-      rows: [],
-      selected: 0,
-      selectionAnchor: null,
-      top: 0,
-      historyDone: false,
-      loading: false,
-      notice: "",
-    });
-    await this.loadMore();
-    if (this.closed || generation !== this.generation) return;
-    const endpointIds = [selectedId, anchorId].filter((id): id is string => Boolean(id));
-    while (
-      !this.snapshot.historyDone &&
-      !this.closed &&
-      generation === this.generation &&
-      endpointIds.some((id) => !this.snapshot.rows.some((row) => row.commit.revisionId === id))
-    ) {
-      await this.loadMore();
+
+    const identities = [selectedIdentity, anchorIdentity].filter(
+      (identity): identity is NonNullable<typeof identity> => Boolean(identity),
+    );
+    let replacementRows: HistoryGraphRow[] = [];
+    let replacementCheckpoint = createHistoryLaneCheckpoint();
+    let replacementHistoryDone = false;
+    try {
+      do {
+        if (this.closed || generation !== this.generation || !shouldApply()) {
+          await replacement.close();
+          if (!this.closed && generation === this.generation) this.abort = new AbortController();
+          return false;
+        }
+        const page = await replacement.read({ limit: 256, signal: this.abort.signal });
+        if (this.closed || generation !== this.generation || !shouldApply()) {
+          await replacement.close();
+          if (!this.closed && generation === this.generation) this.abort = new AbortController();
+          return false;
+        }
+        if (!page.done && page.commits.length === 0) {
+          throw new Error("VCS history returned an empty page before EOF.");
+        }
+        const planned = planHistoryPage(page.commits, replacementCheckpoint);
+        replacementRows = [...replacementRows, ...planned.rows];
+        replacementCheckpoint = planned.checkpoint;
+        replacementHistoryDone = page.done;
+        if (page.done || identities.length === 0) break;
+      } while (
+        identities.some(
+          (identity) =>
+            !isHistoryIdentitySettled(replacementRows, identity, replacementHistoryDone),
+        )
+      );
+    } catch (error) {
+      await replacement.close();
+      if (!this.closed && generation === this.generation) {
+        this.abort = new AbortController();
+        this.setNotice(error instanceof Error ? error.message : String(error));
+      }
+      return false;
     }
-    if (this.closed || generation !== this.generation) return;
-    const selectedIndex = selectedId
-      ? this.snapshot.rows.findIndex((row) => row.commit.revisionId === selectedId)
-      : -1;
-    const anchorIndex = anchorId
-      ? this.snapshot.rows.findIndex((row) => row.commit.revisionId === anchorId)
-      : -1;
+    if (this.closed || generation !== this.generation || !shouldApply()) {
+      await replacement.close();
+      if (!this.closed && generation === this.generation) this.abort = new AbortController();
+      return false;
+    }
+
+    const selectedIndex = findHistoryRowIndex(replacementRows, selectedIdentity);
+    const anchorIndex = findHistoryRowIndex(replacementRows, anchorIdentity);
     const restoredSelected = selectedIndex >= 0 ? selectedIndex : Math.max(0, anchorIndex);
+    const refreshNotice =
+      selectedIdentity && selectedIndex < 0
+        ? `Couldn’t uniquely identify selected change; moved to ${anchorIndex >= 0 ? "range anchor" : "newest change"}.`
+        : replacementRows.length === 0 && replacementHistoryDone
+          ? "No commits found."
+          : "History refreshed.";
     const restoredAnchor = selectedIndex >= 0 && anchorIndex >= 0 ? anchorIndex : null;
     const requestedTop = Math.max(0, restoredSelected - viewportOffset);
     const geometry = planLogViewportGeometry({
-      rows: this.snapshot.rows,
+      rows: replacementRows,
       selected: restoredSelected,
       requestedTop,
       bodyHeight: this.viewportBodyHeight,
       groupByDay: !this.snapshot.presentation.graph,
     });
     const restoreRange = refreshSelectionGeneration === this.selectionGeneration;
-    const hasRestoredSelection = Boolean(this.snapshot.rows[restoredSelected]);
+    const hasRestoredSelection = Boolean(replacementRows[restoredSelected]);
     const restoredVisualSelectionActive =
       hasRestoredSelection &&
-      (restoreRange ? visualSelectionActive : this.snapshot.visualSelectionActive);
-    this.publish({
-      selected: restoredSelected,
-      selectionAnchor: restoreRange
-        ? restoredAnchor !== restoredSelected || visualSelectionActive
-          ? restoredAnchor
-          : null
-        : restoredVisualSelectionActive
-          ? restoredSelected
-          : null,
-      visualSelectionActive: restoredVisualSelectionActive,
-      top: geometry.top,
-    });
-    this.setNotice("History refreshed.");
+      (restoreRange
+        ? visualSelectionActive && restoredAnchor !== null
+        : this.snapshot.visualSelectionActive);
+    try {
+      // The runtime swaps its source synchronously before any asynchronous cursor cleanup.
+      const accepted = this.runtime.acceptSource?.(replacement);
+      this.source = replacement;
+      this.checkpoint = replacementCheckpoint;
+      this.publish({
+        rows: replacementRows,
+        selected: restoredSelected,
+        selectionAnchor: restoreRange
+          ? restoredAnchor !== restoredSelected || visualSelectionActive
+            ? restoredAnchor
+            : null
+          : restoredVisualSelectionActive
+            ? restoredSelected
+            : null,
+        visualSelectionActive: restoredVisualSelectionActive,
+        top: geometry.top,
+        historyDone: replacementHistoryDone,
+        loading: false,
+        notice: "",
+      });
+      this.setNotice(refreshNotice);
+      if (accepted) {
+        void accepted.catch((error) => {
+          if (!this.closed) this.setNotice(error instanceof Error ? error.message : String(error));
+        });
+      }
+      return true;
+    } catch (error) {
+      // Acceptance owns the source from the instant the runtime swaps its cursor.
+      if (this.source !== replacement) await replacement.close();
+      if (!this.closed && generation === this.generation) {
+        this.abort = new AbortController();
+        this.setNotice(error instanceof Error ? error.message : String(error));
+      }
+      return false;
+    }
   }
 
   /** Return the focused row and normalized inclusive selection endpoints. */

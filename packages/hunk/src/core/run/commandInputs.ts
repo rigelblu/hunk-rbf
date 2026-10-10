@@ -42,6 +42,8 @@ export interface CommonOptions {
   agentContext?: string;
   pager?: boolean;
   watch?: boolean;
+  /** Initial automatic refresh state for interactive history sessions. */
+  historyAutoRefresh?: boolean;
   /** Enable launch-scoped experimental review features. */
   experimental?: boolean;
   /** Offload eligible syntax highlighting for this launch. */

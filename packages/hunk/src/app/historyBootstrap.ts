@@ -16,6 +16,7 @@ import type {
   ExtensionVcsHistoryRangeSelection,
   ExtensionVcsHistoryReviewAction,
   ExtensionVcsHistoryReviewOptions,
+  ExtensionVcsWatchPlan,
   NamedCustomThemeConfig,
 } from "../extension-api/types";
 import { sanitizeTerminalLine } from "../lib/terminalText";
@@ -27,6 +28,8 @@ import {
   openVcsHistory,
   planVcsHistoryRangeReview,
   planVcsHistoryReview,
+  getVcsHistoryWatchPlan,
+  getVcsHistoryWatchSignature,
 } from "../core/vcs";
 import type { VcsCatalog, VcsHistorySource } from "../core/vcs/types";
 import { resolveExtensionVcsAdapters, resolveSessionVcsId } from "../extensions/apply";
@@ -67,7 +70,10 @@ export interface HistoryBootstrap {
     options?: ExtensionVcsHistoryReviewOptions,
     signal?: AbortSignal,
   ): Promise<ExtensionVcsHistoryRangeReviewAction>;
+  historyWatchPlan?: ExtensionVcsWatchPlan;
+  historyWatchSignature?: (signal?: AbortSignal) => string | Promise<string>;
   reopenSource(signal?: AbortSignal): Promise<VcsHistorySource>;
+  acceptSource(source: VcsHistorySource): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -146,6 +152,16 @@ export async function loadHistoryBootstrap({
   };
   const openSource = (signal?: AbortSignal) =>
     openVcsHistory(adapter, historyInput, { cwd: repoRoot, signal }, catalog);
+  let historyWatchPlan: ExtensionVcsWatchPlan | undefined;
+  let historyWatchPlanNotice: string | undefined;
+  try {
+    historyWatchPlan = getVcsHistoryWatchPlan(adapter, historyInput, { cwd: repoRoot });
+  } catch (error) {
+    if (adapter.history?.watchSignature) {
+      historyWatchPlan = { coverage: "poll-only", targets: [] };
+      historyWatchPlanNotice = `History event watch unavailable; using polling: ${sanitizeTerminalLine(error instanceof Error ? error.message : String(error))}`;
+    }
+  }
   let source: VcsHistorySource;
   try {
     source = await openSource();
@@ -182,6 +198,7 @@ export async function loadHistoryBootstrap({
         customThemes: sessionThemes.themes,
       },
       viewPreferences: initialViewPreferences,
+      historyAutoRefreshEnabled: resolved.configured.input.options.historyAutoRefresh === true,
     }),
     keybindings: resolved.configured.keybindings,
     initialViewPreferences,
@@ -192,6 +209,7 @@ export async function loadHistoryBootstrap({
       ...(mergeStartupNotices(resolved.configured.startupNotices, resolved.extensions) ?? []).map(
         (notice) => sanitizeTerminalLine(notice.message),
       ),
+      ...(historyWatchPlanNotice ? [historyWatchPlanNotice] : []),
       ...sessionThemes.notices.map((notice) => sanitizeTerminalLine(notice.message)),
       ...extensionAdapters.issues.map((issue) => sanitizeTerminalLine(issue.message)),
       ...(settledVcs.unknownVcsId
@@ -208,6 +226,12 @@ export async function loadHistoryBootstrap({
         return planVcsHistoryRangeReview(adapter, selection, { cwd: repoRoot, signal }, options);
       },
     }),
+    ...(historyWatchPlan && {
+      historyWatchPlan,
+      historyWatchSignature(signal) {
+        return getVcsHistoryWatchSignature(adapter, historyInput, { cwd: repoRoot, signal });
+      },
+    }),
     async reopenSource(signal) {
       if (closed) throw new Error("History session is closed.");
       signal?.throwIfAborted();
@@ -218,9 +242,16 @@ export async function loadHistoryBootstrap({
         signal?.throwIfAborted();
         throw new Error("History session changed while refreshing.");
       }
+      return replacement;
+    },
+    async acceptSource(replacement) {
+      if (closed) {
+        await replacement.close();
+        throw new Error("History session is closed.");
+      }
+      const previous = source;
       source = replacement;
       await previous.close();
-      return replacement;
     },
     async close() {
       if (closed) return;

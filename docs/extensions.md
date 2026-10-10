@@ -312,8 +312,8 @@ and retires the replaced instance at that explicit ownership boundary.
 
 ### `hunk.apiVersion`
 
-The API generation this Hunk speaks (currently `28`). Branch on it if you want
-one file to support several Hunk versions. Version 28 adds host-owned syntax highlighting for
+The API generation this Hunk speaks (currently `29`). Branch on it if you want
+one file to support several Hunk versions. Version 29 adds optional history-watch hooks; version 28 adds host-owned syntax highlighting for
 file-view code documents; version 27 adds `ctx.selection.files`, the visible files in review order;
 version 26 adds the status line (`ctx.statusLine` items and `ctx.prompts.line()` inline prompts);
 version 25 adds Promise-returning watch signatures and watch cancellation; version 24 adds review
@@ -585,6 +585,15 @@ The snippet above demonstrates static history production only; it is not a compl
 adapter. Add a `revision-show` operation for `revision-show` actions and a `working-tree-diff`
 operation that accepts `rangeEndpoints` for `revision-range` actions before advertising interactive
 opening. Otherwise Enter reports that the corresponding review operation is unsupported.
+
+API version 29 adds optional
+`history.watchPlan(input, context)` and `history.watchSignature(input, context)` hooks. Extensions
+that require these hooks should declare `{ "hunk": { "apiVersion": 29 } }`; an extension that
+supports older Hunk versions can branch on `hunk.apiVersion`. The signature is required for automatic
+refresh; the event plan is optional and omitting it uses signature polling. Both hooks receive
+`context.signal`, which Hunk aborts when the log session stops observing. Providers without a
+signature remain compatible and keep manual refresh. The interactive `hunk log` opt-in refresh item
+starts off for each session.
 
 History is deliberately separate from patch-producing `operations`. The built-in host owns command
 routing, graph planning, themes, terminal lifecycle, and static/interactive presentation. The
@@ -1415,7 +1424,7 @@ languages, oversize input, queue pressure, cancellation, worker failure, and tok
 all retain the original symbolic FileView content. By contrast, invalid layout data or unavailable
 native text measurement fails layout preparation and falls back to the raw diff, because Hunk
 cannot safely retain a view without exact geometry. Folder extensions using `codeDocuments` or
-`syntax` must declare `"hunk": { "apiVersion": 28 }`.
+`syntax` must declare `"hunk": { "apiVersion": 29 }`.
 
 A row's optional `sourceRanges` contains inclusive, one-based exact-source
 bindings such as `{ side: "new", range: [12, 18] }`. Hunk reads only the bound

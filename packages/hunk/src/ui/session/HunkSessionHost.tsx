@@ -198,6 +198,10 @@ export function HunkSessionHost({
           mountMode: "initial",
         },
   );
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(
+    initialization.historyAutoRefreshEnabled ?? false,
+  );
+  const [historyReturnGeneration, setHistoryReturnGeneration] = useState(0);
   const routeRef = useRef(route);
   routeRef.current = route;
   const mountedRef = useRef(true);
@@ -258,6 +262,7 @@ export function HunkSessionHost({
       return;
     }
     routeRef.current = returnRoute;
+    setHistoryReturnGeneration((generation) => generation + 1);
     setRoute(returnRoute);
   }, [completeQuit, externalQuitSignal, stopReviewRuntime]);
 
@@ -460,6 +465,9 @@ export function HunkSessionHost({
       onOutcome={(outcome) => handleHistoryOutcome(route, outcome)}
       quitScheduler={deps.viewPreferenceQuitScheduler}
       sessionViewPreferences={sessionViewPreferencesRef.current}
+      autoRefreshEnabled={autoRefreshEnabled}
+      onAutoRefreshEnabledChange={setAutoRefreshEnabled}
+      refreshOnMountGeneration={historyReturnGeneration}
       themeController={themeController}
     />
   );

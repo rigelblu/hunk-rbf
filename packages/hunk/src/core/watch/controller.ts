@@ -35,7 +35,7 @@ export interface WatchControllerOptions {
   /** Baseline captured before content loading; if absent, the first check must refresh. */
   initialSignature?: string;
   getSignature: (signal: AbortSignal) => string | Promise<string>;
-  refresh: () => void | Promise<void>;
+  refresh: () => void | boolean | Promise<void | boolean>;
   /** A source event arrived and a debounced signature check is now pending. */
   onReloadPending?: () => void;
   clock?: WatchControllerClock;
@@ -219,7 +219,12 @@ export function createWatchController(options: WatchControllerOptions): WatchCon
 
     state.phase = "refreshing";
     try {
-      await options.refresh();
+      const refreshed = await options.refresh();
+      if (refreshed === false) {
+        if (isClosed()) return;
+        finishCheck();
+        return;
+      }
     } catch (error) {
       if (isClosed()) return;
       reportError(error);

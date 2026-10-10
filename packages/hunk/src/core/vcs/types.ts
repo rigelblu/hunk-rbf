@@ -69,6 +69,11 @@ export interface VcsHistoryCapability {
     context: VcsLoadContext,
     options?: ExtensionVcsHistoryReviewOptions,
   ): Promise<ExtensionVcsHistoryRangeReviewAction>;
+  watchSignature?: (
+    input: ExtensionVcsHistoryInput,
+    context: VcsLoadContext,
+  ) => string | Promise<string>;
+  watchPlan?: (input: ExtensionVcsHistoryInput, context: VcsLoadContext) => ExtensionVcsWatchPlan;
 }
 
 /**

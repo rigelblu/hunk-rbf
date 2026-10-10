@@ -21,7 +21,7 @@
  * Extensions can branch on `hunk.apiVersion` so a newer Hunk can keep loading
  * older extensions without guessing at their expectations.
  */
-export const HUNK_EXTENSION_API_VERSION = 28;
+export const HUNK_EXTENSION_API_VERSION = 29;
 export type HunkExtensionApiVersion = typeof HUNK_EXTENSION_API_VERSION;
 
 export type ExtensionNotifyType = "info" | "warning" | "error";
@@ -912,6 +912,16 @@ export interface ExtensionVcsHistoryCapability {
     context: ExtensionVcsLoadContext,
     options?: ExtensionVcsHistoryReviewOptions,
   ): ExtensionVcsHistoryRangeReviewAction | Promise<ExtensionVcsHistoryRangeReviewAction>;
+  /** Return a stable fingerprint for the history produced by the same input. */
+  watchSignature?: (
+    input: ExtensionVcsHistoryInput,
+    context: ExtensionVcsLoadContext,
+  ) => string | Promise<string>;
+  /** Declare filesystem targets that hint when this history may have changed. */
+  watchPlan?: (
+    input: ExtensionVcsHistoryInput,
+    context: ExtensionVcsLoadContext,
+  ) => ExtensionVcsWatchPlan;
 }
 
 /** Stash review request, as extension adapters receive it. */

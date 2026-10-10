@@ -70,6 +70,17 @@ Reload supported review inputs when their source changes.
 
 ---
 
+**`history_auto_refresh`**
+
+Start interactive `hunk log` with automatic history refresh enabled where the provider supports it. F10 can override it for the current session; review `watch` is separate.
+
+- **Type:** boolean
+- **Accepted:** `true` or `false`
+- **Built-in default:** `false`
+- **Scope:** top-level user or repository config only
+
+---
+
 **`exclude_untracked`**
 
 Hide untracked files from working-tree reviews.

@@ -1099,6 +1099,31 @@ describe("config resolution", () => {
     expect(resolved.input.options.watch).toBe(expected);
   });
 
+  test("layers top-level history auto-refresh without inheriting review tables", () => {
+    const home = createTempDir("hunk-history-config-home-");
+    const repo = createTempDir("hunk-history-config-repo-");
+    createRepo(repo);
+    mkdirSync(join(home, ".config", "hunk"), { recursive: true });
+    mkdirSync(join(repo, ".hunk"), { recursive: true });
+    const userConfigPath = join(home, ".config", "hunk", "config.toml");
+    const repoConfigPath = join(repo, ".hunk", "config.toml");
+    const resolve = () =>
+      resolveConfiguredCliInput(
+        { kind: "show", ref: "HEAD", options: {} },
+        { cwd: repo, env: { HOME: home } },
+      ).input.options.historyAutoRefresh;
+
+    expect(resolve()).toBe(false);
+    writeFileSync(userConfigPath, "history_auto_refresh = true\n");
+    expect(resolve()).toBe(true);
+    writeFileSync(repoConfigPath, "history_auto_refresh = false\n");
+    expect(resolve()).toBe(false);
+    writeFileSync(repoConfigPath, "[show]\nhistory_auto_refresh = false\n");
+    expect(resolve()).toBe(true);
+    writeFileSync(repoConfigPath, 'history_auto_refresh = "yes"\n');
+    expect(resolve()).toBe(true);
+  });
+
   test("carries an unrecognized vcs id through for extensions to claim", () => {
     // Config resolves before user extensions are imported, so it cannot know
     // whether `hg` will exist. Dropping it here discarded the user's explicit

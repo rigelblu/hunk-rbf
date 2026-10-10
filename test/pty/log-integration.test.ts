@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Session } from "tuistory";
-import { createPtyHarness, rightmostColumnOf } from "./harness";
+import { createPtyHarness, rightmostColumnOf, sleep } from "./harness";
 
 const harness = createPtyHarness();
 const tempDirs: string[] = [];
@@ -635,6 +635,167 @@ describe("interactive hunk log", () => {
         timeout: 15_000,
       });
       expect(refreshed).toContain("History refreshed");
+      await session.press("q");
+    } finally {
+      session.close();
+    }
+  });
+
+  test("keeps automatic history refresh opt-in and reveals new commits when enabled", async () => {
+    const cwd = createHistoryRepo();
+    const session = await harness.launchHunk({
+      args: ["log", "--color", "never", "--no-extensions"],
+      cwd,
+      cols: 90,
+      rows: 18,
+    });
+    try {
+      await session.waitForText(/Second history commit/, { timeout: 15_000 });
+      await harness.pressAndWaitForText(session, "f10", /Auto-refresh history: off/, {
+        timeout: 5_000,
+      });
+      await session.press("down");
+      await session.press("down");
+      await session.press("down");
+      await session.press("enter");
+      await session.press("f10");
+      await session.waitForText(/Auto-refresh history: on/, { timeout: 5_000 });
+      await sleep(500);
+
+      writeFileSync(join(cwd, "history.ts"), "export const historyValue = 'third';\n");
+      git(cwd, ["commit", "-qam", "Third history commit"]);
+      await sleep(750);
+      expect(await session.text({ immediate: true })).not.toContain("Third history commit");
+      await session.press("escape");
+      const refreshed = await session.waitForText(/Third history commit/, { timeout: 15_000 });
+      expect(refreshed).toContain("Second history commit");
+      expect(refreshed).toContain("History refreshed.");
+
+      await session.press("f10");
+      await session.press("down");
+      await session.press("down");
+      await session.press("down");
+      await session.press("enter");
+      await session.press("f10");
+      await session.waitForText(/Auto-refresh history: off/, { timeout: 5_000 });
+      await session.press("escape");
+      writeFileSync(join(cwd, "history.ts"), "export const historyValue = 'fourth';\n");
+      git(cwd, ["commit", "-qam", "Fourth history commit"]);
+      await sleep(750);
+      expect(await session.text({ immediate: true })).not.toContain("Fourth history commit");
+      await session.press("q");
+    } finally {
+      session.close();
+    }
+  });
+
+  test("starts history auto-refresh from repository config and keeps F10 session-local", async () => {
+    const cwd = createHistoryRepo();
+    mkdirSync(join(cwd, ".hunk"), { recursive: true });
+    writeFileSync(join(cwd, ".hunk", "config.toml"), "history_auto_refresh = true\n");
+    const session = await harness.launchHunk({
+      args: ["log", "--color", "never", "--no-extensions"],
+      cwd,
+      cols: 90,
+      rows: 18,
+    });
+    try {
+      await session.waitForText(/Second history commit/, { timeout: 15_000 });
+      await harness.pressAndWaitForText(session, "f10", /Auto-refresh history: on/, {
+        timeout: 5_000,
+      });
+      await session.press("escape");
+      await sleep(500);
+
+      writeFileSync(join(cwd, "history.ts"), "export const historyValue = 'third';\n");
+      git(cwd, ["commit", "-qam", "Third history commit"]);
+      const refreshed = await session.waitForText(/Third history commit/, { timeout: 15_000 });
+      expect(refreshed).toContain("History refreshed.");
+
+      await session.press("f10");
+      await session.press("down");
+      await session.press("down");
+      await session.press("down");
+      await session.press("enter");
+      await session.press("f10");
+      await session.waitForText(/Auto-refresh history: off/, { timeout: 5_000 });
+      expect(readFileSync(join(cwd, ".hunk", "config.toml"), "utf8")).toBe(
+        "history_auto_refresh = true\n",
+      );
+      await session.press("escape");
+      await session.press("q");
+    } finally {
+      session.close();
+    }
+  });
+
+  test("defers refresh while the search prompt is active and keeps the query", async () => {
+    const cwd = createHistoryRepo();
+    const session = await harness.launchHunk({
+      args: ["log", "--color", "never", "--no-extensions"],
+      cwd,
+      cols: 90,
+      rows: 18,
+    });
+    try {
+      await session.waitForText(/Second history commit/, { timeout: 15_000 });
+      await session.press("f10");
+      await session.press("down");
+      await session.press("down");
+      await session.press("down");
+      await session.press("enter");
+      await session.press("f10");
+      await session.waitForText(/Auto-refresh history: on/, { timeout: 5_000 });
+      await session.press("escape");
+
+      session.writeRaw("/");
+      await harness.waitForSnapshot(session, (text) => text.includes("/ search commits"), 5_000);
+      await session.type("Sec");
+      await harness.waitForSnapshot(session, (text) => text.includes("/ Sec"), 5_000);
+      writeFileSync(join(cwd, "history.ts"), "export const historyValue = 'third';\n");
+      git(cwd, ["commit", "-qam", "Search prompt refresh"]);
+      await sleep(750);
+      const prompt = await session.text({ immediate: true });
+      expect(prompt).toContain("/ Sec");
+      expect(prompt).not.toContain("Search prompt refresh");
+
+      await session.press("enter");
+      const refreshed = await session.waitForText(/Search prompt refresh/, { timeout: 15_000 });
+      expect(refreshed).toContain("History refreshed.");
+      expect(refreshed).toContain("/Sec");
+      await session.press("q");
+    } finally {
+      session.close();
+    }
+  });
+
+  test("keeps auto-refresh enabled across an embedded review", async () => {
+    const cwd = createHistoryRepo();
+    const session = await harness.launchHunk({
+      args: ["log", "--color", "never", "--no-extensions"],
+      cwd,
+      cols: 90,
+      rows: 18,
+    });
+    try {
+      await session.waitForText(/Second history commit/, { timeout: 15_000 });
+      await session.press("f10");
+      await session.press("down");
+      await session.press("down");
+      await session.press("down");
+      await session.press("enter");
+      await session.press("f10");
+      await session.waitForText(/Auto-refresh history: on/, { timeout: 5_000 });
+      await session.press("escape");
+
+      await session.press("enter");
+      await session.waitForText(/historyValue = 'second'/, { timeout: 15_000 });
+      writeFileSync(join(cwd, "history.ts"), "export const historyValue = 'third';\n");
+      git(cwd, ["commit", "-qam", "Third history commit"]);
+      const history = await returnToHistory(session);
+      expect(history).toContain("Third history commit");
+      await session.press("f10");
+      await session.waitForText(/Auto-refresh history: on/, { timeout: 5_000 });
       await session.press("q");
     } finally {
       session.close();

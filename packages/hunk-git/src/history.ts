@@ -244,6 +244,20 @@ export function buildGitHistoryArgs(input: ExtensionVcsHistoryInput) {
   return args;
 }
 
+/** Fingerprint visible commits and decorations selected by the bounded history query. */
+export async function getGitHistoryWatchSignature(
+  input: ExtensionVcsHistoryInput,
+  options: GitHistoryOptions,
+) {
+  const args = buildGitHistoryArgs(input);
+  const formatIndex = args.findIndex((argument) => argument.startsWith("--format="));
+  if (formatIndex < 0) throw new Error("Git history query has no machine format.");
+  args.splice(formatIndex, 0, "--decorate=short");
+  args[formatIndex + 1] = "--format=%H%x00%D%x00%an%x00%ae%x00%aI%x00%s%x00%b";
+  const history = await runGitPlanningQuery(args, options);
+  return history.stdout;
+}
+
 /** Parse fixed NUL-delimited machine fields into immutable commit summaries. */
 export function parseGitHistory(
   text: string,

@@ -511,17 +511,27 @@ export function toInternalVcsAdapter(
 
   const history = adapterFields.history;
   const historyFields = isPlainObject(history)
-    ? snapshotProperties(history, ["open", "planReview", "planRangeReview"])
+    ? snapshotProperties(history, [
+        "open",
+        "planReview",
+        "planRangeReview",
+        "watchSignature",
+        "watchPlan",
+      ])
     : undefined;
   const historyOpen = historyFields?.open;
   const historyPlanReview = historyFields?.planReview;
   const historyPlanRangeReview = historyFields?.planRangeReview;
+  const historyWatchSignature = historyFields?.watchSignature;
+  const historyWatchPlan = historyFields?.watchPlan;
   if (
     history !== undefined &&
     (!isPlainObject(history) ||
       typeof historyOpen !== "function" ||
       typeof historyPlanReview !== "function" ||
-      (historyPlanRangeReview !== undefined && typeof historyPlanRangeReview !== "function"))
+      (historyPlanRangeReview !== undefined && typeof historyPlanRangeReview !== "function") ||
+      (historyWatchSignature !== undefined && typeof historyWatchSignature !== "function") ||
+      (historyWatchPlan !== undefined && typeof historyWatchPlan !== "function"))
   ) {
     throw new Error("registerVcsAdapter history must provide open() and planReview() functions.");
   }
@@ -533,6 +543,12 @@ export function toInternalVcsAdapter(
   const planHistoryRangeReview = historyPlanRangeReview as NonNullable<
     ExtensionVcsAdapter["history"]
   >["planRangeReview"];
+  const historyGetWatchSignature = historyWatchSignature as NonNullable<
+    ExtensionVcsAdapter["history"]
+  >["watchSignature"];
+  const historyGetWatchPlan = historyWatchPlan as NonNullable<
+    ExtensionVcsAdapter["history"]
+  >["watchPlan"];
   const detect = adapterFields.detect;
   if (typeof detect !== "function") {
     throw new Error("registerVcsAdapter requires a detect() function.");
@@ -640,6 +656,29 @@ export function toInternalVcsAdapter(
                 );
               }
               return action;
+            } catch (error) {
+              throw toUserFacingError(error);
+            }
+          },
+        }),
+        ...(typeof historyGetWatchSignature === "function" && {
+          watchSignature(input, context) {
+            try {
+              const signature = historyGetWatchSignature.call(history, input, context);
+              return typeof signature === "string"
+                ? signature
+                : signature.catch((error) => {
+                    throw toUserFacingError(error);
+                  });
+            } catch (error) {
+              throw toUserFacingError(error);
+            }
+          },
+        }),
+        ...(typeof historyGetWatchPlan === "function" && {
+          watchPlan(input, context) {
+            try {
+              return historyGetWatchPlan.call(history, input, context);
             } catch (error) {
               throw toUserFacingError(error);
             }
