@@ -10,7 +10,7 @@ Fork-specific product guidance for Hunk. The upstream project README remains at 
 
 ```text
 $ hunk --version
-hunk 0.23.0 (Hunk RBF 0.8.0)
+hunk 0.23.0 (Hunk RBF 0.10.2)
 ```
 
 The first number is the upstream Hunk release this fork is built against. The parenthetical is the fork's own release. They advance independently, so neither is "ahead" of the other — quote the whole line in a bug report and it says exactly which build you have.
@@ -36,6 +36,12 @@ One known consequence: the upstream `install.sh` already-current check reduces t
 - The fork release version lives in `rbf/RBF_VERSION`
 - The upstream package version lives in `packages/hunk/package.json`, which upstream owns for its packaging and synchronization
 - Local fork releases update `rbf/RBF_VERSION` and `rbf/CHANGELOG.md` together without rewriting upstream release metadata
+
+# 🔵⋯ Start history auto-refresh from config
+
+Put `history_auto_refresh = true` at the top level of `~/.config/hunk/config.toml` or a repository's `.hunk/config.toml` to start interactive `hunk log` with automatic refresh on. The built-in default is off. Repository config takes precedence over user config.
+
+F10 can turn automatic refresh on or off for the current log session without changing either config file. This setting applies only to interactive history; review `watch` is separate. If a history provider cannot report changes, manual Refresh remains available.
 
 # 🔵⋯ Follow appearance
 

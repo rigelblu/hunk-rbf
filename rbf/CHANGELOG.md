@@ -6,10 +6,25 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 
 # 🔵⋯ [Unreleased]
 
+# 🔵⋯ v0.10.2 (2026-10-11)
+
+Local dogfood patch; remote integration and publication remain pending.
+
 ## 🟠⋯ Added for End Users
 
+- 2026-10-11 - feat (ux) | start interactive `hunk log` with automatic refresh enabled from user or repository config, while F10 remains a session-only override (#hk-85)
+
+# 🔵⋯ v0.9.0 (2026-10-10)
+
+## 🟠⋯ Added for End Users
+
+- 2026-10-10 - feat (ux) | keep my place in history while `hunk log` refreshes automatically when opted in (#hk-85)
 - 2026-10-07 - feat (ux) | use upstream Hunk 0.23.0 plus pinned fixes (`252f59dd`) while retaining the fork's configured appearance pairs, named themes, derived diff colors, alpha highlights and dual version identity (#hk-14)
 - 2026-10-07 - feat (ux) | choose `terminal` to draw from the terminal's live palette, including as a member of an appearance pair (#hk-14)
+
+## 🟠⋯ Added for Technical Users
+
+- 2026-10-10 - feat (technical) | declare optional history watch plans and cancellable signatures through extension API 29 (#hk-85)
 
 ## 🟠⋯ Improved for Technical Users
 
