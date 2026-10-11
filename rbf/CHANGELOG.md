@@ -6,6 +6,18 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 
 # 🔵⋯ [Unreleased]
 
+# 🔵⋯ v0.10.0 (2026-10-11)
+
+Local dogfood release; remote integration and publication remain pending.
+
+## 🟠⋯ Added for End Users
+
+- 2026-10-11 - feat (ux) | recognize empty JJ revisions from the leading `(empty)` marker while scanning history, including revisions without descriptions (#hk-91)
+
+## 🟠⋯ Added for Technical Users
+
+- 2026-10-11 - feat (technical) | provide optional authoritative whole-revision emptiness to history consumers through extension API 30; omitted facts remain unknown (#hk-91)
+
 ## 🟠⋯ Fixed for Technical Users
 
 - 2026-10-11 - fix (technical) | load installed package dependencies from external extensions in the compiled Hunk binary (#hk-91)
