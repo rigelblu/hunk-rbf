@@ -167,9 +167,19 @@ describe("PTY current line", () => {
     });
 
     try {
-      const split = await session.waitForText(/Current line · old above, new below/, {
-        timeout: 15_000,
-      });
+      const split = await harness.waitForSnapshot(
+        session,
+        (text) => {
+          const lines = text.split("\n");
+          const row = lineIndexOf(text, "Current line · old above, new below");
+          return (
+            row >= 0 &&
+            lines[row + 1]?.includes("export const message = 'short';") === true &&
+            lines[row + 2]?.includes("this is a very long wrapped line") === true
+          );
+        },
+        15_000,
+      );
       const splitLines = split.split("\n");
       const lensIndex = lineIndexOf(split, "Current line");
       expect(splitLines[lensIndex + 1]).toContain("export const message = 'short';");
@@ -208,9 +218,19 @@ describe("PTY current line", () => {
     });
 
     try {
-      const initial = await session.waitForText(/Current line · old above, new below/, {
-        timeout: 15_000,
-      });
+      const initial = await harness.waitForSnapshot(
+        session,
+        (text) => {
+          const lines = text.split("\n");
+          const row = lineIndexOf(text, "Current line · old above, new below");
+          return (
+            row >= 0 &&
+            lines[row + 1]?.includes("日本語") === true &&
+            lines[row + 2]?.includes("한국어") === true
+          );
+        },
+        15_000,
+      );
       const lensRow = lineIndexOf(initial, "Current line");
       expect(initial.split("\n")[lensRow + 1]).toContain("日本語");
       expect(initial.split("\n")[lensRow + 2]).toContain("한국어");

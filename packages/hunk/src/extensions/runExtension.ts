@@ -217,6 +217,7 @@ function normalizeHistoryCommit(value: unknown): ExtensionVcsHistoryCommit {
     "authoredAt",
     "decorations",
     "logicalId",
+    "isEmpty",
   ]);
   const required = (key: string) =>
     assertNonEmptyString(snapshot[key], `VCS history commit ${key} must be a non-empty string.`);
@@ -254,6 +255,9 @@ function normalizeHistoryCommit(value: unknown): ExtensionVcsHistoryCommit {
   }
   if (!Array.isArray(snapshot.decorations)) {
     throw new Error("VCS history commit decorations must be an array.");
+  }
+  if (snapshot.isEmpty !== undefined && typeof snapshot.isEmpty !== "boolean") {
+    throw new Error("VCS history commit isEmpty must be a boolean when present.");
   }
 
   const parentValues = snapshotArray(snapshot.parentRevisionIds, 256);
@@ -321,6 +325,7 @@ function normalizeHistoryCommit(value: unknown): ExtensionVcsHistoryCommit {
     ...(typeof snapshot.logicalId === "string"
       ? { logicalId: sanitizeTerminalLine(snapshot.logicalId).replaceAll("\t", " ") }
       : {}),
+    ...(typeof snapshot.isEmpty === "boolean" ? { isEmpty: snapshot.isEmpty } : {}),
   };
 }
 

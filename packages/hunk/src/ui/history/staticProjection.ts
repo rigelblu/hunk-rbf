@@ -3,6 +3,7 @@ import type { NamedCustomThemeConfig } from "../../extension-api/types";
 import { sanitizeTerminalLine, sanitizeTerminalText } from "../../lib/terminalText";
 import { fitText, measureTextWidth } from "../lib/text";
 import { resolveTheme, type AppTheme } from "../themes";
+import { formatHistoryTitle } from "./title";
 
 export interface HistoryProjectionOptions {
   ascii: boolean;
@@ -151,7 +152,7 @@ export function projectHistoryRow(row: HistoryGraphRow, options: HistoryProjecti
   const theme = options.theme ?? resolveHistoryTheme(undefined);
   const graph = renderHistoryGraph(row, options.ascii);
   const displayId = sanitizeTerminalLine(row.commit.displayId).replaceAll("\t", " ");
-  const subject = sanitizeTerminalLine(row.commit.subject).replaceAll("\t", " ");
+  const subject = formatHistoryTitle(row.commit);
   const refs = formatHistoryDecorations(row);
   const author = sanitizeTerminalLine(row.commit.authorName).replaceAll("\t", " ");
   const date = row.commit.authoredAt.slice(0, 10);
@@ -171,7 +172,7 @@ export function projectHistoryRow(row: HistoryGraphRow, options: HistoryProjecti
     ];
     suffix =
       candidates.find((candidate) => measureTextWidth(candidate) <= available) ??
-      fitText(subject, available, "…");
+      formatHistoryTitle(row.commit, available, "…");
   }
   const plain = clampLine(`${graphPrefix}${hashPrefix}${suffix}`, options.width);
   if (!options.color) return plain;
@@ -200,7 +201,16 @@ export function projectHistoryRecord(row: HistoryGraphRow, options: HistoryProje
     ? ` <${sanitizeTerminalLine(row.commit.authorEmail).replaceAll("\t", " ")}>`
     : "";
   const date = sanitizeTerminalLine(row.commit.authoredAt).replace("T", " ");
-  const subject = sanitizeTerminalLine(row.commit.subject).replaceAll("\t", " ");
+  const titlePrefix = `${continuation ? `${continuation}  ` : "   "}    `;
+  const titleWidth =
+    options.width === undefined
+      ? undefined
+      : Math.max(0, options.width - measureTextWidth(titlePrefix));
+  const subject = formatHistoryTitle(
+    row.commit,
+    row.commit.isEmpty === true ? titleWidth : undefined,
+    "…",
+  );
   const body = row.commit.body
     ? sanitizeTerminalText(row.commit.body, { preserveNewlines: true, preserveTabs: false }).split(
         "\n",
@@ -213,7 +223,7 @@ export function projectHistoryRecord(row: HistoryGraphRow, options: HistoryProje
     `${prefix(continuation)}Author: ${authorName}${authorEmail}`,
     `${prefix(continuation)}Date:   ${date}`,
     prefix(continuation).trimEnd(),
-    `${prefix(continuation)}    ${subject}`,
+    `${titlePrefix}${subject}`,
     ...(body.length
       ? [
           prefix(continuation).trimEnd(),
@@ -224,7 +234,14 @@ export function projectHistoryRecord(row: HistoryGraphRow, options: HistoryProje
   const convergence = renderHistoryConvergence(row, options.ascii);
   if (convergence) plainLines.push(convergence);
   plainLines.push(prefix(continuation).trimEnd());
-  const fitted = plainLines.map((line) => clampLine(line, options.width));
+  // Known-empty titles reserve marker cells; other titles retain whole-line grapheme fitting.
+  const fitted = plainLines.map((line, index) =>
+    row.commit.isEmpty === true &&
+    index === 4 &&
+    (options.width === undefined || options.width >= measureTextWidth(titlePrefix))
+      ? line
+      : clampLine(line, options.width),
+  );
   if (!options.color) return fitted;
   return fitted.map((line, index) => {
     if (!line) return line;

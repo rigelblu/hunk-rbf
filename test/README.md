@@ -48,6 +48,13 @@ The dedicated trees are not selected directly by `bun run test`, though package 
 shared runtime fixtures. Run the commands that match the changed behavior; omission from the default
 suite does not mean another command covers it.
 
+The opt-in TTY smoke suite uses Bun's native PTY on macOS and Linux, without an external `script`
+recorder. It captures 80×24 terminal output and drives real keyboard input. PTY and TTY smoke checks
+are Unix-only. Set `HUNK_TEST_EXECUTABLE` to an absolute compiled Hunk path to exercise that binary
+in the PTY, smoke, and compiled CLI tests; otherwise PTY and smoke tests run source using the
+test runner's Bun executable. The compiled extension dependency check loads a real
+package through external hoisted `node_modules`, without using a bundled copy.
+
 The Windows suite omits the platform-neutral terminal UI semantic tree, which the Linux suite covers,
 then runs the focused UI tests for worker startup, editor commands, and workspace path safety. Add new
 UI tests to the `windows-ui` group when their behavior depends on Windows platform boundaries.
