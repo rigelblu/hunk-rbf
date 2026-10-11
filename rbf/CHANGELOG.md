@@ -14,11 +14,11 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 
 ## 🟠⋯ Added for Technical Users
 
+- 2026-10-14 - feat (technical) | distinguish workspace membership from ordinary generic history refs using optional workspaceName metadata and configure visibility with history_workspace_names (#hk-92)
+
 ## 🟠⋯ Fixed for End Users
 
 - 2026-10-11 - fix (ux) | retain history cursor ownership and the highlighted terminal row while refresh stages replacement pages (#hk-28 dependency for hk-27)
-- 2026-10-11 - fix (ux) | use the configured root theme in history even when revision reviews have a different `[show]` theme (#hk-95)
-- 2026-10-12 - fix (ux) | refresh history automatically without a delay or an error notice when Hunk runs in a secondary JJ workspace (#hk-85)
 
 # 🔵⋯ v0.11.0 (2026-10-13)
 
@@ -31,6 +31,8 @@ Local HK-93 release records; installation, remote integration and publication re
 ## 🟠⋯ Added for Technical Users
 
 - 2026-10-10 - feat (technical) | publish optional immutable history scope and direct cutoff-parent facts through extension API 31; existing providers remain compatible (#hk-93)
+
+## 🟠⋯ Fixed for End Users
 
 # 🔵⋯ v0.10.2 (2026-10-11)
 

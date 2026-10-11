@@ -436,7 +436,7 @@ test("opens an extended history selection as one inclusive comparison", async ()
     await setup.renderOnce();
     await act(async () => setup.mockInput.typeText("J"));
     await setup.renderOnce();
-    expect(setup.captureCharFrame()).toContain("2 commits selected");
+    expect(setup.captureCharFrame()).toContain("2 in review range");
     await act(async () => setup.mockInput.pressEnter());
     await settle(setup);
     expect(requests).toHaveLength(1);

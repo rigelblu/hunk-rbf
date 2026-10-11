@@ -84,7 +84,9 @@ History-specific commands:
 | `hunk.history.previousCommit`       | Move to the previous commit  | `up`, `k`                    |
 | `hunk.history.nextCommit`           | Move to the next commit      | `down`, `j`                  |
 | `hunk.history.startVisualSelection` | Start visual selection       | `v`                          |
-| `hunk.history.clearSelection`       | Clear visual selection       | `escape`                     |
+| `hunk.history.clearSelection`       | Clear marks and review range | `escape`                     |
+| `hunk.history.toggleMark`           | Toggle the focused mark      | `x`                          |
+| `hunk.history.reviewMarks`          | Review retained marks        | _(none)_                     |
 | `hunk.history.extendPrevious`       | Extend selection upward      | `shift+up`, `K`              |
 | `hunk.history.extendNext`           | Extend selection downward    | `shift+down`, `J`            |
 | `hunk.history.pageUp`               | Move up one page             | `pageup`, `b`, `shift+space` |

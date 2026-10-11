@@ -40,11 +40,15 @@ import { buildSessionCommands } from "../lib/sessionRegistrations";
 import {
   buildHistoryCommands,
   buildHistoryHelpSections,
-  historyCommand,
   historyCommandKeyDefaults,
   type HistoryCommandHandlers,
   type HistoryCommandId,
 } from "./commands";
+import {
+  RevisionMarksDialog,
+  revisionMarksEntries,
+  revisionMarksVisibleCount,
+} from "./RevisionMarksDialog";
 import { ParentSelectorDialog } from "./ParentSelectorDialog";
 import { monochromeLogTheme, resolveInteractiveLogPalette } from "./colorPolicy";
 import { splitHistoryTitle } from "../history/title";
@@ -53,6 +57,13 @@ import { formatHistoryDay } from "./formatting";
 import { LOG_DAY_HEADER_HEIGHT } from "./geometry";
 import { projectResponsiveLogRow, resolveLogViewportBodyHeight } from "./responsiveLayout";
 import { historyScopeText } from "../history/staticProjection";
+
+/** Cells for the focus `>` and review-range `|` markers at the start of every revision row. */
+const LOG_FOCUS_CELLS_WIDTH = 2;
+/** Cells for the `[x] ` mark checkbox, between the focus cells and the graph. */
+const LOG_MARK_CHECKBOX_WIDTH = 4;
+/** Cells every revision row spends before its graph; lines drawn under the graph skip them too. */
+const LOG_MARK_COLUMN_WIDTH = LOG_FOCUS_CELLS_WIDTH + LOG_MARK_CHECKBOX_WIDTH;
 
 /** Render graph cells with stable semantic colors from the active Hunk theme. */
 function HistoryGraphLine({ text, colors }: { text: string; colors: readonly string[] }) {
@@ -109,6 +120,7 @@ export function LogApp({
   const terminal = useTerminalDimensions();
   const renderer = useRenderer();
   const [showHelp, setShowHelp] = useState(false);
+  const [marksDialogIndex, setMarksDialogIndex] = useState<number | null>(null);
   const [parentSelectorIndex, setParentSelectorIndex] = useState<number | null>(null);
   const [transientNotice, setTransientNotice] = useState("");
   const [relativeTimeNow, setRelativeTimeNow] = useState(() => Date.now());
@@ -187,6 +199,13 @@ export function LogApp({
     quitScheduler,
   });
 
+  /** Copy the retained original identity even when its mark no longer resolves. */
+  const copyMark = (revisionId: string) => {
+    if (renderer.isOsc52Supported?.() && typeof renderer.copyToClipboardOSC52 === "function") {
+      renderer.copyToClipboardOSC52(revisionId);
+      setTransientNotice(`Copied ${sanitizeTerminalLine(revisionId.slice(0, 8))}`);
+    } else setTransientNotice("Clipboard is unavailable in this terminal.");
+  };
   const copySelected = (row = controller.getSelectedRow()) => {
     const currentRow = row;
     if (!currentRow) return;
@@ -336,6 +355,8 @@ export function LogApp({
       });
     },
     "hunk.history.startVisualSelection": () => controller.beginVisualSelection(),
+    "hunk.history.toggleMark": () => controller.toggleMark(),
+    "hunk.history.reviewMarks": () => setMarksDialogIndex(0),
     "hunk.history.clearSelection": () => void controller.clearSelection(),
     "hunk.history.previousCommit": () =>
       void controller.move(-1, viewportBodyHeight, {
@@ -393,12 +414,11 @@ export function LogApp({
     id: HistoryCommandId,
     options: Pick<Extract<MenuEntry, { kind: "item" }>, "checked"> = {},
   ): Extract<MenuEntry, { kind: "item" }> => {
-    const definition = historyCommand(id);
     const command = findAppCommandById(commands, id)!;
     return {
       kind: "item",
       commandId: id,
-      label: definition.title,
+      label: command.title,
       ...(command.keyLabels.length ? { hint: command.keyLabels.join(" / ") } : {}),
       disabled: command.isEnabled ? !command.isEnabled() : false,
       action: () => executeCommand(id),
@@ -436,6 +456,8 @@ export function LogApp({
     navigate: [
       commandItem("hunk.history.previousCommit"),
       commandItem("hunk.history.nextCommit"),
+      commandItem("hunk.history.toggleMark"),
+      commandItem("hunk.history.reviewMarks"),
       commandItem("hunk.history.startVisualSelection"),
       commandItem("hunk.history.clearSelection"),
       commandItem("hunk.history.extendPrevious"),
@@ -466,6 +488,7 @@ export function LogApp({
     menu.activeMenuId ||
     statusLineState.prompt ||
     parentSelectorIndex !== null ||
+    marksDialogIndex !== null ||
     themeSelector.themeSelectorOpen ||
     showHelp ||
     viewPreferenceQuit.saveConfigPromptOpen ||
@@ -643,6 +666,23 @@ export function LogApp({
       consume();
       return;
     }
+    if (marksDialogIndex !== null) {
+      const entries = revisionMarksEntries(snapshot.marks);
+      const current = Math.min(marksDialogIndex, Math.max(0, entries.length - 1));
+      const page = revisionMarksVisibleCount(terminal.height, entries.length);
+      if (name === "escape") setMarksDialogIndex(null);
+      else if (name === "up" || name === "pageup")
+        setMarksDialogIndex(Math.max(0, current - (name === "up" ? 1 : page)));
+      else if (name === "down" || name === "pagedown")
+        setMarksDialogIndex(Math.min(entries.length - 1, current + (name === "down" ? 1 : page)));
+      else if (name === "y" && entries[current]) copyMark(entries[current]!.mark.revisionId);
+      else if (name === "r" && snapshot.markStatus !== "checking") {
+        controller.removeUnresolvedMarks();
+        setMarksDialogIndex(null);
+      }
+      consume();
+      return;
+    }
     if (parentSelectorIndex !== null) {
       const parents = controller.getSelection()?.oldest.commit.parentRevisionIds ?? [];
       if (name === "escape") setParentSelectorIndex(null);
@@ -724,12 +764,57 @@ export function LogApp({
   const statusText =
     transientNotice ||
     snapshot.notice ||
-    ((selection?.count ?? 0) > 1 || snapshot.visualSelectionActive
-      ? `${selection?.count ?? 0} commit${selection?.count === 1 ? "" : "s"} selected`
-      : `${runtime.providerName} · ${snapshot.rows.length}${snapshot.historyDone ? " commits" : "+ commits"}`);
+    `${runtime.providerName} · ${snapshot.rows.length}${snapshot.historyDone ? " commits" : "+ commits"}`;
+  const unresolvedMarks = snapshot.marks.filter((entry) => entry.kind === "unresolved").length;
   const statusItems: StatusItem[] = [
     { id: "log:status", spans: [{ text: statusText, tone: "muted" }], priority: 1 },
   ];
+  if (snapshot.selectionAnchor !== null || snapshot.visualSelectionActive) {
+    statusItems.push({
+      id: "log:range",
+      spans: [
+        {
+          text: `${selection?.count ?? 0} in review range`,
+          tone: "muted",
+        },
+      ],
+      priority: 2,
+    });
+  }
+  if (snapshot.marks.length > 0) {
+    const detail =
+      snapshot.markStatus === "checking"
+        ? " · Checking marks…"
+        : snapshot.markStatus === "refresh-failed"
+          ? ""
+          : unresolvedMarks
+            ? ` · ${unresolvedMarks} unresolved`
+            : "";
+    statusItems.push({
+      id: "log:marks",
+      spans: [
+        {
+          text:
+            snapshot.markStatus === "refresh-failed"
+              ? `${snapshot.marks.length} marked · Marks could not be checked. Refresh history or clear selection.`
+              : `${snapshot.marks.length} marked${detail} · Review marks`,
+          tone: "muted",
+        },
+      ],
+      priority: 3,
+    });
+  }
+  if (
+    snapshot.marks.length ||
+    snapshot.selectionAnchor !== null ||
+    snapshot.visualSelectionActive
+  ) {
+    statusItems.push({
+      id: "log:clear",
+      spans: [{ text: "Clear selection", tone: "muted" }],
+      priority: 0,
+    });
+  }
   if (snapshot.search) {
     statusItems.push({ id: "log:search", spans: [{ text: `/${snapshot.search}`, tone: "muted" }] });
   }
@@ -802,6 +887,8 @@ export function LogApp({
             </text>
             <text fg={theme.muted}>Preparing review…</text>
           </box>
+        ) : snapshot.historyDone && visible.length === 0 ? (
+          <text fg={theme.muted}>No commits</text>
         ) : (
           visible.map(({ index, row, showDayHeader, height }) => {
             const selected =
@@ -811,7 +898,8 @@ export function LogApp({
             const projected = projectResponsiveLogRow({
               row,
               presentation: snapshot.presentation,
-              width: terminal.width,
+              layout: responsiveLayout,
+              width: terminal.width - 4,
               now: relativeTimeNow,
             });
             const titlePalette = resolveHistoryTitlePalette(
@@ -888,6 +976,11 @@ export function LogApp({
                     }}
                     onMouseUp={(event: TuiMouseEvent) => {
                       clearTransientNotice();
+                      if (event.modifiers.ctrl) {
+                        lastClick.current = { index: -1, at: 0 };
+                        controller.toggleMark(index);
+                        return;
+                      }
                       if (event.modifiers.shift) {
                         lastClick.current = { index: -1, at: 0 };
                         void controller.select(index, viewportBodyHeight, { extend: true });
@@ -902,6 +995,39 @@ export function LogApp({
                       lastClick.current = { index, at: now };
                     }}
                   >
+                    <box
+                      style={{
+                        width: LOG_FOCUS_CELLS_WIDTH,
+                        height: responsiveLayout.rowHeight,
+                        flexShrink: 0,
+                      }}
+                    >
+                      <text
+                        fg={theme.accent}
+                      >{`${index === snapshot.selected ? ">" : " "}${selected && (snapshot.selectionAnchor !== null || snapshot.visualSelectionActive) ? "|" : " "}`}</text>
+                    </box>
+                    <box
+                      style={{
+                        width: LOG_MARK_CHECKBOX_WIDTH,
+                        height: responsiveLayout.rowHeight,
+                        flexShrink: 0,
+                      }}
+                      onMouseUp={(event: TuiMouseEvent) => {
+                        event.stopPropagation();
+                        menu.closeMenu();
+                        lastClick.current = { index: -1, at: 0 };
+                        controller.toggleMark(index);
+                      }}
+                    >
+                      <text fg={theme.accent}>
+                        {snapshot.marks.some(
+                          (entry) =>
+                            entry.kind === "resolved" && entry.revisionId === row.commit.revisionId,
+                        )
+                          ? "[x] "
+                          : "[ ] "}
+                      </text>
+                    </box>
                     {projected.graphWidth ? (
                       <box
                         style={{
@@ -940,8 +1066,38 @@ export function LogApp({
                           <box style={{ width: projected.columnGap }} />
                         ) : null}
                         <box
-                          style={{ width: projected.rightWidth, height: 1, alignItems: "flex-end" }}
-                          onMouseUp={handleRevisionMouseUp}
+                          style={{
+                            width: projected.rightWidth,
+                            height: 2,
+                            flexDirection: "column",
+                            alignItems: "flex-end",
+                          }}
+                          onMouseUp={(event: TuiMouseEvent) => {
+                            event.stopPropagation();
+                            clearTransientNotice();
+                            if (event.modifiers.ctrl) {
+                              lastClick.current = { index: -1, at: 0 };
+                              controller.toggleMark(index);
+                              return;
+                            }
+                            if (event.modifiers.shift) {
+                              lastClick.current = { index: -1, at: 0 };
+                              void controller.select(index, viewportBodyHeight, { extend: true });
+                              return;
+                            }
+                            const copyIconStart =
+                              1 +
+                              LOG_MARK_COLUMN_WIDTH +
+                              projected.graphWidth +
+                              projected.leftWidth +
+                              projected.columnGap +
+                              projected.rightWidth -
+                              measureTextWidth(projected.copyIcon);
+                            void controller.select(index, viewportBodyHeight).then(() => {
+                              if (event.x >= copyIconStart) copySelected(row);
+                              else void openSelected();
+                            });
+                          }}
                         >
                           <RevisionIdControl
                             displayRevision={projected.displayId}
@@ -953,6 +1109,10 @@ export function LogApp({
                               void controller
                                 .select(index, viewportBodyHeight)
                                 .then(() => openSelected());
+                            }}
+                            onMarkClick={() => {
+                              lastClick.current = { index: -1, at: 0 };
+                              controller.toggleMark(index);
                             }}
                             onShiftClick={() => {
                               clearTransientNotice();
@@ -1011,12 +1171,22 @@ export function LogApp({
                       ) : null}
                     </box>
                   </box>
-                  {projected.cutoffs.map((line, cut) => (
-                    <HistoryGraphLine key={cut} text={line} colors={graphColors} />
-                  ))}
-                  {projected.cutoffConvergence ? (
-                    <HistoryGraphLine text={projected.cutoffConvergence} colors={graphColors} />
-                  ) : null}
+                  {/* Cutoff markers are not revisions: they carry no checkbox and continue the
+                      graph lanes, which start after the focus and mark cells. */}
+                  <box
+                    style={{
+                      width: "100%",
+                      flexDirection: "column",
+                      paddingLeft: LOG_MARK_COLUMN_WIDTH,
+                    }}
+                  >
+                    {projected.cutoffs.map((line, cut) => (
+                      <HistoryGraphLine key={cut} text={line} colors={graphColors} />
+                    ))}
+                    {projected.cutoffConvergence ? (
+                      <HistoryGraphLine text={projected.cutoffConvergence} colors={graphColors} />
+                    ) : null}
+                  </box>
                 </box>
               </box>
             );
@@ -1049,6 +1219,11 @@ export function LogApp({
         terminalWidth={terminal.width}
         theme={theme}
         onCloseMenu={menu.closeMenu}
+        onItemClick={(id) => {
+          menu.closeMenu();
+          if (id === "log:marks") setMarksDialogIndex(0);
+          else if (id === "log:clear") controller.clearSelection();
+        }}
         onPromptCancel={statusLineStore.cancelPrompt}
         onPromptInput={statusLineStore.updatePromptValue}
         onPromptSubmit={statusLineStore.submitPrompt}
@@ -1067,6 +1242,24 @@ export function LogApp({
           onSelectItem={(entry: Extract<MenuEntry, { kind: "item" }>) => {
             if (!entry.disabled) entry.action();
             menu.closeMenu();
+          }}
+        />
+      ) : null}
+      {marksDialogIndex !== null ? (
+        <RevisionMarksDialog
+          marks={snapshot.marks}
+          selectedIndex={marksDialogIndex}
+          terminalWidth={terminal.width}
+          terminalHeight={terminal.height}
+          theme={chromeTheme}
+          notice={transientNotice}
+          status={snapshot.markStatus}
+          onClose={() => setMarksDialogIndex(null)}
+          onSelect={setMarksDialogIndex}
+          onCopy={copyMark}
+          onRemove={() => {
+            controller.removeUnresolvedMarks();
+            setMarksDialogIndex(null);
           }}
         />
       ) : null}

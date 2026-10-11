@@ -187,13 +187,13 @@ async function captureHistoryScene() {
     }
 
     await session.press("v");
-    await session.waitForText(/1 commit selected/, { timeout: 10_000 });
+    await session.waitForText(/1 in review range/, { timeout: 10_000 });
     await sleep(250);
     await snap(session, "history-range-1");
 
     for (let selected = 2; selected <= 4; selected += 1) {
       await session.press("j");
-      await session.waitForText(new RegExp(`${selected} commits selected`), { timeout: 10_000 });
+      await session.waitForText(new RegExp(`${selected} in review range`), { timeout: 10_000 });
       await sleep(180);
       await snap(session, `history-range-${selected}`);
     }

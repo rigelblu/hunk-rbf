@@ -8,6 +8,7 @@ export function RevisionIdControl({
   copyIcon = "⧉",
   onRevisionClick,
   onShiftClick,
+  onMarkClick,
   onCopy,
 }: {
   displayRevision: string;
@@ -16,11 +17,13 @@ export function RevisionIdControl({
   copyIcon?: string;
   onRevisionClick?: () => void;
   onShiftClick?: () => void;
+  onMarkClick?: () => void;
   onCopy: () => void;
 }) {
   const activate = (event: TuiMouseEvent, action: () => void) => {
     event.stopPropagation();
-    if (event.modifiers.shift && onShiftClick) onShiftClick();
+    if (event.modifiers.ctrl && onMarkClick) onMarkClick();
+    else if (event.modifiers.shift && onShiftClick) onShiftClick();
     else action();
   };
   return (

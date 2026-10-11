@@ -23,9 +23,29 @@ export function statusLineHasContent(snapshot: StatusLineSnapshot, badge: string
   );
 }
 
-function PlacedItems({ items, theme }: { items: readonly PlacedStatusItem[]; theme: AppTheme }) {
+/** Dispatch item clicks to the terminal host without extending the public status protocol. */
+function PlacedItems({
+  items,
+  theme,
+  onItemClick,
+}: {
+  items: readonly PlacedStatusItem[];
+  theme: AppTheme;
+  onItemClick?: (id: string) => void;
+}) {
   return items.map((item, index) => (
-    <box key={item.id} style={{ height: 1, flexDirection: "row", flexShrink: 0 }}>
+    <box
+      key={item.id}
+      style={{ height: 1, flexDirection: "row", flexShrink: 0 }}
+      onMouseUp={
+        onItemClick
+          ? (event: TuiMouseEvent) => {
+              event.stopPropagation();
+              onItemClick(item.id);
+            }
+          : undefined
+      }
+    >
       {index > 0 ? <text fg={theme.muted}>{"  "}</text> : null}
       {item.spans.map((span, spanIndex) => (
         <text
@@ -47,6 +67,7 @@ export function StatusLine({
   theme,
   onCloseMenu,
   onExitMode,
+  onItemClick,
   onPromptCancel,
   onPromptInput,
   onPromptSubmit,
@@ -58,6 +79,7 @@ export function StatusLine({
   theme: AppTheme;
   onCloseMenu?: () => void;
   onExitMode?: () => void;
+  onItemClick?: (id: string) => void;
   onPromptCancel: (id: number) => void;
   onPromptInput: (id: number, value: string) => void;
   onPromptSubmit: (id: number) => void;
@@ -121,12 +143,12 @@ export function StatusLine({
             />
           </>
         ) : (
-          <PlacedItems items={layout.left} theme={theme} />
+          <PlacedItems items={layout.left} theme={theme} onItemClick={onItemClick} />
         )}
       </box>
       {layout.right.length > 0 ? (
         <box style={{ height: 1, flexDirection: "row", flexShrink: 0, marginLeft: 2 }}>
-          <PlacedItems items={layout.right} theme={theme} />
+          <PlacedItems items={layout.right} theme={theme} onItemClick={onItemClick} />
         </box>
       ) : null}
       {layout.badge ? (

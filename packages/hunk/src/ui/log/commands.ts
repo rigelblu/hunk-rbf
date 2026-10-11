@@ -43,8 +43,14 @@ export function isHistoryCommandEnabled(id: HistoryCommandId, snapshot: LogSnaps
     id === "hunk.history.startVisualSelection"
   )
     return Boolean(selected);
+  if (id === "hunk.history.toggleMark") return Boolean(selected) && snapshot.markStatus === "ready";
+  if (id === "hunk.history.reviewMarks") return snapshot.marks.length > 0;
   if (id === "hunk.history.clearSelection")
-    return snapshot.selectionAnchor !== null || snapshot.visualSelectionActive;
+    return (
+      snapshot.marks.length > 0 ||
+      snapshot.selectionAnchor !== null ||
+      snapshot.visualSelectionActive
+    );
   if (
     id === "hunk.history.previousCommit" ||
     id === "hunk.history.extendPrevious" ||
@@ -83,7 +89,14 @@ export function buildHistoryCommands({
     return {
       id: entry.id,
       aliases: entry.aliases,
-      title: entry.title,
+      title:
+        entry.id === "hunk.history.openSelection"
+          ? getSnapshot().selectionAnchor !== null || getSnapshot().visualSelectionActive
+            ? "Open review range"
+            : getSnapshot().marks.length > 0
+              ? "Open highlighted revision"
+              : entry.title
+          : entry.title,
       keys,
       keyLabels: keys.map(formatKeyChord),
       defaultKeys: entry.defaultKeys,
@@ -111,9 +124,9 @@ export function buildHistoryHelpSections(commands: readonly AppCommand[]): reado
     rows: HISTORY_COMMAND_CATALOG.filter((entry) => entry.helpSection === title)
       .map((entry) => ({ entry, command: byId.get(entry.id) }))
       .filter(({ command }) => command !== undefined && command.keyLabels.length > 0)
-      .map(({ entry, command }) => ({
+      .map(({ command }) => ({
         keys: command!.keyLabels.join(" / "),
-        description: entry.title.toLocaleLowerCase(),
+        description: command!.title.toLocaleLowerCase(),
       })),
   }));
 }

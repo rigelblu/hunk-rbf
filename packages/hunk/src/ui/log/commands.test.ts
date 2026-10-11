@@ -35,6 +35,8 @@ const snapshot = (parents: string[] = []): LogSnapshot => ({
       convergences: [],
     },
   ],
+  marks: [],
+  markStatus: "ready",
   selected: 0,
   selectionAnchor: null,
   visualSelectionActive: false,
@@ -78,11 +80,11 @@ describe("history command authority", () => {
   test("drives keyboard dispatch, canonical menu identity, and help from resolved bindings", () => {
     expect(matchCommand(key("down", ""))).toBe("hunk.history.nextCommit");
     expect(matchCommand(key("down", "", false, true))).toBe("hunk.history.extendNext");
-    expect(matchCommand(key("x", "J"))).toBe("hunk.history.extendNext");
+    expect(matchCommand(key("letter", "J"))).toBe("hunk.history.extendNext");
     expect(matchCommand(key("up", "", false, true))).toBe("hunk.history.extendPrevious");
-    expect(matchCommand(key("x", "K"))).toBe("hunk.history.extendPrevious");
-    expect(matchCommand(key("x", "j"))).toBe("hunk.history.nextCommit");
-    expect(matchCommand(key("x", "v"))).toBe("hunk.history.startVisualSelection");
+    expect(matchCommand(key("letter", "K"))).toBe("hunk.history.extendPrevious");
+    expect(matchCommand(key("letter", "j"))).toBe("hunk.history.nextCommit");
+    expect(matchCommand(key("letter", "v"))).toBe("hunk.history.startVisualSelection");
     expect(
       matchCommand(key("escape", ""), undefined, {
         ...snapshot(),
@@ -90,12 +92,12 @@ describe("history command authority", () => {
       }),
     ).toBe("hunk.history.clearSelection");
     expect(matchCommand(key("space", " "))).toBe("hunk.history.pageDown");
-    expect(matchCommand(key("x", "f"))).toBe("hunk.history.pageDown");
-    expect(matchCommand(key("x", "b"))).toBe("hunk.history.pageUp");
+    expect(matchCommand(key("letter", "f"))).toBe("hunk.history.pageDown");
+    expect(matchCommand(key("letter", "b"))).toBe("hunk.history.pageUp");
     expect(matchCommand(key("space", " ", false, true))).toBe("hunk.history.pageUp");
-    expect(matchCommand(key("x", "d"))).toBe("hunk.history.halfPageDown");
+    expect(matchCommand(key("letter", "d"))).toBe("hunk.history.halfPageDown");
     expect(matchCommand(key("d", "", true))).toBe("hunk.history.halfPageDown");
-    expect(matchCommand(key("x", "u"))).toBe("hunk.history.halfPageUp");
+    expect(matchCommand(key("letter", "u"))).toBe("hunk.history.halfPageUp");
     expect(matchCommand(key("u", "", true))).toBe("hunk.history.halfPageUp");
     expect(matchCommand(key("c", "\x03", true))).toBe("hunk.app.quit");
     expect(matchCommand(key("t"))).toBe("hunk.view.openThemeSelector");
@@ -158,7 +160,7 @@ describe("history command authority", () => {
       }),
     ).toBe("hunk.history.startVisualSelection");
     expect(
-      matchCommand(key("x", "v"), {
+      matchCommand(key("letter", "v"), {
         "hunk.history.startVisualSelection": false,
       }),
     ).toBeUndefined();
@@ -178,5 +180,43 @@ describe("history command authority", () => {
     expect(
       enabled("hunk.history.clearSelection", { ...snapshot(), visualSelectionActive: true }),
     ).toBe(true);
+  });
+});
+
+test("marks preserve paging bindings, remaps, context labels, and clear availability", () => {
+  expect(matchCommand(key("x"))).toBe("hunk.history.toggleMark");
+  expect(matchCommand(key("space", " "))).toBe("hunk.history.pageDown");
+  expect(matchCommand(key("space", " ", false, true))).toBe("hunk.history.pageUp");
+  expect(matchCommand(key("m"), { "hunk.history.toggleMark": "m" })).toBe(
+    "hunk.history.toggleMark",
+  );
+  expect(matchCommand(key("x"), { "hunk.history.toggleMark": "m" })).toBeUndefined();
+  const marked: LogSnapshot = {
+    ...snapshot(),
+    marks: [
+      {
+        kind: "resolved",
+        revisionId: "commit",
+        mark: { revisionId: "commit", subject: "subject", seenUnder: "test" },
+      },
+    ],
+  };
+  const build = (value: LogSnapshot) =>
+    buildHistoryCommands({ getSnapshot: () => value, handlers: noopHandlers });
+  expect(build(marked).find((c) => c.id === "hunk.history.openSelection")?.title).toBe(
+    "Open highlighted revision",
+  );
+  expect(
+    build({ ...marked, selectionAnchor: 0 }).find((c) => c.id === "hunk.history.openSelection")
+      ?.title,
+  ).toBe("Open review range");
+  expect(isHistoryCommandEnabled("hunk.history.clearSelection", marked)).toBe(true);
+  expect(isHistoryCommandEnabled("hunk.history.clearSelection", snapshot())).toBe(false);
+  expect(
+    isHistoryCommandEnabled("hunk.history.toggleMark", { ...marked, markStatus: "checking" }),
+  ).toBe(false);
+  expect(buildHistoryHelpSections(build(marked)).flatMap((s) => s.rows)).toContainEqual({
+    keys: "x",
+    description: "mark/unmark revision",
   });
 });
