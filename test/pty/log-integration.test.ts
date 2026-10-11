@@ -191,6 +191,41 @@ describe("direct revision reviews", () => {
 });
 
 describe("interactive hunk log", () => {
+  test("uses the root theme despite a conflicting show override", async () => {
+    const cwd = createHistoryRepo();
+    const configHome = mkdtempSync(join(tmpdir(), "hunk-log-theme-scope-"));
+    tempDirs.push(configHome);
+    mkdirSync(join(configHome, "hunk"), { recursive: true });
+    writeFileSync(
+      join(configHome, "hunk", "config.toml"),
+      'theme = "nord"\nprompt_save_view_preferences = false\n[show]\ntheme = "github-dark-dimmed"\n',
+    );
+    const session = await harness.launchHunk({
+      args: ["log", "--no-extensions"],
+      cwd,
+      cols: 100,
+      rows: 24,
+      env: { XDG_CONFIG_HOME: configHome, NO_COLOR: undefined, TERM: "xterm-256color" },
+    });
+    try {
+      await session.waitForText(/Second history commit/, { timeout: 15_000 });
+      expect(await session.text({ only: { foreground: "#d8dee9" } })).toContain(
+        "Second history commit",
+      );
+      const picker = await harness.pressAndWaitForSnapshot(
+        session,
+        "t",
+        (text) => /nord.*active/.test(text),
+        15_000,
+      );
+      expect(picker).toMatch(/nord.*active/);
+      await session.press("escape");
+      await session.press("q");
+    } finally {
+      session.close();
+    }
+  });
+
   test("cancels a slow bundled Git review without blocking terminal input", async () => {
     const cwd = createHistoryRepo();
     const binDir = mkdtempSync(join(tmpdir(), "hunk-slow-git-bin-"));

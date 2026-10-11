@@ -10,38 +10,14 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 
 ## 🟠⋯ Added for End Users
 
+- 2026-10-11 - feat (ux) | mark separate history revisions with x, checkboxes, or Ctrl-click; preserve marks independently from highlighted and range review, and recover unresolved marks after refresh (#hk-27)
+
 ## 🟠⋯ Added for Technical Users
 
 ## 🟠⋯ Fixed for End Users
 
-# 🔵⋯ v0.13.0 (2026-10-16)
-
-Local HK-99 release records; publication remains pending.
-
-## 🟠⋯ 🚨 Breaking Changes for End Users
-
-- 2026-10-15 - feat (BREAKING) | search for a literal leading `!` with `\!` after `!` becomes the exclusion operator (#hk-99)
-
-## 🟠⋯ Added for End Users
-
-- 2026-10-15 - feat | exclude matching files from a review with `!text` in the Tab filter (#hk-99)
-
-# 🔵⋯ v0.12.0 (2026-10-14)
-
-Local HK-92 release records; installation and publication remain pending.
-
-## 🟠⋯ Added for End Users
-
-- 2026-10-14 - feat (ux) | see recorded workspace heads in multi-workspace JJ history while retaining the separate current-revision marker (#hk-92)
-- 2026-10-14 - feat (ux) | hide or restore workspace names through View and save that preference without hiding bookmarks or the current marker (#hk-92)
-
-## 🟠⋯ Added for Technical Users
-
-- 2026-10-14 - feat (technical) | distinguish workspace membership from ordinary generic history refs using optional workspaceName metadata and configure visibility with history_workspace_names (#hk-92)
-
-## 🟠⋯ Fixed for End Users
-
-- 2026-10-14 - fix (ux) | scan more history with two base rows, fitting workspace names beside metadata and adding a row only for label spill or a graph join, while keeping bookmarks and my reading position (#hk-92)
+- 2026-10-11 - fix (ux) | retain history cursor ownership and the highlighted terminal row while refresh stages replacement pages (#hk-28 dependency for hk-27)
+- 2026-10-11 - fix (ux) | use the configured root theme in history even when revision reviews have a different `[show]` theme (#hk-95)
 
 # 🔵⋯ v0.11.0 (2026-10-13)
 

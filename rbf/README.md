@@ -77,6 +77,21 @@ theme = { light = "catppuccin-latte", dark = "nord" }
 
 Both members are required and must name available themes, including built-in, named custom, and `terminal` themes. Each config layer replaces the whole `theme` value, so a later scalar or complete pair wins without inheriting one member from an earlier pair. Hunk switches between the configured members as the authoritative appearance changes. A failed native refresh keeps the last known appearance; when neither native nor terminal appearance is available at startup, Hunk selects the configured dark member.
 
+# 🔵⋯ Configure the history theme
+
+`hunk log` reads the root `theme` value from global and repository configuration. A `[show]` theme applies to revision reviews and leaves history's palette unchanged. An explicit `hunk log --theme <id>` takes precedence over configuration.
+
+For example, this configuration opens history in Nord and revision reviews in GitHub Dark Dimmed:
+
+```toml
+theme = "nord"
+
+[show]
+theme = "github-dark-dimmed"
+```
+
+History retains its existing startup behavior for complete appearance pairs: it selects the configured dark member. Press `t` to inspect or change the active history theme. Color suppression, including `--color never`, still applies.
+
 # 🔵⋯ Use the terminal palette
 
 Set `theme = "terminal"` or pass `--theme terminal` to draw from the terminal's foreground, background, and ANSI palette. Palette notifications and window resizes refresh those colors during the session, including changes between two palettes with the same light/dark mode. Terminals that do not answer color queries use a bounded xterm-style fallback palette.

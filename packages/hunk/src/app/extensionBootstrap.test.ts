@@ -1,4 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { resolveConfiguredCliInput } from "../core/run/config";
+import type { VcsCatalog } from "../core/vcs/types";
 import type { HunkConfigResolution } from "../core/run/config";
 import type { CliInput } from "../core/run/commandInputs";
 import type { HunkExtensionAPI } from "../extension-api/types";
@@ -205,4 +210,79 @@ describe("resolveConfiguredExtensions", () => {
     expect(second.registry.eventBusPhase).toBe("closed");
     expect(shutdowns.sort()).toEqual(["first", "second"]);
   });
+});
+
+describe("root-only configuration rediscovery", () => {
+  for (const mode of ["borrowed", "provisional"] as const) {
+    test(`preserves the repository root theme through ${mode} adapter discovery`, async () => {
+      const parent = mkdtempSync(join(tmpdir(), "hunk-config-rediscovery-"));
+      const cwd = join(parent, "checkout");
+      mkdirSync(cwd);
+      const configHome = mkdtempSync(join(tmpdir(), "hunk-config-home-"));
+      mkdirSync(join(configHome, "hunk"), { recursive: true });
+      writeFileSync(
+        join(configHome, "hunk", "config.toml"),
+        'theme = "nord"\n[show]\ntheme = "github-dark-dimmed"\n',
+      );
+      mkdirSync(join(parent, ".hunk"), { recursive: true });
+      writeFileSync(
+        join(parent, ".hunk", "config.toml"),
+        'theme = "dracula"\n[show]\ntheme = "github-dark-dimmed"\n',
+      );
+      const baseVcsCatalog: VcsCatalog = {
+        adapters: [],
+        defaultAdapterId: "probe",
+        reservedIds: new Set(),
+      };
+      const load = createEmptyExtensionLoadResult(cwd);
+      load.registry.vcsAdapters.push({
+        extensionId: "probe",
+        adapter: {
+          id: "probe",
+          name: "Probe",
+          detect: (path) => (path === cwd ? { id: "probe", repoRoot: cwd } : null),
+          operations: {},
+        },
+      });
+      const runtimeInput: CliInput = { kind: "show", ref: "opaque", options: {} };
+      const themes: unknown[] = [];
+      try {
+        const result = await resolveConfiguredExtensions(
+          {
+            runtimeInput,
+            cwd,
+            env: { XDG_CONFIG_HOME: configHome },
+            baseVcsCatalog,
+            includeCommandConfig: false,
+            ...(mode === "borrowed" ? { borrowedLoad: load } : {}),
+          },
+          {
+            resolveConfiguredCliInputImpl: (input, options) => {
+              const configured = resolveConfiguredCliInput(input, options);
+              themes.push(configured.input.options.theme);
+              return configured;
+            },
+            loadStartupExtensionsImpl: async () => load,
+          },
+        );
+        expect(themes).toEqual(["dracula", "nord"]);
+        expect(result.configured.projectRoot).toBe(cwd);
+        expect(result.configured.input.options.theme).toBe("nord");
+        expect(
+          resolveConfiguredCliInput(runtimeInput, {
+            cwd,
+            env: { XDG_CONFIG_HOME: configHome },
+            vcsCatalog: {
+              ...baseVcsCatalog,
+              adapters: [load.registry.vcsAdapters[0]!.adapter],
+            },
+          }).input.options.theme,
+        ).toBe("github-dark-dimmed");
+      } finally {
+        await retireExtensionLoadResult(load);
+        rmSync(parent, { recursive: true, force: true });
+        rmSync(configHome, { recursive: true, force: true });
+      }
+    });
+  }
 });

@@ -105,6 +105,8 @@ export async function loadHistoryBootstrap({
   };
   const resolved = await resolveConfiguredExtensions({
     runtimeInput,
+    // The synthetic show input must not apply show-only configuration to history.
+    includeCommandConfig: false,
     cwd,
     env,
     baseVcsCatalog,
