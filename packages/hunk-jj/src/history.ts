@@ -14,7 +14,7 @@ import {
 import { runAbortableCommand } from "@hunk/vcs/async-process";
 import { normalizePathForOS } from "@hunk/vcs/path";
 
-const HISTORY_FIELDS_PER_COMMIT = 14;
+const HISTORY_FIELDS_PER_COMMIT = 15;
 const REF_SEPARATOR = "\x1f";
 const FULL_COMMIT_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const DISPLAY_ID_PATTERN = /^[a-z0-9]{4,64}$/;
@@ -37,6 +37,7 @@ const JJ_HISTORY_TEMPLATE =
     'local_tags.map(|r| r.name()).join("\\x1f")',
     'remote_tags.map(|r| r.name() ++ "@" ++ r.remote()).join("\\x1f")',
     'if(empty, "true", "false")',
+    'working_copies.map(|w| w.name().escape_json()).join("\\x1f")',
   ].join(' ++ "\\0" ++ ') + ' ++ "\\0"';
 
 export interface JjHistoryOptions {
@@ -215,6 +216,24 @@ function appendDecorations(
   }
 }
 
+/** Decode JSON strings before sorting names; legal workspace names can contain the list separator. */
+function decodeWorkspaceNames(field: string) {
+  const names = field
+    ? field.split(REF_SEPARATOR).map((encoded) => {
+        let name: unknown;
+        try {
+          name = JSON.parse(encoded);
+        } catch {
+          throw new Error("Jujutsu returned an invalid workspace name.");
+        }
+        if (typeof name !== "string")
+          throw new Error("Jujutsu returned an invalid workspace name.");
+        return name;
+      })
+    : [];
+  return [...new Set(names.filter(Boolean))].sort();
+}
+
 /** Parse fixed NUL-delimited Jujutsu template records. */
 export function parseJjHistory(
   text: string,
@@ -245,6 +264,7 @@ export function parseJjHistory(
     const localTags = fields[offset + 11]!;
     const remoteTags = fields[offset + 12]!;
     const emptyField = fields[offset + 13]!;
+    const workspaceNames = fields[offset + 14]!;
 
     if (
       !FULL_COMMIT_ID_PATTERN.test(revisionId) ||
@@ -280,6 +300,10 @@ export function parseJjHistory(
     );
     const decorations: ExtensionVcsHistoryDecoration[] = [];
     if (currentWorkingCopy === "1") decorations.push({ kind: "head", label: "@" });
+    // JJ suppresses this field in singleton repositories; no inventory query is needed.
+    for (const name of decodeWorkspaceNames(workspaceNames)) {
+      decorations.push({ kind: "ref", label: `@${name}` });
+    }
     appendDecorations(decorations, localBookmarks, "local-branch");
     appendDecorations(decorations, remoteBookmarks, "remote-branch");
     appendDecorations(decorations, localTags, "tag");

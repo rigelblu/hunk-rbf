@@ -38,6 +38,65 @@ const presentation: LogPresentation = {
 const now = new Date(2026, 8, 6, 12, 5).getTime();
 
 describe("responsive log layout", () => {
+  test("HK-92 uses the third text line for compact generic refs and marks wide omissions", () => {
+    const workspaceRow = {
+      ...row,
+      commit: {
+        ...commit,
+        displayId: "kkkkkkkk",
+        decorations: [
+          { kind: "head" as const, label: "@" },
+          { kind: "ref" as const, label: "@default" },
+          { kind: "ref" as const, label: "@日本語\u001b[2J\nwork" },
+          { kind: "ref" as const, label: "@very-long-workspace-name" },
+          { kind: "local-branch" as const, label: "main" },
+        ],
+      },
+    };
+    for (const width of [45, 70, 80, 95, 96, 110, 120]) {
+      const layout = resolveLogResponsiveLayout(width, 30);
+      const projected = projectResponsiveLogRow({
+        row: workspaceRow,
+        presentation,
+        layout,
+        width,
+        now,
+      });
+      expect(layout.rowHeight).toBe(3);
+      expect(
+        projected.graphWidth + projected.leftWidth + projected.columnGap + projected.rightWidth,
+      ).toBeLessThanOrEqual(width - 4);
+      expect(projected.refLine).not.toMatch(/[\u001b\n]/);
+      if (width < 96) {
+        expect(projected.secondary).toBe("(@)");
+        expect(projected.refLine).toStartWith("@default, @日本語work");
+        expect(measureTextWidth(projected.refLine)).toBeLessThanOrEqual(projected.textWidth);
+      } else {
+        expect(projected.refLine).toBe("");
+        expect(projected.secondary).toStartWith("(@, @default");
+        expect(projected.secondary).toEndWith("…)");
+      }
+      const hidden = projectResponsiveLogRow({
+        row: workspaceRow,
+        presentation: { ...presentation, decorations: false },
+        layout,
+        width,
+        now,
+      });
+      expect(hidden.refLine).toBe("");
+      expect(hidden.secondary).toBe("");
+    }
+    const generic = projectResponsiveLogRow({
+      row: { ...row, commit: { ...commit, decorations: [{ kind: "ref", label: "custom-ref" }] } },
+      presentation,
+      layout: resolveLogResponsiveLayout(70, 24),
+      width: 70,
+      now,
+    });
+    expect(generic.refLine).toBe("custom-ref");
+    expect(generic.secondary).toBe("");
+  });
+
   test("keeps a three-line entry at every responsive density", () => {
     expect(resolveLogResponsiveLayout(120, 30)).toMatchObject({ density: "wide", rowHeight: 3 });
     expect(resolveLogResponsiveLayout(80, 24)).toMatchObject({ density: "medium", rowHeight: 3 });
