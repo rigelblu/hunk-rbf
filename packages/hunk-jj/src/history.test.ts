@@ -90,6 +90,161 @@ describe("Jujutsu history production", () => {
     },
   );
 
+  jjTest(
+    "HK-92 decodes exact workspace names including machine delimiters",
+    async () => {
+      const repo = createJjOnlyTestRepo();
+      jj(repo, "describe", "-m", "Named workspace current");
+      const currentId = jj(repo, "log", "--no-graph", "-r", "@", "-T", "commit_id").trim();
+      const peerRoot = realpathSync(mkdtempSync(join(tmpdir(), "hunk-jj-encoded-names-")));
+      tempDirs.push(peerRoot);
+      const names = [
+        "team one",
+        "日本語",
+        "line\nbreak",
+        "escape\u001bwork",
+        "unit\u001fseparator",
+        'quoted"name',
+        "comma,name",
+      ];
+      for (const [index, name] of names.entries()) {
+        const peer = join(peerRoot, String(index));
+        jj(repo, "workspace", "add", "--name", name, "-r", currentId, peer);
+        jj(peer, "edit", currentId);
+      }
+      const source = await openJjHistory({ all: true }, { cwd: repo });
+      try {
+        const page = await source.read({ limit: 20 });
+        expect(page.commits).toHaveLength(1);
+        expect(
+          page.commits[0]!.decorations.filter((entry) => entry.kind === "ref").map(
+            (entry) => entry.label,
+          ),
+        ).toEqual(["default", ...names].sort().map((name) => `@${name}`));
+      } finally {
+        await source.close();
+      }
+      await expect(
+        getJjHistoryWatchSignature({ revision: "no-such-HK92-bookmark" }, { cwd: repo }),
+      ).rejects.toThrow();
+    },
+    20_000,
+  );
+
+  test("HK-92 rejects malformed encoded membership without accepting old arity", () => {
+    const fields = [
+      "a".repeat(40),
+      "kkkkkkkk",
+      "k".repeat(32),
+      "",
+      "Ada",
+      "",
+      "2026-01-01T00:00:00Z",
+      "Subject",
+      "1",
+      "",
+      "",
+      "",
+      "",
+      "false",
+      "",
+    ];
+    for (const encoded of ['"unterminated', "false", "{}", "[]"]) {
+      fields[14] = encoded;
+      expect(() => parseJjHistory(fields.join("\0"))).toThrow("invalid workspace name");
+    }
+    fields[14] = ['"zeta"', '"default"', '"zeta"', '"alpha"'].join("\x1f");
+    expect(parseJjHistory(fields.join("\0"))[0]!.decorations).toEqual([
+      { kind: "head", label: "@" },
+      { kind: "ref", label: "@alpha" },
+      { kind: "ref", label: "@default" },
+      { kind: "ref", label: "@zeta" },
+    ]);
+    expect(() => parseJjHistory(fields.slice(0, 14).join("\0"))).toThrow(
+      "truncated history record",
+    );
+  });
+
+  jjTest(
+    "HK-92 emits multi-workspace heads and watches pointer-only movement",
+    async () => {
+      const repo = createJjOnlyTestRepo();
+      writeFileSync(join(repo, "history.txt"), "ancestor\n");
+      jj(repo, "commit", "-m", "Ancestor");
+      writeFileSync(join(repo, "history.txt"), "current\n");
+      jj(repo, "describe", "-m", "Current");
+      jj(repo, "bookmark", "create", "current", "-r", "@");
+      jj(repo, "bookmark", "create", "ancestor", "-r", "@-");
+      const adapter = createJjVcsAdapter().history!;
+      const load = async () => {
+        const source = await adapter.open({ all: true }, { cwd: repo });
+        try {
+          const commits = [];
+          for (;;) {
+            const page = await source.read({ limit: 1 });
+            commits.push(...page.commits);
+            if (page.done) return commits;
+          }
+        } finally {
+          await source.close();
+        }
+      };
+      const singleton = await load();
+      const currentId = singleton.find((commit) => commit.subject === "Current")!.revisionId;
+      const ancestorId = singleton.find((commit) => commit.subject === "Ancestor")!.revisionId;
+      expect(
+        singleton.flatMap((commit) => commit.decorations).filter((ref) => ref.kind === "ref"),
+      ).toEqual([]);
+      expect(singleton[0]!.decorations).toContainEqual({ kind: "head", label: "@" });
+      const peerRoot = realpathSync(mkdtempSync(join(tmpdir(), "hunk-jj-workspaces-")));
+      tempDirs.push(peerRoot);
+      for (const name of ["zeta", "alpha"]) {
+        const peer = join(peerRoot, name);
+        jj(repo, "workspace", "add", "--name", name, "-r", currentId, peer);
+        jj(peer, "edit", currentId);
+      }
+      const before = await load();
+      expect(before.find((commit) => commit.revisionId === currentId)!.decorations).toEqual([
+        { kind: "head", label: "@" },
+        { kind: "ref", label: "@alpha" },
+        { kind: "ref", label: "@default" },
+        { kind: "ref", label: "@zeta" },
+        { kind: "local-branch", label: "current" },
+      ]);
+      expect(before.find((commit) => commit.revisionId === ancestorId)!.decorations).toEqual([
+        { kind: "local-branch", label: "ancestor" },
+      ]);
+      const beforeSignature = await getJjHistoryWatchSignature({ all: true }, { cwd: repo });
+      jj(join(peerRoot, "zeta"), "edit", ancestorId);
+      const afterSignature = await getJjHistoryWatchSignature({ all: true }, { cwd: repo });
+      const after = await load();
+      expect(afterSignature).not.toBe(beforeSignature);
+      expect(
+        after
+          .find((commit) => commit.revisionId === currentId)!
+          .decorations.filter((ref) => ref.kind === "ref"),
+      ).toEqual([
+        { kind: "ref", label: "@alpha" },
+        { kind: "ref", label: "@default" },
+      ]);
+      expect(after.find((commit) => commit.revisionId === ancestorId)!.decorations).toContainEqual({
+        kind: "ref",
+        label: "@zeta",
+      });
+      const withoutWorkspaceNames = (commits: typeof before) =>
+        commits.map((commit) => ({
+          ...commit,
+          decorations: commit.decorations.filter((ref) => ref.kind !== "ref"),
+        }));
+      expect(withoutWorkspaceNames(after)).toEqual(withoutWorkspaceNames(before));
+      jj(repo, "workspace", "forget", "alpha", "zeta");
+      expect(
+        (await load()).flatMap((commit) => commit.decorations).filter((ref) => ref.kind === "ref"),
+      ).toEqual([]);
+    },
+    20_000,
+  );
+
   unixTest("cancels provider range planning without blocking the renderer", async () => {
     const temp = mkdtempSync(join(tmpdir(), "hunk-jj-range-cancel-"));
     tempDirs.push(temp);
@@ -169,6 +324,7 @@ describe("Jujutsu history production", () => {
       "v1.0.0",
       "v1.0.0@origin",
       "false",
+      "",
     ].join("\0");
     expect(parseJjHistory(raw)).toEqual([
       {
@@ -215,6 +371,7 @@ describe("Jujutsu history production", () => {
       "",
       "",
       "true",
+      "",
     ].join("\0");
     const parsed = parseJjHistory(raw, false, true)[0]!;
     expect(parsed.parentRevisionIds).toEqual(["b".repeat(40)]);
@@ -238,6 +395,7 @@ describe("Jujutsu history production", () => {
       "",
       "",
       "false",
+      "",
     ].join("\0");
     const parsed = parseJjHistory(raw, true)[0]!;
     expect(parsed.parentRevisionIds).toEqual(["b".repeat(40)]);
@@ -261,6 +419,7 @@ describe("Jujutsu history production", () => {
         "",
         "",
         emptyValue,
+        "",
       ].join("\0");
 
     expect(parseJjHistory(makeRaw("true"))[0]!.isEmpty).toBe(true);
@@ -318,13 +477,13 @@ printf '%s\\0%s\\0%s\\0%s\\0' "Ada" "" "2026-01-01T00:00:00+00:00" "First split"
 printf '%s\\0%s\\0%s\\0%s\\0%s\\0' "0" "" "" "" ""
 printf 'tr'
 sleep 0.02
-printf 'ue\\0'
+printf 'ue\\0\\0'
 printf '%s\\0%s\\0%s\\0%s\\0' "${"b".repeat(40)}" "bbbbbbbb" "${"k".repeat(32)}" "${"a".repeat(40)}"
 printf '%s\\0%s\\0%s\\0%s\\0' "Ada" "" "2026-01-02T00:00:00+00:00" "Second split"
 printf '%s\\0%s\\0%s\\0%s\\0%s\\0' "0" "" "" "" ""
 printf 'fal'
 sleep 0.02
-printf 'se\\0'
+printf 'se\\0\\0'
 `;
     writeFileSync(executable, script);
     chmodSync(executable, 0o755);

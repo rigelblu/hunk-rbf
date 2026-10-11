@@ -145,3 +145,13 @@ Hunk composites partial alpha over the actual ordinary or moved diff row, then a
 The isolated HK-91 candidate shows `(empty)` before a JJ revision's description in interactive, compact, and medium history. JJ reports whether the whole revision contributes changes against its auto-merged parents. A described revision can be empty; an undescribed revision can contain changes. Ref, graph, and ASCII controls leave the empty label visible.
 
 Git reporting remains unknown in this slice. Hunk RBF product work covers JJ and Git; Sapling is out of scope. This candidate is separate from the installed release.
+
+# 🔵⋯ Identify workspace heads in JJ history
+
+Run `hunk log --vcs jj --all` to see where each workspace's recorded head sits in history. Repositories with multiple workspaces show names such as `@default` and `@feature` on their revisions. A repository with one workspace shows only the current-revision marker `@`.
+
+Several workspace names can share a revision. The separate `@` marker identifies the current revision; it does not identify which named workspace opened Hunk. A recorded head can be stale, so its label does not mean someone is actively working there.
+
+Below 96 columns, names use the entry's third text line. Wider views keep them beside the other decorations. An ending `…` marks a clipped list. **View → Decorations** controls their visibility. Press `r` to refresh, or enable **File → Auto-refresh history** to follow workspace moves.
+
+`hunk log --vcs jj --all --static` uses the existing scrollback format. Terminal output fits the terminal width; output piped to a file includes every name.

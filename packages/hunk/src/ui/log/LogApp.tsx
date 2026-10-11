@@ -892,82 +892,101 @@ export function LogApp({
                     ) : null}
                     <box
                       style={{
-                        width: projected.leftWidth,
+                        width: projected.textWidth,
                         height: responsiveLayout.rowHeight,
                         flexDirection: "column",
                       }}
                     >
-                      <text fg={theme.text}>
-                        {splitHistoryTitle(row.commit, projected.title).map((span, spanIndex) => (
-                          <span key={spanIndex} fg={titlePalette[span.role]}>
-                            {span.text}
-                          </span>
-                        ))}
+                      <box style={{ width: projected.textWidth, height: 2, flexDirection: "row" }}>
+                        <box
+                          style={{
+                            width: projected.leftWidth,
+                            height: 2,
+                            flexDirection: "column",
+                          }}
+                        >
+                          <text fg={theme.text}>
+                            {splitHistoryTitle(row.commit, projected.title).map(
+                              (span, spanIndex) => (
+                                <span key={spanIndex} fg={titlePalette[span.role]}>
+                                  {span.text}
+                                </span>
+                              ),
+                            )}
+                          </text>
+                          <CommitMetadataText
+                            author={projected.author}
+                            relativeTime={projected.relativeTime}
+                            authorColor={logPalette.author}
+                            separatorColor={logPalette.separator}
+                            relativeTimeColor={logPalette.relativeTime}
+                          />
+                        </box>
+                        {projected.columnGap ? (
+                          <box style={{ width: projected.columnGap }} />
+                        ) : null}
+                        <box
+                          style={{
+                            width: projected.rightWidth,
+                            height: 2,
+                            flexDirection: "column",
+                            alignItems: "flex-end",
+                          }}
+                          onMouseUp={(event: TuiMouseEvent) => {
+                            event.stopPropagation();
+                            clearTransientNotice();
+                            if (event.modifiers.shift) {
+                              lastClick.current = { index: -1, at: 0 };
+                              void controller.select(index, viewportBodyHeight, { extend: true });
+                              return;
+                            }
+                            const copyIconStart =
+                              1 +
+                              projected.graphWidth +
+                              projected.leftWidth +
+                              projected.columnGap +
+                              projected.rightWidth -
+                              measureTextWidth(projected.copyIcon);
+                            void controller.select(index, viewportBodyHeight).then(() => {
+                              if (event.x >= copyIconStart) copySelected(row);
+                              else void openSelected();
+                            });
+                          }}
+                        >
+                          <RevisionIdControl
+                            displayRevision={projected.displayId}
+                            revisionColor={logPalette.commitId}
+                            copyColor={logPalette.copyAction}
+                            copyIcon={projected.copyIcon}
+                            onRevisionClick={() => {
+                              clearTransientNotice();
+                              void controller
+                                .select(index, viewportBodyHeight)
+                                .then(() => openSelected());
+                            }}
+                            onShiftClick={() => {
+                              clearTransientNotice();
+                              lastClick.current = { index: -1, at: 0 };
+                              void controller.select(index, viewportBodyHeight, { extend: true });
+                            }}
+                            onCopy={() => {
+                              clearTransientNotice();
+                              void controller
+                                .select(index, viewportBodyHeight)
+                                .then(() => copySelected(row));
+                            }}
+                          />
+                          {projected.secondary ? (
+                            <text fg={logPalette.decoration}>{projected.secondary}</text>
+                          ) : null}
+                        </box>
+                      </box>
+                      <text
+                        style={{ width: projected.textWidth, height: 1 }}
+                        fg={logPalette.decoration}
+                      >
+                        {projected.refLine || " "}
                       </text>
-                      <CommitMetadataText
-                        author={projected.author}
-                        relativeTime={projected.relativeTime}
-                        authorColor={logPalette.author}
-                        separatorColor={logPalette.separator}
-                        relativeTimeColor={logPalette.relativeTime}
-                      />
-                      <text> </text>
-                    </box>
-                    {projected.columnGap ? <box style={{ width: projected.columnGap }} /> : null}
-                    <box
-                      style={{
-                        width: projected.rightWidth,
-                        height: responsiveLayout.rowHeight,
-                        flexDirection: "column",
-                        alignItems: "flex-end",
-                      }}
-                      onMouseUp={(event: TuiMouseEvent) => {
-                        event.stopPropagation();
-                        clearTransientNotice();
-                        if (event.modifiers.shift) {
-                          lastClick.current = { index: -1, at: 0 };
-                          void controller.select(index, viewportBodyHeight, { extend: true });
-                          return;
-                        }
-                        const copyIconStart =
-                          1 +
-                          projected.graphWidth +
-                          projected.leftWidth +
-                          projected.columnGap +
-                          projected.rightWidth -
-                          measureTextWidth(projected.copyIcon);
-                        void controller.select(index, viewportBodyHeight).then(() => {
-                          if (event.x >= copyIconStart) copySelected(row);
-                          else void openSelected();
-                        });
-                      }}
-                    >
-                      <RevisionIdControl
-                        displayRevision={projected.displayId}
-                        revisionColor={logPalette.commitId}
-                        copyColor={logPalette.copyAction}
-                        copyIcon={projected.copyIcon}
-                        onRevisionClick={() => {
-                          clearTransientNotice();
-                          void controller
-                            .select(index, viewportBodyHeight)
-                            .then(() => openSelected());
-                        }}
-                        onShiftClick={() => {
-                          clearTransientNotice();
-                          lastClick.current = { index: -1, at: 0 };
-                          void controller.select(index, viewportBodyHeight, { extend: true });
-                        }}
-                        onCopy={() => {
-                          clearTransientNotice();
-                          void controller
-                            .select(index, viewportBodyHeight)
-                            .then(() => copySelected(row));
-                        }}
-                      />
-                      {projected.secondary ? (
-                        <text fg={logPalette.decoration}>{projected.secondary}</text>
-                      ) : null}
                     </box>
                   </box>
                   {projected.cutoffs.map((line, cut) => (

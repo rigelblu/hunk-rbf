@@ -3,7 +3,7 @@ import type { ExtensionVcsHistoryScope, NamedCustomThemeConfig } from "../../ext
 import { sanitizeTerminalLine, sanitizeTerminalText } from "../../lib/terminalText";
 import { fitText, measureTextWidth } from "../lib/text";
 import { resolveTheme, type AppTheme } from "../themes";
-import { formatHistoryTitle, splitHistoryTitle } from "./title";
+import { HISTORY_EMPTY_MARKER_WIDTH, formatHistoryTitle, splitHistoryTitle } from "./title";
 import { resolveHistoryTitlePalette } from "./titlePalette";
 
 export interface HistoryProjectionOptions {
@@ -193,6 +193,14 @@ export function formatHistoryDecorations(row: HistoryGraphRow) {
   return labels.length ? ` (${labels.join(", ")})` : "";
 }
 
+/** Fit the ordered decoration group and retain its closing delimiter when clipping. */
+export function fitHistoryDecorations(row: HistoryGraphRow, width: number) {
+  const full = formatHistoryDecorations(row).trim();
+  if (measureTextWidth(full) <= width) return full;
+  if (width >= 3) return `${fitText(full.slice(0, -1), width - 1, "…")})`;
+  return fitText(full, width, "…");
+}
+
 /** Clamp a logical terminal line before applying styling. */
 function clampLine(text: string, width: number | undefined) {
   return width === undefined ? text : fitText(text, Math.max(1, width), "…");
@@ -239,6 +247,8 @@ export function projectHistoryRow(row: HistoryGraphRow, options: HistoryProjecti
   const graphPrefix = `${graph}  `;
   const hashPrefix = `${displayId}  `;
   let suffix = `${subject}${refs}  ${author}  ${date}`;
+  // A clipped title followed by fitted refs ends early; title labels must not color the refs.
+  let fittedTitleLength: number | undefined;
   if (options.width !== undefined) {
     const available = Math.max(
       1,
@@ -248,11 +258,24 @@ export function projectHistoryRow(row: HistoryGraphRow, options: HistoryProjecti
       `${subject}${refs}  ${author}  ${date}`,
       `${subject}${refs}  ${date}`,
       `${subject}${refs}`,
-      subject,
+      ...(refs ? [] : [subject]),
     ];
-    suffix =
-      candidates.find((candidate) => measureTextWidth(candidate) <= available) ??
-      formatHistoryTitle(row.commit, available, "…");
+    const complete = candidates.find((candidate) => measureTextWidth(candidate) <= available);
+    if (complete !== undefined) {
+      suffix = complete;
+    } else if (refs) {
+      // Reserve visible refs before fitting the subject; never silently discard a whole list.
+      // A known-empty marker keeps its cells first, so refs yield only at the narrowest widths.
+      const markerWidth = row.commit.isEmpty === true ? HISTORY_EMPTY_MARKER_WIDTH + 1 : 0;
+      const refWidth = Math.min(available - markerWidth, Math.max(3, Math.floor(available / 2)));
+      const fittedRefs = markerWidth && refWidth < 3 ? "" : fitHistoryDecorations(row, refWidth);
+      const subjectWidth = fittedRefs ? available - measureTextWidth(fittedRefs) - 1 : available;
+      const fittedTitle = subjectWidth > 0 ? formatHistoryTitle(row.commit, subjectWidth, "…") : "";
+      fittedTitleLength = fittedTitle.length;
+      suffix = [fittedTitle, fittedRefs].filter(Boolean).join(" ");
+    } else {
+      suffix = formatHistoryTitle(row.commit, available, "…");
+    }
   }
   const plain = clampLine(`${graphPrefix}${hashPrefix}${suffix}`, options.width);
   if (!options.color) return plain;
@@ -260,7 +283,11 @@ export function projectHistoryRow(row: HistoryGraphRow, options: HistoryProjecti
   const hashText = plain.slice(graphPrefix.length, graphPrefix.length + hashPrefix.length);
   const title = plain.slice(graphPrefix.length + hashPrefix.length);
   const palette = resolveHistoryTitlePalette(theme);
-  const coloredTitle = splitHistoryTitle(row.commit, title)
+  const titleEnd = fittedTitleLength ?? title.length;
+  const spans = splitHistoryTitle(row.commit, title.slice(0, titleEnd));
+  if (titleEnd < title.length) spans.push({ text: title.slice(titleEnd), role: "text" });
+  const coloredTitle = spans
+    .filter((span) => span.text)
     .map((span) => styled(span.text, palette[span.role], span.role !== "text"))
     .join("");
   return `${styledGraph(graphText, theme)}${styled(hashText, theme.accent, true)}${coloredTitle}`;

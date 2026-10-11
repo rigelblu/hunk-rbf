@@ -3,6 +3,8 @@ import { sanitizeTerminalLine } from "../../lib/terminalText";
 import { fitText } from "../lib/text";
 
 const emptyMarker = "(empty)";
+/** Cells a complete known-empty marker occupies before its title. */
+export const HISTORY_EMPTY_MARKER_WIDTH = emptyMarker.length;
 const descriptionPlaceholder = "(no description set)";
 
 export type HistoryTitleRole = "empty" | "undescribed" | "text";

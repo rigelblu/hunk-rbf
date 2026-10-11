@@ -1,6 +1,7 @@
 import type { HistoryGraphRow } from "../../core/history/types";
 import { sanitizeTerminalLine } from "../../lib/terminalText";
 import {
+  fitHistoryDecorations,
   formatHistoryDecorations,
   renderHistoryContinuation,
   renderHistoryConvergence,
@@ -31,6 +32,8 @@ export interface LogResponsiveRow {
   leftWidth: number;
   rightWidth: number;
   columnGap: number;
+  textWidth: number;
+  refLine: string;
   title: string;
   author: string;
   relativeTime: string;
@@ -53,18 +56,14 @@ export function resolveLogResponsiveLayout(width: number, height: number): LogRe
 
 /** Keep the most relevant ref summary complete before falling back to marked truncation. */
 function fitResponsiveDecorations(row: HistoryGraphRow, width: number, compact: boolean) {
-  const full = formatHistoryDecorations(row).trim();
+  if (!compact) return fitHistoryDecorations(row, width);
   const head = row.commit.decorations.find((entry) => entry.kind === "head");
   const safeLabel = (label: string) => sanitizeTerminalLine(label).replaceAll("\t", " ");
   const headLabel = head ? safeLabel(head.label) : "";
   const attachedBranch = head?.attachedLocalBranch ? safeLabel(head.attachedLocalBranch) : "";
-  const headOnly = head
-    ? `(${attachedBranch ? `${headLabel} -> ${attachedBranch}` : headLabel})`
-    : "";
-  if (!compact && measureTextWidth(full) <= width) return full;
   const first = row.commit.decorations[0];
   const compactLabel = attachedBranch || headLabel || (first ? safeLabel(first.label) : "");
-  const preferred = compact && compactLabel ? `(${compactLabel})` : headOnly || full;
+  const preferred = compactLabel ? `(${compactLabel})` : "";
   if (measureTextWidth(preferred) <= width) return preferred;
   if (preferred.startsWith("(") && preferred.endsWith(")") && width >= 3) {
     return `${fitText(preferred.slice(0, -1), width - 1, "…")})`;
@@ -110,7 +109,19 @@ export function projectResponsiveLogRow({
   const idActionWidth = measureTextWidth(displayId) + 1 + measureTextWidth(copyIcon);
   const secondaryWidth = Math.max(idActionWidth, Math.floor(contentWidth * 0.35));
   const secondary = presentation.decorations
-    ? fitResponsiveDecorations(row, secondaryWidth, layout.density !== "wide")
+    ? fitResponsiveDecorations(
+        layout.density === "wide"
+          ? row
+          : {
+              ...row,
+              commit: {
+                ...row.commit,
+                decorations: row.commit.decorations.filter((entry) => entry.kind !== "ref"),
+              },
+            },
+        secondaryWidth,
+        layout.density !== "wide",
+      )
     : "";
   const rightWidth = Math.max(idActionWidth, measureTextWidth(secondary));
   const minimumGraphWidth = presentation.graph
@@ -139,6 +150,18 @@ export function projectResponsiveLogRow({
     : 0;
   const columnGap = contentWidth > graphWidth + rightWidth ? desiredGap : 0;
   const leftWidth = Math.max(1, contentWidth - graphWidth - rightWidth - columnGap);
+  const textWidth = leftWidth + columnGap + rightWidth;
+  const genericRefs = formatHistoryDecorations({
+    ...row,
+    commit: {
+      ...row.commit,
+      decorations: row.commit.decorations.filter((entry) => entry.kind === "ref"),
+    },
+  }).trim();
+  const refLine =
+    presentation.decorations && layout.density !== "wide"
+      ? fitText(genericRefs.slice(1, -1), textWidth, "…")
+      : "";
   const author = presentation.author
     ? sanitizeTerminalLine(resolveHistoryAuthorLabel(row.commit)).replaceAll("\t", " ")
     : "";
@@ -181,6 +204,8 @@ export function projectResponsiveLogRow({
     leftWidth,
     rightWidth,
     columnGap,
+    textWidth,
+    refLine,
     title: formatHistoryTitle(row.commit, leftWidth),
     author: fittedAuthor,
     relativeTime: fittedRelativeTime,

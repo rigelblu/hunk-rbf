@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Session } from "tuistory";
+import { measureTextWidth } from "../../packages/hunk/src/ui/lib/text";
 import { createPtyHarness, rightmostColumnOf, rowCellBackgrounds, sleep } from "./harness";
 
 const harness = createPtyHarness();
@@ -92,6 +93,54 @@ function createMergeHistoryRepo() {
   git(cwd, ["commit", "-qm", "Main"]);
   git(cwd, ["merge", "--no-ff", "-qm", "Merge side", "side"]);
   return cwd;
+}
+
+/** Run JJ against an isolated history fixture with a deterministic identity. */
+function jj(cwd: string, ...args: string[]) {
+  const result = Bun.spawnSync(
+    [
+      "jj",
+      "--config",
+      'user.name="Workspace Tester"',
+      "--config",
+      'user.email="workspace@example.com"',
+      ...args,
+    ],
+    {
+      cwd,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
+  if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+  return result.stdout.toString();
+}
+
+/** Create stable occupied commits so workspace moves change labels without rewriting history. */
+function createWorkspaceHistoryTestRepo() {
+  const root = mkdtempSync(join(tmpdir(), "hunk-workspace-log-pty-"));
+  tempDirs.push(root);
+  const cwd = join(root, "default");
+  jj(root, "git", "init", "--no-colocate", cwd);
+  writeFileSync(join(cwd, "history.ts"), "export const value = 'ancestor';\n");
+  jj(cwd, "commit", "-m", "Workspace ancestor");
+  writeFileSync(join(cwd, "history.ts"), "export const value = 'current';\n");
+  jj(cwd, "describe", "-m", "Workspace current");
+  const currentId = jj(cwd, "log", "--no-graph", "-r", "@", "-T", "commit_id").trim();
+  const ancestorId = jj(cwd, "log", "--no-graph", "-r", "@-", "-T", "commit_id").trim();
+  jj(cwd, "bookmark", "create", "current", "-r", currentId);
+  jj(cwd, "bookmark", "create", "ancestor", "-r", ancestorId);
+  const peer = join(root, "peer");
+  jj(cwd, "workspace", "add", "--name", "peer", "-r", currentId, peer);
+  jj(peer, "edit", currentId);
+  return { cwd, peer, currentId, ancestorId };
+}
+
+/** Send a click at actual terminal cells, including Shift range extension. */
+function clickWorkspaceTestCell(session: Session, x: number, y: number, shift = false) {
+  const button = shift ? 4 : 0;
+  session.writeRaw(`\x1b[<${button};${x + 1};${y + 1}M\x1b[<${button};${x + 1};${y + 1}m`);
 }
 
 afterEach(() => {
@@ -1256,3 +1305,117 @@ describe("HK-93 focused working history", () => {
     }
   },
 );
+
+describe("HK-92 workspace history", () => {
+  test("places names on the third line and refreshes pointer-only moves", async () => {
+    const { cwd, peer, currentId, ancestorId } = createWorkspaceHistoryTestRepo();
+    const session = await harness.launchHunk({
+      args: ["log", "--vcs", "jj", "--all", "--no-extensions"],
+      cwd,
+      cols: 70,
+      rows: 20,
+    });
+    try {
+      const initial = await session.waitForText(/@default, @peer/, { timeout: 15_000 });
+      const lines = initial.split("\n");
+      const currentLine = lines.findIndex((line) => line.includes("Workspace current"));
+      expect(lines[currentLine + 1]).toContain("(@)");
+      expect(lines[currentLine + 2]).toContain("@default, @peer");
+      const ancestorLine = lines.findIndex((line) => line.includes("Workspace ancestor"));
+      expect(ancestorLine - currentLine).toBe(3);
+      session.resize({ cols: 45, rows: 20 });
+      const narrow = await harness.waitForSnapshot(
+        session,
+        (text) =>
+          text.includes("@default, @peer") &&
+          text.split("\n").every((line) => measureTextWidth(line) <= 45),
+      );
+      const narrowLines = narrow.split("\n");
+      expect(
+        narrowLines.findIndex((line) => line.includes("Workspace ancestor")) -
+          narrowLines.findIndex((line) => line.includes("Workspace current")),
+      ).toBe(3);
+      session.resize({ cols: 70, rows: 20 });
+      await session.waitForText(/Workspace current/);
+      await session.press("j");
+      jj(peer, "edit", ancestorId);
+      await harness.pressAndWaitForText(session, "r", /History refreshed/, { timeout: 10_000 });
+      const moved = await session.text({ immediate: true });
+      const movedLines = moved.split("\n");
+      expect(
+        movedLines[movedLines.findIndex((line) => line.includes("Workspace current")) + 2],
+      ).toContain("@default");
+      expect(
+        movedLines[movedLines.findIndex((line) => line.includes("Workspace ancestor")) + 2],
+      ).toContain("@peer");
+      const review = await harness.pressAndWaitForText(session, "enter", /value = 'ancestor'/, {
+        timeout: 15_000,
+      });
+      expect(review).not.toContain("value = 'current'");
+      await harness.pressAndWaitForSnapshot(
+        session,
+        "q",
+        (text) => text.includes("Jujutsu history") && text.includes("Enter open"),
+        15_000,
+      );
+      await session.press("f10");
+      await session.press(["down", "down", "down", "enter"]);
+      await session.press("f10");
+      await session.waitForText(/Auto-refresh history: on/);
+      await session.press("escape");
+      jj(peer, "edit", currentId);
+      await session.waitForText(/@default, @peer/, { timeout: 15_000 });
+      // The retained ancestor selection is observable through its opened diff after each refresh.
+      await harness.pressAndWaitForText(session, "enter", /value = 'ancestor'/, {
+        timeout: 15_000,
+      });
+    } finally {
+      session.close();
+    }
+  });
+
+  test("third-line labels under both columns select, extend and double-open", async () => {
+    const { cwd, peer, ancestorId } = createWorkspaceHistoryTestRepo();
+    jj(peer, "edit", ancestorId);
+    const session = await harness.launchHunk({
+      args: ["log", "--vcs", "jj", "--no-extensions"],
+      cwd,
+      cols: 70,
+      rows: 20,
+    });
+    try {
+      await session.waitForText(/@peer/, { timeout: 15_000 });
+      const lines = session
+        .getTerminalData()
+        .lines.map((line) => line.spans.map((span) => span.text).join(""));
+      const ancestorLine = lines.findIndex((line) => line.includes("Workspace ancestor"));
+      const currentLine = lines.findIndex((line) => line.includes("Workspace current"));
+      const x = lines[ancestorLine + 2]!.indexOf("@peer");
+      expect(x).toBeGreaterThan(0);
+      clickWorkspaceTestCell(session, x, ancestorLine + 2);
+      await session.waitIdle();
+      expect(await session.text({ immediate: true })).not.toContain("Opening commit");
+      expect(await session.text({ immediate: true })).toContain("Jujutsu history");
+      expect(session.getRawOutput()).not.toContain("value = 'ancestor'");
+      // A click on the same third line below the id/copy column belongs to the outer row.
+      await sleep(450);
+      clickWorkspaceTestCell(session, 64, currentLine + 2);
+      await session.waitIdle();
+      expect(await session.text({ immediate: true })).toContain("Jujutsu history");
+      expect(await session.text({ immediate: true })).not.toContain("Copied");
+      clickWorkspaceTestCell(session, 64, ancestorLine + 2, true);
+      await session.waitIdle();
+      await session.waitForText(/2 commits selected/, { timeout: 5_000 });
+      await session.press("escape");
+      await sleep(450);
+      clickWorkspaceTestCell(session, 64, ancestorLine + 2);
+      // An already selected row need not repaint; keep this pair inside the 400ms window.
+      await sleep(80);
+      expect(await session.text({ immediate: true })).toContain("Jujutsu history");
+      clickWorkspaceTestCell(session, x, ancestorLine + 2);
+      await session.waitForText(/value = 'ancestor'/, { timeout: 15_000 });
+    } finally {
+      session.close();
+    }
+  });
+});
