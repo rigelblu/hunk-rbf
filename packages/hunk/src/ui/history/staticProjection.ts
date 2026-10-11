@@ -3,7 +3,8 @@ import type { NamedCustomThemeConfig } from "../../extension-api/types";
 import { sanitizeTerminalLine, sanitizeTerminalText } from "../../lib/terminalText";
 import { fitText, measureTextWidth } from "../lib/text";
 import { resolveTheme, type AppTheme } from "../themes";
-import { formatHistoryTitle } from "./title";
+import { formatHistoryTitle, splitHistoryTitle } from "./title";
+import { resolveHistoryTitlePalette } from "./titlePalette";
 
 export interface HistoryProjectionOptions {
   ascii: boolean;
@@ -178,7 +179,12 @@ export function projectHistoryRow(row: HistoryGraphRow, options: HistoryProjecti
   if (!options.color) return plain;
   const graphText = plain.slice(0, graphPrefix.length);
   const hashText = plain.slice(graphPrefix.length, graphPrefix.length + hashPrefix.length);
-  return `${styledGraph(graphText, theme)}${styled(hashText, theme.accent, true)}${plain.slice(graphPrefix.length + hashPrefix.length)}`;
+  const title = plain.slice(graphPrefix.length + hashPrefix.length);
+  const palette = resolveHistoryTitlePalette(theme);
+  const coloredTitle = splitHistoryTitle(row.commit, title)
+    .map((span) => styled(span.text, palette[span.role], span.role !== "text"))
+    .join("");
+  return `${styledGraph(graphText, theme)}${styled(hashText, theme.accent, true)}${coloredTitle}`;
 }
 
 /** Render a themed standalone lane-collapse line for compact static output. */
@@ -254,6 +260,14 @@ export function projectHistoryRecord(row: HistoryGraphRow, options: HistoryProje
       return `${styledGraph(lane, theme)}${rest.slice(0, hashStart)}${styled(rest.slice(hashStart, hashEnd), theme.accent, true)}${styled(rest.slice(hashEnd), theme.addedSignColor, true)}`;
     }
     const color = index >= 4 ? theme.text : theme.muted;
+    if (index === 4) {
+      const indent = rest.slice(0, 4);
+      const palette = resolveHistoryTitlePalette(theme);
+      const title = splitHistoryTitle(row.commit, rest.slice(4))
+        .map((span) => styled(span.text, palette[span.role], true))
+        .join("");
+      return `${styledGraph(lane, theme)}${styled(indent, theme.text, true)}${title}`;
+    }
     return `${styledGraph(lane, theme)}${styled(rest, color, true)}`;
   });
 }

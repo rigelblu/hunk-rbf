@@ -6,6 +6,10 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 
 # 🔵⋯ [Unreleased]
 
+## 🟠⋯ Improved for End Users
+
+- 2026-10-11 - feat (ux) | highlight `(empty)` and `(no description set)` labels in yellow while scanning history (#hk-91)
+
 # 🔵⋯ v0.10.0 (2026-10-11)
 
 Local dogfood release; remote integration and publication remain pending.

@@ -3,6 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPtyHarness } from "./harness";
+import { resolveTheme } from "../../packages/hunk/src/ui/themes";
+import { resolveHistoryTitlePalette } from "../../packages/hunk/src/ui/history/titlePalette";
 
 const harness = createPtyHarness();
 const tempDirs: string[] = [];
@@ -44,6 +46,59 @@ afterEach(async () => {
 });
 
 describe("PTY known-empty JJ history", () => {
+  jjTest("renders yellow labels on selected and ordinary rows and honors color never", async () => {
+    const cwd = createEmptyHistoryTestRepo();
+    const theme = resolveTheme("github-dark-default", "dark");
+    for (const color of ["always", "never"]) {
+      const session = await harness.launchHunk({
+        args: [
+          "log",
+          "--vcs",
+          "jj",
+          "--all",
+          "--no-extensions",
+          "--theme",
+          theme.id,
+          "--color",
+          color,
+        ],
+        cwd,
+        cols: 80,
+        rows: 24,
+      });
+      try {
+        await harness.waitForSnapshot(
+          session,
+          (text) =>
+            text.includes("(empty) Empty revision") && text.includes("(no description set)"),
+          15_000,
+        );
+        if (color === "always") {
+          const selected = resolveHistoryTitlePalette(theme, theme.selectedHunk);
+          const ordinary = resolveHistoryTitlePalette(theme);
+          expect(await session.text({ only: { foreground: selected.empty } })).toContain("(empty)");
+          expect(await session.text({ only: { foreground: ordinary.undescribed } })).toContain(
+            "(no description set)",
+          );
+          expect(await session.text({ only: { foreground: selected.empty } })).not.toContain(
+            "Empty revision",
+          );
+          await session.press("down");
+          await session.waitIdle();
+          expect(await session.text({ only: { foreground: selected.undescribed } })).toContain(
+            "(no description set)",
+          );
+        } else {
+          const screen = await session.text({ only: { foreground: "#ffffff" } });
+          expect(screen).toContain("(empty) Empty revision");
+          expect(screen).toContain("(no description set)");
+        }
+        await session.press("q");
+      } finally {
+        session.close();
+      }
+    }
+  });
   jjTest(
     "keeps narrow labels visible with graph, ASCII and refs controls independent",
     async () => {

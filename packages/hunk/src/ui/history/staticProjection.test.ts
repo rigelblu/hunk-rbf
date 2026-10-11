@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { measureTextWidth } from "../lib/text";
 import { planHistoryPage } from "../../core/history/lanePlanner";
+import { resolveHistoryTitlePalette } from "./titlePalette";
 import type { HistoryCommit } from "../../core/history/types";
 import {
   formatHistoryDecorations,
+  foreground,
   getHistoryCommitIdBounds,
   projectHistoryRecord,
   projectHistoryRow,
@@ -115,6 +117,35 @@ describe("static history projection", () => {
 });
 
 describe("known-empty static history titles", () => {
+  test("colors only surviving labels and preserves compact/medium text at every width", () => {
+    const theme = resolveHistoryTheme("github-dark-default");
+    const palette = resolveHistoryTitlePalette(theme);
+    for (const subject of [
+      "(no description set)",
+      "A described revision",
+      "Title (no description set)",
+    ]) {
+      const input = planHistoryPage([
+        { ...commit, subject, isEmpty: true, decorations: [], parentRevisionIds: [] },
+      ]).rows[0]!;
+      for (const width of [1, 8, 14, 20, 40, 80, undefined]) {
+        const options = { ascii: true, color: false, width, theme };
+        const plain = projectHistoryRow(input, options);
+        const colored = projectHistoryRow(input, { ...options, color: true });
+        expect(colored.replace(/\x1b\[[0-9;]*m/g, "")).toBe(plain);
+        const records = projectHistoryRecord(input, options);
+        const coloredRecords = projectHistoryRecord(input, { ...options, color: true });
+        expect(coloredRecords.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""))).toEqual(records);
+      }
+      const full = projectHistoryRow(input, { ascii: true, color: true, theme });
+      expect(full).toContain(`${foreground(palette.empty)}(empty)\x1b[0m`);
+      if (subject === "(no description set)") {
+        expect(full).toContain(`${foreground(palette.undescribed)}(no description set)\x1b[0m`);
+      } else {
+        expect(full).not.toContain(`${foreground(palette.undescribed)}(no description set)`);
+      }
+    }
+  });
   test("preserves whole-line clipping for false and unknown facts", () => {
     for (const isEmpty of [false, undefined]) {
       const ordinary = planHistoryPage([
@@ -123,9 +154,8 @@ describe("known-empty static history titles", () => {
       expect(projectHistoryRecord(ordinary, { ascii: true, color: false, width: 7 })[4]).toBe(
         "      …",
       );
-      const merge = planHistoryPage([
-        { ...commit, decorations: [], subject: "Title", isEmpty },
-      ]).rows[0]!;
+      const merge = planHistoryPage([{ ...commit, decorations: [], subject: "Title", isEmpty }])
+        .rows[0]!;
       expect(projectHistoryRecord(merge, { ascii: true, color: false, width: 9 })[4]).toBe(
         "| |     …",
       );
