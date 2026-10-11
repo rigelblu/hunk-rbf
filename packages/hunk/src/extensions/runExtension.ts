@@ -200,6 +200,38 @@ function snapshotArray(value: unknown[], maximum = Number.MAX_SAFE_INTEGER) {
   return snapshot;
 }
 
+/** Copy terminal-safe identity without trusting extension accessors twice. */
+function safeHistoryRevision(value: unknown, label: string) {
+  const text = assertNonEmptyString(value, `${label} must be a non-empty string.`);
+  if (!text.trim() || text.includes("\t") || sanitizeTerminalLine(text) !== text) {
+    throw new Error(`${label} must be a terminal-safe immutable revision id.`);
+  }
+  return text;
+}
+
+/** Snapshot an optional provider scope before accepting any pages from its source. */
+function normalizeHistoryScope(
+  value: unknown,
+): import("../extension-api/types").ExtensionVcsHistoryScope | undefined {
+  if (value === undefined) return undefined;
+  if (!isPlainObject(value)) throw new Error("VCS history scope must be an object.");
+  const fields = snapshotProperties(value, ["kind", "boundaryRevisionId", "reason"]);
+  if (fields.kind === "bounded")
+    return Object.freeze({
+      kind: "bounded",
+      boundaryRevisionId: safeHistoryRevision(
+        fields.boundaryRevisionId,
+        "VCS history boundary revision id",
+      ),
+    });
+  if (
+    fields.kind === "fallback" &&
+    (fields.reason === "unavailable" || fields.reason === "ambiguous")
+  )
+    return Object.freeze({ kind: "fallback", reason: fields.reason });
+  throw new Error("VCS history returned an invalid scope kind or fallback reason.");
+}
+
 /** Copy and validate one extension-provided history commit before it reaches core or UI. */
 function normalizeHistoryCommit(value: unknown): ExtensionVcsHistoryCommit {
   if (!isPlainObject(value)) {
@@ -210,6 +242,7 @@ function normalizeHistoryCommit(value: unknown): ExtensionVcsHistoryCommit {
     "displayId",
     "parentRevisionIds",
     "graphParentRevisionIds",
+    "graphCutoffParentRevisionIds",
     "subject",
     "body",
     "authorName",
@@ -228,13 +261,7 @@ function normalizeHistoryCommit(value: unknown): ExtensionVcsHistoryCommit {
     }
     return text;
   };
-  const safeRevision = (revision: unknown, label: string) => {
-    const text = assertNonEmptyString(revision, `${label} must be a non-empty string.`);
-    if (text.includes("\t") || sanitizeTerminalLine(text) !== text) {
-      throw new Error(`${label} must be a terminal-safe immutable revision id.`);
-    }
-    return text;
-  };
+  const safeRevision = safeHistoryRevision;
   const revisionId = safeRevision(snapshot.revisionId, "VCS history commit revisionId");
   const displayId = safeDisplay("displayId");
   const authoredAt = required("authoredAt");
@@ -271,6 +298,23 @@ function normalizeHistoryCommit(value: unknown): ExtensionVcsHistoryCommit {
   const graphParentRevisionIds = graphParentValues?.map((parent) =>
     safeRevision(parent, "VCS history graph parent revision id"),
   );
+  let graphCutoffParentRevisionIds: string[] | undefined;
+  if (snapshot.graphCutoffParentRevisionIds !== undefined) {
+    if (!Array.isArray(snapshot.graphCutoffParentRevisionIds))
+      throw new Error("VCS history cutoff parents must be an array.");
+    graphCutoffParentRevisionIds = snapshotArray(snapshot.graphCutoffParentRevisionIds, 256).map(
+      (parent) => safeRevision(parent, "VCS history cutoff parent id"),
+    );
+    let prior = -1;
+    for (const parent of graphCutoffParentRevisionIds) {
+      const index = parentRevisionIds.indexOf(parent);
+      if (index <= prior || graphParentRevisionIds?.includes(parent))
+        throw new Error(
+          "VCS history cutoff parents must be unique real parents in order and disjoint from graph parents.",
+        );
+      prior = index;
+    }
+  }
   const decorationKinds = new Set(["head", "local-branch", "remote-branch", "tag", "ref"]);
   const decorations = decorationValues.map((decoration) => {
     if (!isPlainObject(decoration)) {
@@ -307,6 +351,7 @@ function normalizeHistoryCommit(value: unknown): ExtensionVcsHistoryCommit {
     displayId,
     parentRevisionIds,
     ...(graphParentRevisionIds ? { graphParentRevisionIds } : {}),
+    ...(graphCutoffParentRevisionIds ? { graphCutoffParentRevisionIds } : {}),
     subject: safeDisplay("subject"),
     ...(typeof snapshot.body === "string"
       ? {
@@ -405,7 +450,20 @@ async function toInternalHistorySource(
     }
   };
 
+  let scope: ReturnType<typeof normalizeHistoryScope>;
+  try {
+    scope = normalizeHistoryScope(source.scope);
+  } catch (error) {
+    try {
+      await close();
+    } catch {
+      /* Keep invalid scope as the primary failure. */
+    }
+    throw error;
+  }
+
   return {
+    ...(scope ? { scope } : {}),
     async read({ limit, signal }) {
       if (closed || done) return { commits: [], done: true };
       if (!Number.isSafeInteger(limit) || limit <= 0) {

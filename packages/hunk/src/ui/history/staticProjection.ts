@@ -1,5 +1,5 @@
 import type { HistoryGraphRow } from "../../core/history/types";
-import type { NamedCustomThemeConfig } from "../../extension-api/types";
+import type { ExtensionVcsHistoryScope, NamedCustomThemeConfig } from "../../extension-api/types";
 import { sanitizeTerminalLine, sanitizeTerminalText } from "../../lib/terminalText";
 import { fitText, measureTextWidth } from "../lib/text";
 import { resolveTheme, type AppTheme } from "../themes";
@@ -12,6 +12,15 @@ export interface HistoryProjectionOptions {
   theme?: AppTheme;
   /** Omit width to emit complete unpadded logical rows for pipes and files. */
   width?: number;
+}
+
+/** Explain only accepted scope, keeping cutoff and fallback meanings separate from transient notices. */
+export function historyScopeText(scope: ExtensionVcsHistoryScope | undefined, hasCutoffs: boolean) {
+  if (scope?.kind === "fallback")
+    return scope.reason === "ambiguous"
+      ? "Mainline ambiguous; showing visible history."
+      : "Mainline unavailable; showing visible history.";
+  return scope?.kind === "bounded" && hasCutoffs ? "~ older history hidden" : "";
 }
 
 /** Resolve history colors from the same built-in and custom themes as review. */
@@ -34,18 +43,24 @@ export function foreground(color: string) {
 export function renderHistoryGraph(row: HistoryGraphRow, ascii: boolean) {
   const vertical = ascii ? "|" : "│";
   const node = ascii ? "*" : "●";
-  if (row.parentLanes.length <= 1) {
+  const displacedCut =
+    row.parentLanes.length === 1 &&
+    row.cutoffLanes?.includes(row.parentLanes[0]!) &&
+    row.parentLanes[0] !== row.lane;
+  if (row.parentLanes.length <= 1 && !displacedCut) {
     return row.cells
       .map((cell) => (cell.kind === "node" ? node : cell.kind === "vertical" ? vertical : " "))
       .join(" ")
       .trimEnd();
   }
 
-  const laneCount = Math.max(row.lanesBefore.length, row.lanesAfter.length);
+  const laneCount = Math.max(row.cells.length, row.lanesBefore.length, row.lanesAfter.length);
   const characters = Array.from({ length: Math.max(1, laneCount * 2 - 1) }, () => " ");
-  for (let lane = 0; lane < row.lanesAfter.length; lane += 1) characters[lane * 2] = vertical;
+  for (const lane of ordinaryContinuationLanes(row)) characters[lane * 2] = vertical;
+  for (const lane of row.cutoffLanes ?? []) characters[lane * 2] = vertical;
   characters[row.lane * 2] = node;
-  for (const parentLane of row.parentLanes.slice(1)) {
+  for (const parentLane of row.cutoffLanes?.length ? row.parentLanes : row.parentLanes.slice(1)) {
+    if (parentLane === row.lane) continue;
     const from = Math.min(row.lane * 2, parentLane * 2);
     const to = Math.max(row.lane * 2, parentLane * 2);
     for (let index = from + 1; index < to; index += 1) {
@@ -57,11 +72,23 @@ export function renderHistoryGraph(row: HistoryGraphRow, ascii: boolean) {
   return characters.join("").trimEnd();
 }
 
+/** Read the planner's temporary outgoing geometry without carrying hidden identities. */
+function ordinaryContinuationLanes(row: HistoryGraphRow) {
+  return row.continuationLanes ?? row.lanesAfter.map((_, lane) => lane);
+}
+
 /** Render active lanes after a commit for its metadata and message continuation lines. */
 export function renderHistoryContinuation(row: HistoryGraphRow, ascii: boolean) {
   const vertical = ascii ? "|" : "│";
-  return row.lanesAfter
-    .map(() => vertical)
+  const ordinary = ordinaryContinuationLanes(row);
+  const width = Math.max(
+    0,
+    ...ordinary.map((lane) => lane + 1),
+    ...(row.cutoffLanes ?? []).map((lane) => lane + 1),
+  );
+  return Array.from({ length: width }, (_, lane) =>
+    ordinary.includes(lane) || row.cutoffLanes?.includes(lane) ? vertical : " ",
+  )
     .join(" ")
     .trimEnd();
 }
@@ -69,9 +96,10 @@ export function renderHistoryContinuation(row: HistoryGraphRow, ascii: boolean) 
 /** Render a lane-collapse transition that makes converging ancestry explicit. */
 export function renderHistoryConvergence(row: HistoryGraphRow, ascii: boolean) {
   if (row.convergences.length === 0) return "";
-  const width = Math.max(row.lanesBefore.length, row.lanesAfter.length) * 2 - 1;
+  const width = Math.max(row.cells.length, row.lanesBefore.length, row.lanesAfter.length) * 2 - 1;
   const chars = Array.from({ length: Math.max(1, width) }, () => " ");
-  for (let lane = 0; lane < row.lanesAfter.length; lane += 1) chars[lane * 2] = ascii ? "|" : "│";
+  for (const lane of ordinaryContinuationLanes(row)) chars[lane * 2] = ascii ? "|" : "│";
+  for (const lane of row.cutoffLanes ?? []) chars[lane * 2] = ascii ? "|" : "│";
   for (const { from, to } of row.convergences) {
     const start = Math.min(from, to) * 2 + 1;
     const end = Math.max(from, to) * 2 - 1;
@@ -80,6 +108,57 @@ export function renderHistoryConvergence(row: HistoryGraphRow, ascii: boolean) {
     }
   }
   return chars.join("").trimEnd();
+}
+
+/** End every attested edge locally, retaining ordinary continuation beside its marker. */
+export function renderHistoryCutoffs(row: HistoryGraphRow, ascii: boolean) {
+  const cuts = row.cutoffLanes ?? [];
+  const ordinary = ordinaryContinuationLanes(row);
+  const width = Math.max(0, ...ordinary.map((lane) => lane + 1), ...cuts.map((lane) => lane + 1));
+  return cuts.map((cut, index) =>
+    Array.from({ length: width }, (_, lane) =>
+      lane === cut
+        ? "~"
+        : ordinary.includes(lane) || cuts.slice(index + 1).includes(lane)
+          ? ascii
+            ? "|"
+            : "│"
+          : " ",
+    )
+      .join(" ")
+      .trimEnd(),
+  );
+}
+
+/** Compact surviving ordinary lanes only after every local cutoff has terminated. */
+export function renderHistoryCutoffConvergence(row: HistoryGraphRow, ascii: boolean) {
+  if (!row.cutoffConvergences?.length) return "";
+  return renderHistoryConvergence(
+    {
+      ...row,
+      continuationLanes: undefined,
+      cutoffLanes: undefined,
+      convergences: row.cutoffConvergences,
+    },
+    ascii,
+  );
+}
+
+/** Fit local cutoff rows without confusing a clipped graph gutter with a hidden edge. */
+export function projectHistoryCutoffs(row: HistoryGraphRow, options: HistoryProjectionOptions) {
+  const theme = options.theme ?? resolveHistoryTheme(undefined);
+  const lines = renderHistoryCutoffs(row, options.ascii);
+  const convergence = renderHistoryCutoffConvergence(row, options.ascii);
+  if (convergence) lines.push(convergence);
+  return lines.map((line) => {
+    const fitted =
+      options.width !== undefined && measureTextWidth(line) > options.width
+        ? line.includes("~")
+          ? "~"
+          : fitText(line, options.width, "…")
+        : line;
+    return options.color ? styledGraph(fitted, theme) : fitted;
+  });
 }
 
 /** Format typed refs in familiar Git decoration vocabulary without inferring topology. */
@@ -248,28 +327,30 @@ export function projectHistoryRecord(row: HistoryGraphRow, options: HistoryProje
       ? line
       : clampLine(line, options.width),
   );
-  if (!options.color) return fitted;
-  return fitted.map((line, index) => {
-    if (!line) return line;
-    const laneWidth = index === 0 ? prefix(graph).length : prefix(continuation).length;
-    const lane = line.slice(0, laneWidth);
-    const rest = line.slice(laneWidth);
-    if (index === 0 && rest.startsWith("commit ")) {
-      const hashStart = "commit ".length;
-      const hashEnd = Math.min(rest.length, hashStart + fullId.length);
-      return `${styledGraph(lane, theme)}${rest.slice(0, hashStart)}${styled(rest.slice(hashStart, hashEnd), theme.accent, true)}${styled(rest.slice(hashEnd), theme.addedSignColor, true)}`;
-    }
-    const color = index >= 4 ? theme.text : theme.muted;
-    if (index === 4) {
-      const indent = rest.slice(0, 4);
-      const palette = resolveHistoryTitlePalette(theme);
-      const title = splitHistoryTitle(row.commit, rest.slice(4))
-        .map((span) => styled(span.text, palette[span.role], true))
-        .join("");
-      return `${styledGraph(lane, theme)}${styled(indent, theme.text, true)}${title}`;
-    }
-    return `${styledGraph(lane, theme)}${styled(rest, color, true)}`;
-  });
+  if (!options.color) return [...fitted, ...projectHistoryCutoffs(row, options)];
+  return fitted
+    .map((line, index) => {
+      if (!line) return line;
+      const laneWidth = index === 0 ? prefix(graph).length : prefix(continuation).length;
+      const lane = line.slice(0, laneWidth);
+      const rest = line.slice(laneWidth);
+      if (index === 0 && rest.startsWith("commit ")) {
+        const hashStart = "commit ".length;
+        const hashEnd = Math.min(rest.length, hashStart + fullId.length);
+        return `${styledGraph(lane, theme)}${rest.slice(0, hashStart)}${styled(rest.slice(hashStart, hashEnd), theme.accent, true)}${styled(rest.slice(hashEnd), theme.addedSignColor, true)}`;
+      }
+      const color = index >= 4 ? theme.text : theme.muted;
+      if (index === 4) {
+        const indent = rest.slice(0, 4);
+        const palette = resolveHistoryTitlePalette(theme);
+        const title = splitHistoryTitle(row.commit, rest.slice(4))
+          .map((span) => styled(span.text, palette[span.role], true))
+          .join("");
+        return `${styledGraph(lane, theme)}${styled(indent, theme.text, true)}${title}`;
+      }
+      return `${styledGraph(lane, theme)}${styled(rest, color, true)}`;
+    })
+    .concat(projectHistoryCutoffs(row, options));
 }
 
 /** Resolve color according to explicit CLI precedence and conventional terminal signals. */

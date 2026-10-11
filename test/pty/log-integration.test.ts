@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Session } from "tuistory";
-import { createPtyHarness, rightmostColumnOf, sleep } from "./harness";
+import { createPtyHarness, rightmostColumnOf, rowCellBackgrounds, sleep } from "./harness";
 
 const harness = createPtyHarness();
 const tempDirs: string[] = [];
@@ -842,3 +842,417 @@ describe("interactive hunk log", () => {
     }
   });
 });
+
+/** Quote generated fixture paths as literal shell arguments. */
+function quoteTestShellArgument(value: string) {
+  return "'" + value.replaceAll("'", "'\\''") + "'";
+}
+
+/** Wait for the provider's explicit paging handshake, not a guessed execution delay. */
+async function waitForTestFile(path: string) {
+  const deadline = Date.now() + 5_000;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error("History provider did not reach its refresh gate.");
+    await sleep(20);
+  }
+}
+
+const refreshRaceTest = process.platform === "win32" ? test.skip : test;
+const groupedRefreshTest = Bun.which("jj") ? test : test.skip;
+groupedRefreshTest("keeps the physical reading row after JJ authored-day rewrites", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "hunk-log-day-refresh-"));
+  tempDirs.push(cwd);
+  const jj = (...args: string[]) => {
+    const result = Bun.spawnSync(
+      [
+        "jj",
+        "--config",
+        'user.name="History Tester"',
+        "--config",
+        'user.email="history@example.com"',
+        ...args,
+      ],
+      { cwd, stdout: "pipe", stderr: "pipe" },
+    );
+    if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+    return result.stdout.toString().trim();
+  };
+  jj("git", "init", "--no-colocate", ".");
+  jj("describe", "-m", "Dated entry 0");
+  for (let index = 1; index < 50; index += 1) jj("new", "-m", `Dated entry ${index}`);
+  jj("metaedit", "-r", "all() ~ root()", "--author-timestamp", "2026-01-01T12:00:00Z");
+  const identities = jj(
+    "log",
+    "--no-graph",
+    "-r",
+    "all() ~ root()",
+    "-T",
+    'change_id ++ "\\n"',
+  ).split("\n");
+  const session = await harness.launchHunk({
+    args: ["log", "--vcs", "jj", "--all", "--color", "never", "--no-extensions"],
+    cwd,
+    cols: 90,
+    rows: 26,
+  });
+  try {
+    await session.waitForText(/Dated entry 49/, { timeout: 15_000 });
+    for (let index = 0; index < 8; index += 1) await session.press("down");
+    session.resize({ cols: 90, rows: 43 });
+    await session.waitIdle();
+    const selectedPhysicalRow = () =>
+      session.getTerminalData().lines.findIndex((line) =>
+        line.spans
+          .map((span) => span.text)
+          .join("")
+          .includes("Dated entry 41"),
+      );
+    const selectedRow = selectedPhysicalRow();
+    expect(selectedRow).toBeGreaterThan(10);
+    const selectedBackground = rowCellBackgrounds(session, selectedRow);
+    jj(
+      "metaedit",
+      "-r",
+      identities.slice(7).join(" | "),
+      "--author-timestamp",
+      "2026-01-06T12:00:00Z",
+    );
+    for (let index = 3; index < 7; index += 1)
+      jj(
+        "metaedit",
+        "-r",
+        identities[index]!,
+        "--author-timestamp",
+        `2026-01-0${index - 1}T12:00:00Z`,
+      );
+    await session.press("r");
+    const after = await session.waitForText(/History refreshed\./, { timeout: 15_000 });
+    expect(selectedPhysicalRow()).toBe(selectedRow);
+    expect(after).toContain("Commits on Jan 6");
+    expect(rowCellBackgrounds(session, selectedRow)).toEqual(selectedBackground);
+  } finally {
+    session.close();
+  }
+});
+
+refreshRaceTest(
+  "keeps a newer keyboard selection while manual refresh stages provider history",
+  async () => {
+    const cwd = createHistoryRepo();
+    const bin = join(cwd, "test-bin");
+    mkdirSync(bin);
+    const enabled = join(cwd, "delay-history");
+    const started = join(cwd, "history-read-started");
+    const release = join(cwd, "release-history");
+    const realGit = Bun.which("git");
+    if (!realGit) throw new Error("Git test executable missing.");
+    const wrapper = join(bin, "git");
+    writeFileSync(
+      wrapper,
+      `#!/bin/sh\nfor arg in "$@"; do\n  if [ "$arg" = log ] && [ -e ${quoteTestShellArgument(enabled)} ] && [ ! -e ${quoteTestShellArgument(started)} ]; then\n    : > ${quoteTestShellArgument(started)}\n    while [ ! -e ${quoteTestShellArgument(release)} ]; do sleep 0.01; done\n  fi\ndone\nexec ${quoteTestShellArgument(realGit)} "$@"\n`,
+    );
+    chmodSync(wrapper, 0o755);
+    const session = await harness.launchHunk({
+      args: ["log", "--color", "never", "--no-extensions"],
+      cwd,
+      cols: 90,
+      rows: 18,
+      env: { PATH: bin + ":" + process.env.PATH },
+    });
+    try {
+      await session.waitForText(/Second history commit/, { timeout: 15_000 });
+      writeFileSync(join(cwd, "history.ts"), "export const historyValue = 'third';\n");
+      git(cwd, ["commit", "-qam", "Third history commit"]);
+      writeFileSync(enabled, "");
+      await session.press("r");
+      await waitForTestFile(started);
+      await session.press("down");
+      writeFileSync(release, "");
+      await session.waitForText(/History refreshed\./, { timeout: 15_000 });
+      const review = await harness.pressAndWaitForText(session, "enter", /rootOnly = true/, {
+        timeout: 15_000,
+      });
+      expect(review).toContain("root-only.ts");
+      expect(review).toContain("First history commit");
+    } finally {
+      writeFileSync(release, "");
+      session.close();
+    }
+  },
+);
+
+/** Create JJ work on mainline and old bases with a configured protected boundary. */
+function createHk93PtyTestRepo() {
+  const cwd = mkdtempSync(join(tmpdir(), "hunk-hk93-pty-"));
+  const configHome = mkdtempSync(join(tmpdir(), "hunk-hk93-pty-config-"));
+  const env = { ...process.env, XDG_CONFIG_HOME: configHome };
+  tempDirs.push(cwd, configHome);
+  const jj = (...args: string[]) => {
+    const result = Bun.spawnSync(
+      [
+        "jj",
+        "--config",
+        'user.name="History Tester"',
+        "--config",
+        'user.email="history@example.com"',
+        ...args,
+      ],
+      { cwd, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+    );
+    if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+    return result.stdout.toString().trim();
+  };
+  jj("git", "init", "--no-colocate", ".");
+  jj("config", "set", "--repo", 'revset-aliases."trunk()"', "none()");
+  const add = (bookmark: string, subject: string, parent: string) => {
+    jj("new", parent);
+    writeFileSync(join(cwd, `${bookmark}.ts`), `export const ${bookmark} = true;\n`);
+    jj("describe", "-m", subject);
+    const id = jj("log", "--no-graph", "-r", "@", "-T", "commit_id");
+    jj("bookmark", "create", bookmark, "-r", id);
+    return id;
+  };
+  const old = add("old", "Hidden older history", "root()");
+  const main = add("main", "Mainline boundary", old);
+  add("side", "Old-based branch", old);
+  const protectedId = add("protected", "Protected branch", main);
+  add("feature", "Feature current work", main);
+  jj("config", "set", "--repo", 'revset-aliases."trunk()"', "main");
+  jj("config", "set", "--repo", 'revset-aliases."immutable_heads()"', `main | ${protectedId}`);
+  return { cwd, jj, env };
+}
+
+describe("HK-93 focused working history", () => {
+  (Bun.which("jj") ? test : test.skip)(
+    "HK-93 terminal cuts remain local through graph, resize, selection and real-parent review",
+    async () => {
+      const { cwd, env } = createHk93PtyTestRepo();
+      const session = await harness.launchHunk({
+        args: ["log", "--vcs", "jj", "--color", "never", "--no-extensions"],
+        cwd,
+        env,
+        cols: 80,
+        rows: 26,
+      });
+      try {
+        const initial = await session.waitForText(/~ older history hidden/, { timeout: 15_000 });
+        for (const subject of [
+          "Feature current work",
+          "Mainline boundary",
+          "Old-based branch",
+          "Protected branch",
+        ])
+          expect(initial).toContain(subject);
+        expect(initial).not.toContain("Hidden older history");
+        expect(initial.match(/~ older history hidden/g)).toHaveLength(1);
+        expect(initial.split("\n").filter((line) => line.trim() === "~")).toHaveLength(2);
+        const stubRow = session.getTerminalData().lines.findIndex(
+          (line) =>
+            line.spans
+              .map((span) => span.text)
+              .join("")
+              .trim() === "~",
+        );
+        expect(stubRow).toBeGreaterThan(0);
+        session.writeRaw(`\x1b[<0;3;${stubRow + 1}M\x1b[<0;3;${stubRow + 1}m`);
+        const review = await harness.pressAndWaitForText(
+          session,
+          "enter",
+          /export const feature = true/,
+          { timeout: 15_000 },
+        );
+        expect(review).not.toContain("export const old = true");
+        await harness.pressAndWaitForSnapshot(
+          session,
+          "q",
+          (text) => text.includes("Enter open") && text.includes("~ older history hidden"),
+          15_000,
+        );
+        session.writeRaw("v");
+        await session.waitForText(/1 commit selected/, { timeout: 5_000 });
+        session.writeRaw("j");
+        await session.waitForText(/2 commits selected/, { timeout: 5_000 });
+        await session.press("escape");
+        await session.press("f10");
+        await session.press("right");
+        await session.press("down");
+        await session.press("enter");
+        const graph = await harness.waitForSnapshot(
+          session,
+          (text) => text.includes("●") && text.includes("~ older history hidden"),
+          5_000,
+        );
+        expect(graph).not.toContain("Hidden older history");
+        session.resize({ cols: 40, rows: 20 });
+        await harness.waitForSnapshot(
+          session,
+          (text) => text.includes("~ older history hidden"),
+          5_000,
+        );
+        await session.press("end");
+        const bottom = await harness.waitForSnapshot(
+          session,
+          (text) =>
+            text.includes("Mainline boundary") &&
+            text.split("\n").some((line) => line.trim().includes("~") && !line.includes("hidden")),
+          5_000,
+        );
+        expect(bottom).not.toContain("Hidden older history");
+        session.resize({ cols: 120, rows: 26 });
+        await harness.waitForSnapshot(
+          session,
+          (text) => text.includes("Mainline boundary") && text.includes("~ older history hidden"),
+          5_000,
+        );
+        const mainReview = await harness.pressAndWaitForText(
+          session,
+          "enter",
+          /export const main = true/,
+          { timeout: 15_000 },
+        );
+        expect(mainReview).not.toContain("export const old = true");
+      } finally {
+        session.close();
+      }
+    },
+  );
+
+  (Bun.which("jj") ? test : test.skip)(
+    "HK-93 fallback survives transient copy and refresh and wraps without displacing status",
+    async () => {
+      const { cwd, jj, env } = createHk93PtyTestRepo();
+      jj("config", "set", "--repo", 'revset-aliases."trunk()"', "none()");
+      const session = await harness.launchHunk({
+        args: ["log", "--vcs", "jj", "--color", "never", "--no-extensions"],
+        cwd,
+        env,
+        cols: 80,
+        rows: 28,
+      });
+      try {
+        const initial = await session.waitForText(
+          /Mainline unavailable; showing visible history./,
+          { timeout: 15_000 },
+        );
+        expect(initial).toContain("Hidden older history");
+        expect(initial).not.toContain("~ older history hidden");
+        const copied = await harness.pressAndWaitForText(session, "y", /Copied/, {
+          timeout: 5_000,
+        });
+        expect(copied).toContain("Mainline unavailable; showing visible history.");
+        session.resize({ cols: 40, rows: 24 });
+        const narrow = await harness.waitForSnapshot(
+          session,
+          (text) =>
+            text.includes("Mainline unavailable; showing visible") &&
+            text.includes("history.") &&
+            text.includes("Jujutsu · 5 commits"),
+          5_000,
+        );
+        expect(narrow).not.toContain("~ older history hidden");
+        jj("config", "set", "--repo", 'revset-aliases."trunk()"', "main");
+        session.resize({ cols: 120, rows: 28 });
+        await session.waitIdle();
+        await harness.pressAndWaitForText(session, "r", /History refreshed/, { timeout: 10_000 });
+        const bounded = await session.text({ immediate: true });
+        expect(bounded).not.toContain("Mainline unavailable");
+        expect(bounded).not.toContain("Hidden older history");
+        jj("config", "set", "--repo", 'revset-aliases."trunk()"', "unknown_function()");
+        expect(() =>
+          jj("log", "--no-graph", "-r", "present(trunk())", "-T", "commit_id"),
+        ).toThrow();
+        await harness.pressAndWaitForText(session, "r", /Config error:/, { timeout: 5_000 });
+        expect(await session.text({ immediate: true })).toContain("~ older history hidden");
+      } finally {
+        session.close();
+      }
+    },
+  );
+
+  (Bun.which("jj") ? test : test.skip)(
+    "HK-93 empty filtered fallback explains ambiguity without inventing cutoff rows",
+    async () => {
+      const { cwd, jj, env } = createHk93PtyTestRepo();
+      jj("config", "set", "--repo", 'revset-aliases."trunk()"', "main | feature");
+      const session = await harness.launchHunk({
+        args: [
+          "log",
+          "--vcs",
+          "jj",
+          "--grep",
+          "no-such-subject",
+          "--color",
+          "never",
+          "--no-extensions",
+        ],
+        cwd,
+        env,
+        cols: 80,
+        rows: 20,
+      });
+      try {
+        const empty = await session.waitForText(/Mainline ambiguous; showing visible history./, {
+          timeout: 15_000,
+        });
+        expect(empty).toContain("No commits found.");
+        expect(empty).not.toContain("~ older history hidden");
+      } finally {
+        session.close();
+      }
+    },
+  );
+});
+
+(Bun.which("jj") ? test : test.skip)(
+  "HK-93 oversized cutoff tails are reachable with keyboard and mouse without inventing commits",
+  async () => {
+    const { cwd, jj, env } = createHk93PtyTestRepo();
+    jj("config", "set", "--repo", 'revset-aliases."immutable_heads()"', "none()");
+    const parents: string[] = [];
+    for (let index = 0; index < 22; index += 1) {
+      jj("new", "root()", "-m", `Older parent ${index}`);
+      parents.push(jj("log", "--no-graph", "-r", "@", "-T", "commit_id"));
+    }
+    jj("new", ...parents, "-m", "Tall mainline boundary");
+    const main = jj("log", "--no-graph", "-r", "@", "-T", "commit_id");
+    jj("new", ...parents, "-m", "Tall cutoff commit");
+    jj("config", "set", "--repo", 'revset-aliases."trunk()"', main);
+    const session = await harness.launchHunk({
+      args: ["log", "--vcs", "jj", "--color", "never", "--no-extensions"],
+      cwd,
+      env,
+      cols: 80,
+      rows: 24,
+    });
+    try {
+      const initial = await session.waitForText(/Tall cutoff commit/, { timeout: 15_000 });
+      expect(initial).toContain("~ older history hidden");
+      const first = await harness.pressAndWaitForText(session, "y", /Copied/, { timeout: 5_000 });
+      const identity = first.match(/Copied ([a-z0-9]+)/)?.[1];
+      expect(identity).toBeDefined();
+      await session.press("pagedown");
+      const tail = await harness.waitForSnapshot(
+        session,
+        (text) => !text.includes("Tall cutoff commit") && text.includes("~ older history hidden"),
+        5_000,
+      );
+      expect(tail.split("\n").filter((line) => line.trim() === "~").length).toBeGreaterThan(15);
+      await session.press("y");
+      expect(await session.text({ immediate: true })).toContain(`Copied ${identity}`);
+      await session.scrollUp(1);
+      await session.scrollUp(1);
+      await harness.waitForSnapshot(session, (text) => text.includes("Tall cutoff commit"), 5_000);
+      await session.press("y");
+      expect(await session.text({ immediate: true })).toContain(`Copied ${identity}`);
+      await session.press("pagedown");
+      await session.press("pagedown");
+      await harness.waitForSnapshot(
+        session,
+        (text) => text.includes("Tall mainline boundary"),
+        5_000,
+      );
+    } finally {
+      session.close();
+    }
+  },
+);

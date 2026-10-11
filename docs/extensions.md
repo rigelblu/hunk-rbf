@@ -312,8 +312,8 @@ and retires the replaced instance at that explicit ownership boundary.
 
 ### `hunk.apiVersion`
 
-The API generation this Hunk speaks (currently `29`). Branch on it if you want
-one file to support several Hunk versions. Version 29 adds optional history-watch hooks; version 28 adds host-owned syntax highlighting for
+The API generation this Hunk speaks (currently `31`). Branch on it if you want
+one file to support several Hunk versions. Version 31 adds optional history scope and direct cutoff-parent facts; version 30 adds optional `isEmpty` history metadata; version 29 adds optional history-watch hooks; version 28 adds host-owned syntax highlighting for
 file-view code documents; version 27 adds `ctx.selection.files`, the visible files in review order;
 version 26 adds the status line (`ctx.statusLine` items and `ctx.prompts.line()` inline prompts);
 version 25 adds Promise-returning watch signatures and watch cancellation; version 24 adds review
@@ -586,6 +586,22 @@ adapter. Add a `revision-show` operation for `revision-show` actions and a `work
 operation that accepts `rangeEndpoints` for `revision-range` actions before advertising interactive
 opening. Otherwise Enter reports that the corresponding review operation is unsupported.
 
+API version 31 adds optional `source.scope` and `commit.graphCutoffParentRevisionIds`.
+Scope is either `{ kind: "bounded", boundaryRevisionId }` or
+`{ kind: "fallback", reason: "unavailable" | "ambiguous" }`. Resolve it once when opening
+the source, using the same immutable repository snapshot as its records. Hunk copies and
+validates the metadata, then publishes it with the first accepted page or a successfully
+accepted refresh. Omit scope when the source makes no boundary claim.
+
+Cutoff parents are a unique, ordered subset of the commit's real `parentRevisionIds`.
+They identify only direct edges deliberately excluded by that boundary. Keep real review
+parents intact; do not classify roots, unloaded pages, ordinary filters, limits, or clipped
+graph lanes as cutoffs. Explicit `graphParentRevisionIds` must not include cutoff parents.
+The shared graph planner terminates each cutoff locally and keeps it out of subsequent
+page checkpoints. Sources omitting both new fields retain their existing behavior.
+Extensions requiring these facts should declare `{ "hunk": { "apiVersion": 31 } }`;
+extensions supporting earlier hosts can branch on `hunk.apiVersion`.
+
 API version 29 adds optional
 `history.watchPlan(input, context)` and `history.watchSignature(input, context)` hooks. Extensions
 that require these hooks should declare `{ "hunk": { "apiVersion": 29 } }`; an extension that
@@ -612,7 +628,7 @@ Jujutsu change id); Hunk treats it as metadata and continues to key graph and re
 immutable `revisionId`. A `head` decoration carries an optional `attachedLocalBranch`; use that field
 rather than embedding an arrow or branch identity in its display label.
 
-The isolated HK-91 candidate reserves API 30 for optional `isEmpty?: boolean` history metadata.
+API version 30 adds optional `isEmpty?: boolean` history metadata.
 `true` means the provider knows the revision contributes no changes; `false` means known nonempty;
 omission means unknown. The provider owns comparison semantics. Hunk validates Boolean values and
 uses the fact only for display titles; semantic subjects, bodies, and identifiers stay unchanged.

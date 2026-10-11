@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { createJjVcsAdapter } from "./index";
 import {
   buildJjHistoryArgs,
+  getJjHistoryWatchSignature,
   buildJjHistoryRevset,
   jjHistoryUsesBoundaryTopology,
   loadJjReviewCommits,
@@ -14,6 +15,7 @@ import {
 } from "./history";
 
 const tempDirs: string[] = [];
+const initialConfigHome = process.env.XDG_CONFIG_HOME;
 const jjTest = Bun.which("jj") ? test : test.skip;
 const unixTest = process.platform === "win32" ? test.skip : test;
 
@@ -48,6 +50,8 @@ function jj(repo: string, ...args: string[]) {
 }
 
 afterEach(() => {
+  if (initialConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
+  else process.env.XDG_CONFIG_HOME = initialConfigHome;
   for (const repo of tempDirs.splice(0)) rmSync(repo, { recursive: true, force: true });
 });
 
@@ -73,7 +77,7 @@ describe("Jujutsu history production", () => {
       );
       expect(jj(repo, "diff", "--summary", "--from", "left", "--to", "@")).toContain("right.txt");
       for (const firstParent of [false, true]) {
-        const source = openJjHistory({ revision: "@", firstParent }, { cwd: repo });
+        const source = await openJjHistory({ revision: "@", firstParent }, { cwd: repo });
         try {
           const page = await source.read({ limit: 1 });
           expect(page.commits[0]).toMatchObject({ subject: "Empty merge", isEmpty: true });
@@ -301,6 +305,13 @@ case "$*" in
     echo "${temp}"
     exit 0
     ;;
+  *" op log "*)
+    echo "${"0".repeat(128)}"
+    exit 0
+    ;;
+  *"present(trunk())"*)
+    exit 0
+    ;;
 esac
 printf '%s\\0%s\\0%s\\0%s\\0' "${"a".repeat(40)}" "aaaaaaaa" "${"k".repeat(32)}" ""
 printf '%s\\0%s\\0%s\\0%s\\0' "Ada" "" "2026-01-01T00:00:00+00:00" "First split"
@@ -318,7 +329,7 @@ printf 'se\\0'
     writeFileSync(executable, script);
     chmodSync(executable, 0o755);
 
-    const source = openJjHistory({}, { cwd: temp, jjExecutable: executable });
+    const source = await openJjHistory({}, { cwd: temp, jjExecutable: executable });
     const page = await source.read({ limit: 4 });
     await source.close();
 
@@ -372,7 +383,7 @@ printf 'se\\0'
       jj(repo, "bookmark", "create", "main", "-r", "@-");
       jj(repo, "tag", "set", "v1.0.0", "-r", "@-");
 
-      const source = openJjHistory({ maxCount: 4 }, { cwd: repo });
+      const source = await openJjHistory({ maxCount: 4 }, { cwd: repo });
       const commits = [];
       for (;;) {
         const page = await source.read({ limit: 1 });
@@ -400,7 +411,7 @@ printf 'se\\0'
         }
       }
 
-      const filtered = openJjHistory({ pathspecs: ["history.txt"] }, { cwd: repo });
+      const filtered = await openJjHistory({ pathspecs: ["history.txt"] }, { cwd: repo });
       const filteredPage = await filtered.read({ limit: 4 });
       await filtered.close();
       expect(filteredPage.commits.map((commit) => commit.isEmpty)).toEqual([false, false]);
@@ -410,7 +421,7 @@ printf 'se\\0'
       expect(filteredWithParent?.parentRevisionIds).toHaveLength(1);
       expect(filteredWithParent?.graphParentRevisionIds).toEqual([]);
 
-      const cancelled = openJjHistory({}, { cwd: repo });
+      const cancelled = await openJjHistory({}, { cwd: repo });
       const abort = new AbortController();
       abort.abort(new Error("cancel fixture"));
       await expect(cancelled.read({ limit: 1, signal: abort.signal })).rejects.toThrow(
@@ -430,5 +441,132 @@ printf 'se\\0'
       expect(rangePlan.kind === "revision-range" && rangePlan.fromRevisionId).toMatch(/^0+$/);
     },
     20_000,
+  );
+});
+
+/** Create old-based and protected independent work around a configured mainline. */
+function createHk93TestRepo() {
+  const configHome = mkdtempSync(join(tmpdir(), "hunk-hk93-jj-config-"));
+  tempDirs.push(configHome);
+  process.env.XDG_CONFIG_HOME = configHome;
+  const repo = createJjOnlyTestRepo();
+  jj(repo, "config", "set", "--repo", 'revset-aliases."trunk()"', "none()");
+  const add = (label: string, ...parents: string[]) => {
+    jj(repo, "new", ...parents);
+    writeFileSync(join(repo, `${label}.txt`), label);
+    jj(repo, "describe", "-m", label);
+    const id = jj(repo, "log", "--no-graph", "-r", "@", "-T", "commit_id").trim();
+    jj(repo, "bookmark", "create", label, "-r", id);
+    return id;
+  };
+  const olda = add("olda", "root()");
+  const oldb = add("oldb", olda);
+  const main = add("main", oldb);
+  const feature = add("feature", main);
+  const sibling = add("sibling", olda);
+  const other = add("other", main);
+  const merge = add("merge", feature, sibling);
+  jj(repo, "config", "set", "--repo", 'revset-aliases."trunk()"', "main");
+  jj(repo, "config", "set", "--repo", 'revset-aliases."immutable_heads()"', "main | other");
+  return { repo, olda, oldb, main, feature, sibling, other, merge };
+}
+
+/** Drain the actual provider through arbitrary bounded reads and retain its facts. */
+async function readHk93TestHistory(
+  repo: string,
+  input: Parameters<typeof openJjHistory>[0] = {},
+  limit = 2,
+) {
+  const source = await openJjHistory(input, { cwd: repo });
+  const commits: Awaited<ReturnType<typeof source.read>>["commits"] = [];
+  try {
+    for (;;) {
+      const page = await source.read({ limit });
+      commits.push(...page.commits);
+      if (page.done) break;
+    }
+    return { commits, scope: source.scope };
+  } finally {
+    await source.close();
+  }
+}
+
+describe("HK-93 focused JJ history", () => {
+  jjTest(
+    "HK-93 bounded scope retains protected and old-based work with true direct cuts",
+    async () => {
+      const f = createHk93TestRepo();
+      const result = await readHk93TestHistory(f.repo);
+      expect(result.scope).toEqual({ kind: "bounded", boundaryRevisionId: f.main });
+      expect(new Set(result.commits.map((commit) => commit.subject))).toEqual(
+        new Set(["merge", "other", "sibling", "feature", "main"]),
+      );
+      expect(
+        result.commits.find((commit) => commit.subject === "sibling")?.graphCutoffParentRevisionIds,
+      ).toEqual([f.olda]);
+      const main = result.commits.find((commit) => commit.subject === "main")!;
+      expect(main.graphCutoffParentRevisionIds).toEqual([f.oldb]);
+      expect(main.parentRevisionIds).toEqual([f.oldb]);
+      expect(
+        result.commits.find((commit) => commit.subject === "merge")?.parentRevisionIds,
+      ).toEqual([f.feature, f.sibling]);
+      const widePages = await readHk93TestHistory(f.repo, {}, 256);
+      expect(widePages).toEqual(result);
+    },
+  );
+
+  jjTest("HK-93 boundary outcomes distinguish fallback from invalid configuration", async () => {
+    const f = createHk93TestRepo();
+    for (const alias of ["none()", "root()", "present(absent)"]) {
+      jj(f.repo, "config", "set", "--repo", 'revset-aliases."trunk()"', alias);
+      const result = await readHk93TestHistory(f.repo);
+      expect(result.scope).toEqual({ kind: "fallback", reason: "unavailable" });
+      expect(result.commits.map((commit) => commit.subject)).toContain("olda");
+      expect(result.commits.every((commit) => !commit.graphCutoffParentRevisionIds)).toBe(true);
+    }
+    jj(f.repo, "config", "set", "--repo", 'revset-aliases."trunk()"', "main | other");
+    expect((await readHk93TestHistory(f.repo)).scope).toEqual({
+      kind: "fallback",
+      reason: "ambiguous",
+    });
+    jj(f.repo, "config", "set", "--repo", 'revset-aliases."trunk()"', "unknown_function()");
+    await expect(readHk93TestHistory(f.repo)).rejects.toThrow();
+  });
+
+  jjTest(
+    "HK-93 scope precedence preserves explicit ancestry and narrows only bounded defaults",
+    async () => {
+      const f = createHk93TestRepo();
+      for (const input of [{ all: true }, { revision: "@" }]) {
+        const result = await readHk93TestHistory(f.repo, input);
+        expect(result.scope).toBeUndefined();
+        expect(result.commits.map((commit) => commit.subject)).toContain("olda");
+      }
+      const filtered = await readHk93TestHistory(f.repo, { grep: "sibling" });
+      expect(filtered.commits.map((commit) => commit.subject)).toEqual(["sibling"]);
+      expect(filtered.commits[0]?.graphParentRevisionIds).toEqual([]);
+      expect(filtered.commits[0]?.graphCutoffParentRevisionIds).toEqual([f.olda]);
+      expect((await readHk93TestHistory(f.repo, { maxCount: 0 })).commits).toEqual([]);
+      expect((await readHk93TestHistory(f.repo, { maxCount: 1 })).commits).toHaveLength(1);
+      const first = await readHk93TestHistory(f.repo, { firstParent: true });
+      expect(first.commits.map((commit) => commit.subject)).not.toContain("sibling");
+      expect(first.commits.map((commit) => commit.subject)).toContain("other");
+    },
+  );
+
+  jjTest(
+    "HK-93 scope refresh fingerprints a moved boundary even when filters emit no rows",
+    async () => {
+      const f = createHk93TestRepo();
+      const before = await getJjHistoryWatchSignature({ grep: "nothing-matches" }, { cwd: f.repo });
+      jj(f.repo, "config", "set", "--repo", 'revset-aliases."trunk()"', "feature");
+      const after = await getJjHistoryWatchSignature({ grep: "nothing-matches" }, { cwd: f.repo });
+      expect(before).not.toBe(after);
+      const abort = new AbortController();
+      abort.abort(new Error("preparation cancelled"));
+      await expect(openJjHistory({}, { cwd: f.repo, signal: abort.signal })).rejects.toThrow(
+        "preparation cancelled",
+      );
+    },
   );
 });

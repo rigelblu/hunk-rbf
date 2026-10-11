@@ -169,6 +169,7 @@ export type {
   ExtensionVcsHistoryReviewAction,
   ExtensionVcsHistoryReviewOptions,
   ExtensionVcsHistorySource,
+  ExtensionVcsHistoryScope,
   ExtensionVcsLoadContext,
   ExtensionVcsOperation,
   ExtensionVcsOperations,

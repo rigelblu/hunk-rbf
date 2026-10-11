@@ -9,6 +9,7 @@ import {
   type ExtensionVcsHistoryRangeSelection,
   type ExtensionVcsHistoryReviewOptions,
   type ExtensionVcsHistorySource,
+  type ExtensionVcsHistoryScope,
 } from "hunkdiff/extension";
 import { runAbortableCommand } from "@hunk/vcs/async-process";
 import { normalizePathForOS } from "@hunk/vcs/path";
@@ -60,14 +61,25 @@ function requireHistoryRevision(value: string) {
 }
 
 /** Build the provider-owned revset while preserving honest Jujutsu semantics. */
-export function buildJjHistoryRevset(input: ExtensionVcsHistoryInput) {
+export function buildJjHistoryRevset(
+  input: ExtensionVcsHistoryInput,
+  scope?: ExtensionVcsHistoryScope,
+) {
   const start = input.revision
     ? `(${requireHistoryRevision(input.revision)})`
     : input.all
       ? "visible_heads()"
       : "@";
   const traversal = input.firstParent ? `first_ancestors(${start})` : `ancestors(${start})`;
-  const filters = [`(${traversal} ~ root())`];
+  const selection =
+    scope?.kind === "bounded"
+      ? input.firstParent
+        ? `((first_ancestors(visible_heads()) ~ ancestors(${scope.boundaryRevisionId})) | ${scope.boundaryRevisionId})`
+        : `((${scope.boundaryRevisionId}..visible_heads()) | ${scope.boundaryRevisionId})`
+      : scope?.kind === "fallback"
+        ? `${input.firstParent ? "first_ancestors" : "ancestors"}(visible_heads())`
+        : traversal;
+  const filters = [`(${selection} ~ root())`];
   if (input.author !== undefined) {
     filters.push(`author(substring:${quoteRevsetString(input.author)})`);
   }
@@ -84,51 +96,100 @@ export function buildJjHistoryRevset(input: ExtensionVcsHistoryInput) {
 }
 
 /** Build one deterministic, non-mutating `jj log` invocation. */
-export function buildJjHistoryArgs(input: ExtensionVcsHistoryInput) {
+export function buildJjHistoryArgs(input: ExtensionVcsHistoryInput, prepared?: PreparedJjHistory) {
   const args = [
     "--ignore-working-copy",
+    ...(prepared ? ["--at-op", prepared.operationId] : []),
     "--no-pager",
     "--color",
     "never",
     "log",
     "--no-graph",
     "--revisions",
-    buildJjHistoryRevset(input),
+    buildJjHistoryRevset(input, prepared?.scope),
     "--template",
-    JJ_HISTORY_TEMPLATE,
+    prepared?.template ?? JJ_HISTORY_TEMPLATE,
   ];
   if (input.maxCount !== undefined) args.push("--limit", String(input.maxCount));
   if (input.pathspecs?.length) args.push("--", ...input.pathspecs);
   return args;
 }
 
-/** Fingerprint the visible commit fields and decorations selected by the same Jujutsu revset. */
-export async function getJjHistoryWatchSignature(
+/** One immutable operation and boundary shared by selection and cutoff classification. */
+interface PreparedJjHistory {
+  operationId: string;
+  scope?: ExtensionVcsHistoryScope;
+  template: string;
+  fieldsPerCommit: number;
+}
+
+/** Resolve configured mainline once and keep all subsequent queries on that repository operation. */
+async function prepareJjHistory(
   input: ExtensionVcsHistoryInput,
-  { cwd, jjExecutable = "jj", signal }: JjHistoryOptions,
-) {
-  const result = await runAbortableCommand(
+  options: JjHistoryOptions,
+): Promise<PreparedJjHistory> {
+  options.signal?.throwIfAborted();
+  const operationId = (
+    await runJjHistoryQuery(
+      ["op", "log", "--no-graph", "--limit", "1", "--template", 'id ++ "\\n"'],
+      options,
+    )
+  ).trim();
+  if (!/^[0-9a-f]{128}$/.test(operationId))
+    throw new Error("Jujutsu returned an invalid operation identity.");
+  const plan: PreparedJjHistory = {
+    operationId,
+    template: JJ_HISTORY_TEMPLATE,
+    fieldsPerCommit: HISTORY_FIELDS_PER_COMMIT,
+  };
+  if (input.revision || input.all) return plan;
+  const output = await runJjHistoryQuery(
     [
-      jjExecutable,
-      "--ignore-working-copy",
-      "--no-pager",
-      "--color",
-      "never",
+      "--at-op",
+      operationId,
       "log",
       "--no-graph",
       "--revisions",
-      buildJjHistoryRevset(input),
-      ...(input.maxCount !== undefined ? ["--limit", String(input.maxCount)] : []),
+      "present(trunk())",
+      "--limit",
+      "2",
       "--template",
-      JJ_HISTORY_TEMPLATE,
-      ...(input.pathspecs?.length ? ["--", ...input.pathspecs] : []),
+      'commit_id ++ "\\n"',
     ],
-    { cwd, signal },
+    options,
   );
-  if (result.exitCode !== 0) {
-    throw new Error(result.stderr.trim() || "Jujutsu could not read history.");
+  const boundaries = output.trim() ? output.trim().split("\n") : [];
+  if (boundaries.some((id) => !FULL_COMMIT_ID_PATTERN.test(id)))
+    throw new Error("Jujutsu returned an invalid mainline identity.");
+  if (boundaries.length !== 1 || ROOT_COMMIT_ID_PATTERN.test(boundaries[0]!)) {
+    plan.scope = Object.freeze({
+      kind: "fallback",
+      reason: boundaries.length > 1 ? "ambiguous" : "unavailable",
+    });
+    return plan;
   }
-  return result.stdout;
+  const boundaryRevisionId = boundaries[0]!;
+  plan.scope = Object.freeze({ kind: "bounded", boundaryRevisionId });
+  const excluded = `ancestors(${boundaryRevisionId}) ~ (${boundaryRevisionId} | root())`;
+  plan.template += ` ++ parents.filter(|p| p.contained_in(${JSON.stringify(excluded)})).map(|p| p.commit_id()).join(" ") ++ "\\0"`;
+  plan.fieldsPerCommit += 1;
+  return plan;
+}
+
+/** Fingerprint selected fields and scope, including boundary moves hidden by display filters. */
+export async function getJjHistoryWatchSignature(
+  input: ExtensionVcsHistoryInput,
+  options: JjHistoryOptions,
+) {
+  const prepared = await prepareJjHistory(input, options);
+  const { cwd, jjExecutable = "jj", signal } = options;
+  const result = await runAbortableCommand([jjExecutable, ...buildJjHistoryArgs(input, prepared)], {
+    cwd,
+    signal,
+  });
+  if (result.exitCode !== 0)
+    throw new Error(result.stderr.trim() || "Jujutsu could not read history.");
+  return prepared.scope ? `${JSON.stringify(prepared.scope)}\n${result.stdout}` : result.stdout;
 }
 
 /** Split a Jujutsu description into the medium-format subject and body fields. */
@@ -159,16 +220,17 @@ export function parseJjHistory(
   text: string,
   firstParent = false,
   omitGraphParents = false,
+  fieldsPerCommit = HISTORY_FIELDS_PER_COMMIT,
 ): ExtensionVcsHistoryCommit[] {
   if (!text) return [];
   const fields = text.split("\0");
-  if (fields.length % HISTORY_FIELDS_PER_COMMIT === 1 && fields.at(-1) === "") fields.pop();
-  if (fields.length % HISTORY_FIELDS_PER_COMMIT !== 0) {
+  if (fields.length % fieldsPerCommit === 1 && fields.at(-1) === "") fields.pop();
+  if (fields.length % fieldsPerCommit !== 0) {
     throw new Error("Jujutsu returned a truncated history record.");
   }
 
   const commits: ExtensionVcsHistoryCommit[] = [];
-  for (let offset = 0; offset < fields.length; offset += HISTORY_FIELDS_PER_COMMIT) {
+  for (let offset = 0; offset < fields.length; offset += fieldsPerCommit) {
     const revisionId = fields[offset]!;
     const displayId = fields[offset + 1]!;
     const logicalId = fields[offset + 2]!;
@@ -200,6 +262,22 @@ export function parseJjHistory(
       throw new Error("Jujutsu returned an invalid history parent commit id.");
     }
 
+    const permittedParents = firstParent ? allParents.slice(0, 1) : allParents;
+    const cutoffParents =
+      fieldsPerCommit > HISTORY_FIELDS_PER_COMMIT
+        ? fields[offset + HISTORY_FIELDS_PER_COMMIT]!.split(" ").filter(Boolean)
+        : [];
+    if (
+      cutoffParents.some(
+        (parent) => !FULL_COMMIT_ID_PATTERN.test(parent) || !allParents.includes(parent),
+      ) ||
+      new Set(cutoffParents).size !== cutoffParents.length
+    ) {
+      throw new Error("Jujutsu returned an invalid history cutoff parent id.");
+    }
+    const graphCutoffParentRevisionIds = cutoffParents.filter((parent) =>
+      permittedParents.includes(parent),
+    );
     const decorations: ExtensionVcsHistoryDecoration[] = [];
     if (currentWorkingCopy === "1") decorations.push({ kind: "head", label: "@" });
     appendDecorations(decorations, localBookmarks, "local-branch");
@@ -210,7 +288,8 @@ export function parseJjHistory(
     commits.push({
       revisionId,
       displayId,
-      parentRevisionIds: firstParent ? allParents.slice(0, 1) : allParents,
+      parentRevisionIds: permittedParents,
+      ...(graphCutoffParentRevisionIds.length ? { graphCutoffParentRevisionIds } : {}),
       ...(omitGraphParents ? { graphParentRevisionIds: [] } : {}),
       ...splitDescription(description),
       authorName: authorName || "Unknown author",
@@ -357,14 +436,19 @@ export function jjHistoryUsesBoundaryTopology(input: ExtensionVcsHistoryInput) {
 }
 
 /** Open a bounded, cancellable cursor over one long-lived `jj log` process. */
-export function openJjHistory(
+export async function openJjHistory(
   input: ExtensionVcsHistoryInput,
-  { cwd, jjExecutable = "jj" }: JjHistoryOptions,
-): ExtensionVcsHistorySource & { repoRoot: string } {
+  options: JjHistoryOptions,
+): Promise<ExtensionVcsHistorySource & { repoRoot: string }> {
+  const { cwd, jjExecutable = "jj", signal } = options;
+  signal?.throwIfAborted();
   const repoRoot = resolveHistoryRepoRoot({ cwd, jjExecutable });
+  const prepared = await prepareJjHistory(input, { ...options, cwd: repoRoot });
+  signal?.throwIfAborted();
   if (input.maxCount === 0) {
     return {
       repoRoot,
+      ...(prepared.scope ? { scope: prepared.scope } : {}),
       async read() {
         return { commits: [], done: true };
       },
@@ -373,7 +457,7 @@ export function openJjHistory(
   }
 
   const omitGraphParents = jjHistoryUsesBoundaryTopology(input);
-  const child = spawn(jjExecutable, buildJjHistoryArgs(input), {
+  const child = spawn(jjExecutable, buildJjHistoryArgs(input, prepared), {
     cwd: repoRoot,
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
@@ -406,9 +490,14 @@ export function openJjHistory(
       if (delimiter < 0) break;
       fields.push(buffered.slice(0, delimiter));
       buffered = buffered.slice(delimiter + 1);
-      if (fields.length === HISTORY_FIELDS_PER_COMMIT) {
+      if (fields.length === prepared.fieldsPerCommit) {
         queue.push(
-          ...parseJjHistory(`${fields.join("\0")}\0`, input.firstParent, omitGraphParents),
+          ...parseJjHistory(
+            `${fields.join("\0")}\0`,
+            input.firstParent,
+            omitGraphParents,
+            prepared.fieldsPerCommit,
+          ),
         );
         fields.length = 0;
       }
@@ -480,6 +569,7 @@ export function openJjHistory(
 
   return {
     repoRoot,
+    ...(prepared.scope ? { scope: prepared.scope } : {}),
     async read({ limit, signal }) {
       if (reading) throw new Error("Concurrent Jujutsu history reads are not supported.");
       if (signal?.aborted) {

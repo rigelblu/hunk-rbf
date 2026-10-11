@@ -287,3 +287,39 @@ describe("known-empty responsive titles", () => {
     }
   });
 });
+
+test("HK-93 cutoff topology reserves one nonselectable row per edge in every presentation", () => {
+  const cut = planHistoryPage([
+    {
+      ...commit,
+      graphParentRevisionIds: [],
+      graphCutoffParentRevisionIds: commit.parentRevisionIds,
+    },
+  ]).rows[0]!;
+  for (const width of [40, 80, 120]) {
+    for (const graph of [false, true]) {
+      const projected = projectResponsiveLogRow({
+        row: cut,
+        width,
+        layout: resolveLogResponsiveLayout(width, 24),
+        presentation: { ...presentation, graph },
+        now,
+      });
+      expect(projected.cutoffs).toHaveLength(2);
+      expect(
+        projected.cutoffs.every((line) => line.includes("~") && measureTextWidth(line) <= width),
+      ).toBe(true);
+      if (!graph) expect(projected.cutoffs).toEqual(["~", "~"]);
+    }
+  }
+  const crowded = { ...cut, cutoffLanes: [40, 41] };
+  expect(
+    projectResponsiveLogRow({
+      row: crowded,
+      width: 40,
+      layout: resolveLogResponsiveLayout(40, 24),
+      presentation,
+      now,
+    }).cutoffs,
+  ).toEqual(["~", "~"]);
+});

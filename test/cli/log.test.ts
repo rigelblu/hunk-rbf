@@ -64,8 +64,10 @@ function createRepo() {
 /** Create a JJ-only fixture with no colocated Git worktree. */
 function createJjRepo() {
   const cwd = mkdtempSync(join(tmpdir(), "hunk-log-jj-test-"));
-  tempDirs.push(cwd);
-  expect(run(["jj", "git", "init", "--no-colocate", cwd], tmpdir()).code).toBe(0);
+  const configHome = mkdtempSync(join(tmpdir(), "hunk-log-jj-config-"));
+  const env = { ...process.env, XDG_CONFIG_HOME: configHome };
+  tempDirs.push(cwd, configHome);
+  expect(run(["jj", "git", "init", "--no-colocate", cwd], tmpdir(), env).code).toBe(0);
   const jj = (...args: string[]) =>
     run(
       [
@@ -77,7 +79,9 @@ function createJjRepo() {
         ...args,
       ],
       cwd,
+      env,
     );
+  expect(jj("config", "set", "--repo", 'revset-aliases."trunk()"', "none()").code).toBe(0);
   writeFileSync(join(cwd, "history.txt"), "one\n");
   expect(jj("commit", "-m", "JJ first commit").code).toBe(0);
   writeFileSync(join(cwd, "history.txt"), "two\n");
@@ -85,7 +89,7 @@ function createJjRepo() {
   expect(jj("bookmark", "create", "main", "-r", "@-").code).toBe(0);
   expect(jj("tag", "set", "v2.0.0", "-r", "@-").code).toBe(0);
   expect(existsSync(join(cwd, ".git"))).toBe(false);
-  return cwd;
+  return { cwd, env };
 }
 
 afterEach(() => {
@@ -210,11 +214,15 @@ describe("hunk log CLI contract", () => {
   jjTest(
     "uses the bundled JJ provider in a JJ-only repository",
     () => {
-      const cwd = createJjRepo();
-      const result = run(["bun", "run", mainPath, "log", "--vcs", "jj", "--color", "never"], cwd);
+      const { cwd, env } = createJjRepo();
+      const result = run(
+        ["bun", "run", mainPath, "log", "--vcs", "jj", "--color", "never"],
+        cwd,
+        env,
+      );
 
       expect(result.code).toBe(0);
-      expect(result.stderr).toBe("");
+      expect(result.stderr).toBe("hunk: Mainline unavailable; showing visible history.\n");
       expect(result.stdout).toContain("JJ second commit");
       expect(result.stdout).toContain("JJ first commit");
       expect(result.stdout).toContain("JJ body.");
@@ -225,6 +233,43 @@ describe("hunk log CLI contract", () => {
       expect(result.stdout).not.toContain("\x1b");
     },
     20_000,
+  );
+
+  jjTest(
+    "HK-93 projection parity preserves bounded, explicit and empty fallback CLI output",
+    () => {
+      const { cwd, env } = createJjRepo();
+      const args = ["bun", "run", mainPath, "log", "--vcs", "jj", "--color", "never"];
+      expect(
+        run(["jj", "config", "set", "--repo", 'revset-aliases."trunk()"', "main"], cwd, env).code,
+      ).toBe(0);
+      const bounded = run(args, cwd, env);
+      expect(bounded.code).toBe(0);
+      expect(bounded.stderr).toBe("");
+      expect(bounded.stdout).toContain("JJ second commit");
+      expect(bounded.stdout).not.toContain("JJ first commit");
+      expect(bounded.stdout.match(/~ older history hidden/g)).toHaveLength(1);
+      const compact = run([...args, "--format", "compact", "--ascii"], cwd, env);
+      expect(compact.code).toBe(0);
+      expect(compact.stderr).toBe("");
+      expect(compact.stdout).toContain("JJ second commit");
+      expect(compact.stdout).not.toContain("JJ first commit");
+      expect(compact.stdout.match(/~ older history hidden/g)).toHaveLength(1);
+      const explicit = run([...args, "--all"], cwd, env);
+      expect(explicit.code).toBe(0);
+      expect(explicit.stderr).toBe("");
+      expect(explicit.stdout).toContain("JJ first commit");
+      expect(explicit.stdout).not.toContain("older history hidden");
+      expect(
+        run(["jj", "config", "set", "--repo", 'revset-aliases."trunk()"', "none()"], cwd, env).code,
+      ).toBe(0);
+      const empty = run([...args, "--grep", "absent-subject"], cwd, env);
+      expect(empty).toEqual({
+        code: 0,
+        stdout: "",
+        stderr: "hunk: Mainline unavailable; showing visible history.\n",
+      });
+    },
   );
 
   test("is silent for max count zero and reports non-repositories cleanly", () => {

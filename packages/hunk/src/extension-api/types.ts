@@ -21,7 +21,7 @@
  * Extensions can branch on `hunk.apiVersion` so a newer Hunk can keep loading
  * older extensions without guessing at their expectations.
  */
-export const HUNK_EXTENSION_API_VERSION = 30;
+export const HUNK_EXTENSION_API_VERSION = 31;
 export type HunkExtensionApiVersion = typeof HUNK_EXTENSION_API_VERSION;
 
 export type ExtensionNotifyType = "info" | "warning" | "error";
@@ -804,6 +804,8 @@ export interface ExtensionVcsHistoryCommit {
    * Omit this field when graph parents are identical to `parentRevisionIds`.
    */
   graphParentRevisionIds?: string[];
+  /** Direct review parents deliberately omitted by the chosen ancestry boundary. */
+  graphCutoffParentRevisionIds?: string[];
   subject: string;
   /** Commit message content after the subject, preserving paragraph breaks. */
   body?: string;
@@ -824,8 +826,7 @@ export interface ExtensionVcsHistoryCommit {
    * `true` indicates a known-empty revision, `false` indicates a known-nonempty
    * revision, and `undefined` indicates that the provider does not report
    * revision emptiness. The provider owns the comparison semantics; this fact
-   * never changes the semantic subject or body. API 30 is reserved to the
-   * isolated HK-91 candidate until an authorized integration.
+   * never changes the semantic subject or body. Added in API 30.
    */
   isEmpty?: boolean;
 }
@@ -855,8 +856,15 @@ export interface ExtensionVcsHistoryPage {
   done: boolean;
 }
 
+/** Immutable explanation of one provider-owned history scope. */
+export type ExtensionVcsHistoryScope =
+  | { kind: "bounded"; boundaryRevisionId: string }
+  | { kind: "fallback"; reason: "unavailable" | "ambiguous" };
+
 /** A cancellable history cursor owned by its provider. */
 export interface ExtensionVcsHistorySource {
+  /** Immutable for this source lifetime; omitted for explicit and legacy traversal. */
+  readonly scope?: ExtensionVcsHistoryScope;
   /** Read the next page while preserving the source-wide topological order. */
   read(options: { limit: number; signal?: AbortSignal }): Promise<ExtensionVcsHistoryPage>;
   close(): void | Promise<void>;

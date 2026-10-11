@@ -21,6 +21,12 @@ export interface HistoryGraphRow {
   lanesBefore: string[];
   lanesAfter: string[];
   parentLanes: number[];
+  /** Transient outgoing slots ending locally; never enter the next-page checkpoint. */
+  cutoffLanes?: number[];
+  /** Ordinary outgoing slots before local cutoffs terminate and the frontier compacts. */
+  continuationLanes?: number[];
+  /** Compact only surviving ordinary lanes after the cutoff rows. */
+  cutoffConvergences?: Array<{ from: number; to: number }>;
   /** Existing active lanes that collapse into a parent lane after this commit. */
   convergences: Array<{ from: number; to: number }>;
 }

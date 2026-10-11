@@ -7,6 +7,8 @@ import {
 import { sanitizeTerminalLine } from "../../lib/terminalText";
 import {
   projectHistoryConvergence,
+  projectHistoryCutoffs,
+  historyScopeText,
   projectHistoryRecord,
   projectHistoryRow,
   resolveHistoryColor,
@@ -80,16 +82,29 @@ export async function runStaticHistory(
   let checkpoint = createHistoryLaneCheckpoint();
   let done = false;
   let commitCount = 0;
+  let hasCutoffs = false;
+  const scope = bootstrap.source.scope;
+  let scopeAccepted = false;
   try {
     while (!done) {
       const page = await bootstrap.source.read({ limit: 256 });
+      if (page.commits.length === 0 && !page.done) {
+        throw new Error("VCS history returned an empty page before the end of history.");
+      }
       const planned = planHistoryPage(page.commits, checkpoint);
+      if (!scopeAccepted) {
+        scopeAccepted = true;
+        if (scope?.kind === "fallback")
+          deps.stderr.write(`hunk: ${historyScopeText(scope, false)}\n`);
+      }
       checkpoint = planned.checkpoint;
+      hasCutoffs ||= planned.rows.some((row) => Boolean(row.cutoffLanes?.length));
       const lines = planned.rows.flatMap((row) =>
         input.format === "compact"
           ? [
               projectHistoryRow(row, { ascii, color, theme, width }),
               projectHistoryConvergence(row, { ascii, color, theme, width }),
+              ...projectHistoryCutoffs(row, { ascii, color, theme, width }),
             ].filter(Boolean)
           : projectHistoryRecord(row, { ascii, color, theme, width }),
       );
@@ -109,16 +124,22 @@ export async function runStaticHistory(
         return;
       }
       done = page.done;
-      if (page.commits.length === 0 && !done) {
-        throw new Error("VCS history returned an empty page before the end of history.");
-      }
     }
 
     if (commitCount === 0) {
       if (stdoutIsTTY && input.maxCount !== 0) await writeOutput("No commits found.\n");
       return;
     }
-    if (!stdoutIsTTY) return;
+    const legend = scope?.kind === "bounded" ? historyScopeText(scope, hasCutoffs) : "";
+    if (!stdoutIsTTY) {
+      if (legend) await writeOutput(`${legend}\n`);
+      return;
+    }
+    if (legend) {
+      if (pager) {
+        if ((await pager.write(`${legend}\n`)) === false) return;
+      } else bufferedLines.push(legend);
+    }
     if (pager) {
       await pager.close();
       pager = undefined;

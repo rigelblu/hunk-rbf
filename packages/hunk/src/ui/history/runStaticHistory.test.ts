@@ -235,3 +235,73 @@ describe("static history runner", () => {
     expect(output).toBe("");
   });
 });
+
+test("HK-93 projection parity explains cutoffs once and fallback even when no records are emitted", async () => {
+  for (const format of ["compact", "medium"] as const) {
+    const history = runtime([
+      { ...commits[0]!, parentRevisionIds: ["hidden"], graphCutoffParentRevisionIds: ["hidden"] },
+    ]);
+    history.value.input.format = format;
+    history.value.source = {
+      ...history.value.source,
+      scope: { kind: "bounded", boundaryRevisionId: "a" },
+    };
+    let stdout = "",
+      stderr = "";
+    await runStaticHistory(history.value, {
+      stdout: { isTTY: false, columns: 80, rows: 24, write: (value) => ((stdout += value), true) },
+      stderr: { write: (value) => ((stderr += value), true) },
+      env: {},
+      pageText: async () => {},
+    });
+    expect(stdout.match(/~ older history hidden/g)).toHaveLength(1);
+    expect(stdout.split("\n").some((line) => line.trim() === "~")).toBe(true);
+    expect(stderr).toBe("");
+  }
+  for (const reason of ["unavailable", "ambiguous"] as const) {
+    const history = runtime([], 0);
+    history.value.source = { ...history.value.source, scope: { kind: "fallback", reason } };
+    let stdout = "",
+      stderr = "";
+    await runStaticHistory(history.value, {
+      stdout: { isTTY: false, columns: 80, rows: 24, write: (value) => ((stdout += value), true) },
+      stderr: { write: (value) => ((stderr += value), true) },
+      env: {},
+      pageText: async () => {},
+    });
+    expect(stdout).toBe("");
+    expect(stderr).toBe(`hunk: Mainline ${reason}; showing visible history.\n`);
+  }
+});
+
+test("HK-93 failed initial fallback reads never claim visible history and still close", async () => {
+  for (const emptyPage of [false, true]) {
+    const history = runtime([]);
+    history.value.source = {
+      ...history.value.source,
+      scope: { kind: "fallback", reason: "unavailable" },
+      read: async () => {
+        if (!emptyPage) throw new Error("invalid machine record");
+        return { commits: [], done: false };
+      },
+    };
+    let stdout = "",
+      stderr = "";
+    await expect(
+      runStaticHistory(history.value, {
+        stdout: {
+          isTTY: false,
+          columns: 80,
+          rows: 24,
+          write: (value) => ((stdout += value), true),
+        },
+        stderr: { write: (value) => ((stderr += value), true) },
+        env: {},
+        pageText: async () => {},
+      }),
+    ).rejects.toThrow(emptyPage ? "empty page" : "invalid machine record");
+    expect(stdout).toBe("");
+    expect(stderr).toBe("");
+    expect(history.closed()).toBe(1);
+  }
+});

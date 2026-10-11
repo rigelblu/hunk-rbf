@@ -14,7 +14,7 @@ export function createHistoryLaneCheckpoint(): HistoryLaneCheckpoint {
 function orderedUniqueParents(commit: HistoryCommit) {
   const seen = new Set<string>();
   return (commit.graphParentRevisionIds ?? commit.parentRevisionIds).filter((parent) => {
-    if (seen.has(parent)) return false;
+    if (seen.has(parent) || commit.graphCutoffParentRevisionIds?.includes(parent)) return false;
     seen.add(parent);
     return true;
   });
@@ -74,7 +74,39 @@ export function planHistoryPage(
         convergences.push({ from: lane, to });
       }
     }
-    const width = Math.max(lanesBefore.length, lanes.length, lane + 1);
+    const cuts = commit.graphCutoffParentRevisionIds ?? [];
+    const cutoffLanes: number[] = [];
+    let continuationLanes: number[] | undefined;
+    let cutoffConvergences: Array<{ from: number; to: number }> | undefined;
+    let parentLanes = parents.map((parent) => lanes.indexOf(parent));
+    let width = Math.max(lanesBefore.length, lanes.length, lane + 1);
+    if (cuts.length) {
+      // Local placeholders retain the child lane until its attested edges end. Numeric geometry
+      // carries that frontier to surfaces; hidden identities never enter the ordinary checkpoint.
+      const placeholders = cuts.map(() => Symbol());
+      const outgoing: Array<string | symbol> = [...parents, ...placeholders];
+      const transient: Array<string | symbol> = [...lanesBefore];
+      transient.splice(lane, 1, ...outgoing);
+      const frontier = [...new Set(transient)];
+      continuationLanes = lanes.map((id) => frontier.indexOf(id));
+      cutoffLanes.push(...placeholders.map((id) => frontier.indexOf(id)));
+      parentLanes = outgoing.map((id) => frontier.indexOf(id));
+      convergences.length = 0;
+      for (const [from, id] of lanesBefore.entries()) {
+        if (from === lane) continue;
+        const to = frontier.indexOf(id);
+        if (to >= 0 && to !== from) convergences.push({ from, to });
+      }
+      for (const parent of existingParents) {
+        const to = frontier.indexOf(parent);
+        if (to !== lane && !convergences.some((edge) => edge.from === lane && edge.to === to))
+          convergences.push({ from: lane, to });
+      }
+      cutoffConvergences = continuationLanes.flatMap((from, to) =>
+        from === to ? [] : [{ from, to }],
+      );
+      width = Math.max(width, frontier.length);
+    }
     const cells: HistoryGraphCell[] = Array.from({ length: width }, (_, index) => ({
       kind: index === lane ? "node" : index < lanesBefore.length ? "vertical" : "empty",
     }));
@@ -85,10 +117,8 @@ export function planHistoryPage(
       cells,
       lanesBefore,
       lanesAfter: [...lanes],
-      parentLanes: parents.flatMap((parent) => {
-        const index = lanes.indexOf(parent);
-        return index < 0 ? [] : [index];
-      }),
+      ...(cutoffLanes.length ? { cutoffLanes, continuationLanes, cutoffConvergences } : {}),
+      parentLanes,
       convergences,
     });
   }
