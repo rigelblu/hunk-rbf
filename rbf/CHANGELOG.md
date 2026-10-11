@@ -6,6 +6,14 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 
 # 🔵⋯ [Unreleased]
 
+## 🟠⋯ Added for End Users
+
+- 2026-10-10 - feat (ux) | focus JJ history on mainline and every visible working branch, with local `~` markers for hidden older ancestry and persistent explanations when mainline is unavailable or ambiguous (#hk-93)
+
+## 🟠⋯ Added for Technical Users
+
+- 2026-10-10 - feat (technical) | publish optional immutable history scope and direct cutoff-parent facts through extension API 31; existing providers remain compatible (#hk-93)
+
 # 🔵⋯ v0.10.2 (2026-10-11)
 
 Local dogfood patch; remote integration and publication remain pending.

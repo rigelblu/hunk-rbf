@@ -389,7 +389,12 @@ immutable revision and parent identities, structured decorations, and the declar
 for a selected item. The host treats those ids as opaque and never constructs provider revision
 syntax or decides root/merge comparison semantics. History pages remain child-before-parent across
 the full cursor, including page boundaries; the extension conversion boundary validates that
-ordering before core or UI consumes it.
+ordering before core or UI consumes it. API 31 also accepts optional immutable source scope
+and attested direct cutoff-parent identities through that conversion boundary. The provider
+classifies those edges; core plans temporary cutoff slots and their final compaction, and
+static/interactive surfaces consume that geometry. Scope becomes public with accepted rows,
+not during preparation. Real review parents remain unchanged, and hidden cutoff identities
+never enter the next-page lane checkpoint. These history facts do not extend the session wire.
 
 ## Public contract rules
 

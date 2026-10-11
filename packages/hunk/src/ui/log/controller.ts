@@ -2,7 +2,7 @@ import { createHistoryLaneCheckpoint, planHistoryPage } from "../../core/history
 import type { HistoryGraphRow, HistoryLaneCheckpoint } from "../../core/history/types";
 import { sanitizeTerminalLine } from "../../lib/terminalText";
 import type { HistoryRuntime } from "../history/types";
-import { planLogViewportGeometry } from "./geometry";
+import { commitEntryHeight, planLogViewportGeometry } from "./geometry";
 
 export interface LogPresentation {
   graph: boolean;
@@ -30,12 +30,15 @@ export interface LogSnapshot {
   selectionAnchor: number | null;
   visualSelectionActive: boolean;
   top: number;
+  /** Physical row offset inside a selected entry taller than the history body. */
+  entryScroll: number;
   /** The last submitted search query, repeated by next/previous match. */
   search: string;
   historyDone: boolean;
   loading: boolean;
   notice: string;
   presentation: LogPresentation;
+  scope?: HistoryRuntime["source"]["scope"];
 }
 
 /** Find a row by immutable revision id, then by one unambiguous provider logical id. */
@@ -55,20 +58,20 @@ function findHistoryRowIndex(
   return logicalIndex;
 }
 
-/** Wait for enough history to know a logical id has exactly one match. */
+/** Settle exact identity early; logical uniqueness requires the complete history. */
 function isHistoryIdentitySettled(
   rows: readonly HistoryGraphRow[],
   identity: { revisionId: string; logicalId?: string },
   historyDone: boolean,
 ) {
-  if (rows.some((row) => row.commit.revisionId === identity.revisionId)) return true;
-  if (!identity.logicalId) return historyDone;
-  let matches = 0;
-  for (const row of rows) {
-    if (row.commit.logicalId === identity.logicalId) matches += 1;
-    if (matches > 1) return true;
-  }
-  return historyDone;
+  return historyDone || rows.some((row) => row.commit.revisionId === identity.revisionId);
+}
+
+interface HistoryRefreshCandidate {
+  abort: AbortController;
+  source?: HistoryRuntime["source"];
+  accepted: boolean;
+  closePromise?: Promise<void>;
 }
 
 /** Retain interactive log state independently of renderer mount/unmount cycles. */
@@ -80,8 +83,10 @@ export class LogController {
   private abort = new AbortController();
   private loadingPromise: Promise<boolean> | null = null;
   private refreshPromise: Promise<boolean> | null = null;
+  private refreshCandidate: HistoryRefreshCandidate | null = null;
   private navigationTarget: number | null = null;
   private navigationPromise: Promise<void> | null = null;
+  private navigationWaiters = new Set<() => void>();
   private selectionGeneration = 0;
   private closed = false;
   private viewportBodyHeight = 1;
@@ -99,6 +104,7 @@ export class LogController {
       selectionAnchor: null,
       visualSelectionActive: false,
       top: 0,
+      entryScroll: 0,
       search: "",
       historyDone: false,
       loading: false,
@@ -128,6 +134,7 @@ export class LogController {
   };
 
   private publish(patch: Partial<LogSnapshot>) {
+    if (this.closed) return;
     this.snapshot = { ...this.snapshot, ...patch };
     for (const listener of this.listeners) listener();
   }
@@ -138,10 +145,12 @@ export class LogController {
     if (this.closed) return false;
     if (this.snapshot.historyDone) return true;
     const generation = this.generation;
+    const source = this.source;
+    const signal = this.abort.signal;
     this.publish({ loading: true });
     const loading = (async () => {
       try {
-        const page = await this.source.read({ limit: 256, signal: this.abort.signal });
+        const page = await source.read({ limit: 256, signal });
         if (generation !== this.generation || this.closed) return false;
         if (!page.done && page.commits.length === 0)
           throw new Error("VCS history returned an empty page before EOF.");
@@ -150,12 +159,13 @@ export class LogController {
         const rows = [...this.snapshot.rows, ...planned.rows];
         this.publish({
           rows,
+          scope: source.scope,
           historyDone: page.done,
           notice: rows.length === 0 && page.done ? "No commits found." : this.snapshot.notice,
         });
         return true;
       } catch (error) {
-        if (!this.abort.signal.aborted && generation === this.generation) {
+        if (!signal.aborted && generation === this.generation && !this.closed) {
           this.publish({
             historyDone: true,
             notice: sanitizeTerminalLine(error instanceof Error ? error.message : String(error)),
@@ -197,12 +207,18 @@ export class LogController {
             0,
             Math.min(Math.max(0, this.snapshot.rows.length - 1), this.snapshot.selectionAnchor),
           );
+    const row = this.snapshot.rows[selected];
+    const maximumScroll = row
+      ? Math.max(0, commitEntryHeight(row, !this.snapshot.presentation.graph) - safeHeight)
+      : 0;
+    const entryScroll = Math.min(this.snapshot.entryScroll, maximumScroll);
     if (
+      entryScroll !== this.snapshot.entryScroll ||
       selected !== this.snapshot.selected ||
       selectionAnchor !== this.snapshot.selectionAnchor ||
       geometry.top !== this.snapshot.top
     )
-      this.publish({ selected, selectionAnchor, top: geometry.top });
+      this.publish({ selected, selectionAnchor, top: geometry.top, entryScroll });
   }
 
   /** Select a target, optionally extending a contiguous range from the current focus. */
@@ -214,16 +230,23 @@ export class LogController {
       );
       return Promise.resolve();
     }
+    this.viewportBodyHeight = Math.max(1, viewportBodyHeight);
     const target = Math.max(0, index);
     const anchor = extend ? (this.snapshot.selectionAnchor ?? this.snapshot.selected) : null;
     const requestGeneration = ++this.selectionGeneration;
     this.publish({
+      entryScroll: 0,
       selectionAnchor: anchor,
       ...(!extend ? { visualSelectionActive: false } : {}),
     });
     this.navigationTarget = target;
     const navigation = (async () => {
-      while (target >= this.snapshot.rows.length && !this.snapshot.historyDone && !this.closed) {
+      while (
+        target >= this.snapshot.rows.length &&
+        !this.snapshot.historyDone &&
+        !this.closed &&
+        requestGeneration === this.selectionGeneration
+      ) {
         await this.loadMore();
       }
       if (this.closed || requestGeneration !== this.selectionGeneration) return;
@@ -233,22 +256,32 @@ export class LogController {
         selectionAnchor:
           anchor === selected && !this.snapshot.visualSelectionActive ? null : anchor,
       });
-      this.clampViewport(viewportBodyHeight);
+      this.clampViewport(this.viewportBodyHeight);
       if (this.navigationTarget === target) this.navigationTarget = null;
       const visibleCount = planLogViewportGeometry({
         rows: this.snapshot.rows,
         selected: this.snapshot.selected,
         requestedTop: this.snapshot.top,
-        bodyHeight: viewportBodyHeight,
+        bodyHeight: this.viewportBodyHeight,
         groupByDay: !this.snapshot.presentation.graph,
       }).entries.length;
       if (target + visibleCount >= this.snapshot.rows.length && !this.snapshot.historyDone)
         void this.loadMore();
     })();
-    this.navigationPromise = navigation;
-    void navigation.finally(() => {
-      if (this.navigationPromise === navigation) this.navigationPromise = null;
-    });
+    return this.trackNavigation(navigation);
+  }
+
+  /** Track only the latest request so refresh cannot restore ahead of pending input. */
+  private trackNavigation(navigation: Promise<void>) {
+    this.setNavigationPromise(navigation);
+    void navigation.then(
+      () => {
+        if (this.navigationPromise === navigation) this.setNavigationPromise(null);
+      },
+      () => {
+        if (this.navigationPromise === navigation) this.setNavigationPromise(null);
+      },
+    );
     return navigation;
   }
 
@@ -265,6 +298,7 @@ export class LogController {
     if (!hasSelectedRow && !this.refreshPromise) return;
     this.selectionGeneration += 1;
     this.navigationTarget = null;
+    this.setNavigationPromise(null);
     this.publish({
       selectionAnchor: hasSelectedRow ? this.snapshot.selected : null,
       visualSelectionActive: true,
@@ -277,13 +311,33 @@ export class LogController {
       return false;
     this.selectionGeneration += 1;
     this.navigationTarget = null;
+    this.setNavigationPromise(null);
     this.publish({ selectionAnchor: null, visualSelectionActive: false });
     return true;
   }
 
-  /** Wait until the most recently requested selection has settled. */
+  /** Wake settlement waiters whenever the latest request completes or is superseded. */
+  private setNavigationPromise(navigation: Promise<void> | null) {
+    this.navigationPromise = navigation;
+    for (const wake of this.navigationWaiters) wake();
+    this.navigationWaiters.clear();
+  }
+
+  /** Wait for the latest selection, rechecking immediately when an older request is canceled. */
   async settleNavigation() {
-    while (this.navigationPromise) await this.navigationPromise;
+    while (this.navigationPromise) {
+      const navigation = this.navigationPromise;
+      let wake!: () => void;
+      const changed = new Promise<void>((resolve) => {
+        wake = resolve;
+      });
+      this.navigationWaiters.add(wake);
+      try {
+        await Promise.race([navigation, changed]);
+      } finally {
+        this.navigationWaiters.delete(wake);
+      }
+    }
   }
 
   move(delta: number, viewportBodyHeight: number, options: { extend?: boolean } = {}) {
@@ -294,7 +348,33 @@ export class LogController {
     );
   }
 
+  /** Scroll an oversized entry through existing wheel/page controls without selecting its stubs. */
+  scrollEntry(delta: number, viewportBodyHeight: number) {
+    const row = this.snapshot.rows[this.snapshot.selected];
+    if (!row) return false;
+    const maximum = Math.max(
+      0,
+      commitEntryHeight(row, !this.snapshot.presentation.graph) - Math.max(1, viewportBodyHeight),
+    );
+    const entryScroll = Math.max(0, Math.min(maximum, this.snapshot.entryScroll + delta));
+    if (entryScroll === this.snapshot.entryScroll) return false;
+    this.clearNotice();
+    this.selectionGeneration += 1;
+    this.navigationTarget = null;
+    this.setNavigationPromise(null);
+    this.viewportBodyHeight = Math.max(1, viewportBodyHeight);
+    this.publish({ entryScroll });
+    return true;
+  }
+
   page(delta: number, viewportBodyHeight: number, fraction = 1) {
+    if (
+      this.scrollEntry(
+        delta * Math.max(1, Math.floor(viewportBodyHeight * fraction)),
+        viewportBodyHeight,
+      )
+    )
+      return Promise.resolve();
     const visibleCount = planLogViewportGeometry({
       rows: this.snapshot.rows,
       selected: this.snapshot.selected,
@@ -314,9 +394,23 @@ export class LogController {
     return this.select(0, viewportBodyHeight);
   }
 
-  async last(viewportBodyHeight: number) {
-    while (!this.snapshot.historyDone && !this.closed) await this.loadMore();
-    await this.select(this.snapshot.rows.length - 1, viewportBodyHeight);
+  /** Resolve the last row only while this remains the latest navigation request. */
+  last(viewportBodyHeight: number) {
+    const requestGeneration = ++this.selectionGeneration;
+    this.viewportBodyHeight = Math.max(1, viewportBodyHeight);
+    this.navigationTarget = this.snapshot.selected;
+    return this.trackNavigation(
+      (async () => {
+        while (
+          !this.snapshot.historyDone &&
+          !this.closed &&
+          requestGeneration === this.selectionGeneration
+        )
+          await this.loadMore();
+        if (this.closed || requestGeneration !== this.selectionGeneration) return;
+        await this.select(this.snapshot.rows.length - 1, this.viewportBodyHeight);
+      })(),
+    );
   }
 
   /** Replace the repeatable query without filtering topology; the host prompt owns editing. */
@@ -331,37 +425,58 @@ export class LogController {
     await this.findMatch(direction, viewportHeight);
   }
 
-  async findMatch(direction: 1 | -1, viewportHeight = this.viewportBodyHeight) {
+  /** Resolve the submitted match only while its navigation request remains current. */
+  findMatch(direction: 1 | -1, viewportHeight = this.viewportBodyHeight) {
     const needle = this.snapshot.search.toLocaleLowerCase();
-    if (!needle) return;
-    while (!this.snapshot.historyDone && !this.closed) await this.loadMore();
-    const rows = this.snapshot.rows;
-    for (let step = 1; step <= rows.length; step += 1) {
-      const index = (this.snapshot.selected + direction * step + rows.length) % rows.length;
-      const commit = rows[index]!.commit;
-      const haystack = [
-        commit.revisionId,
-        commit.displayId,
-        commit.subject,
-        commit.body ?? "",
-        commit.authorName,
-        commit.authorEmail ?? "",
-        ...commit.decorations.map((entry) => entry.label),
-      ]
-        .join(" ")
-        .toLocaleLowerCase();
-      if (haystack.includes(needle)) {
-        this.publish({
-          selected: index,
-          selectionAnchor: null,
-          visualSelectionActive: false,
-          notice: "",
-        });
-        this.clampViewport(viewportHeight);
-        return;
-      }
+    const requestGeneration = ++this.selectionGeneration;
+    if (!needle) {
+      this.navigationTarget = null;
+      this.setNavigationPromise(null);
+      return Promise.resolve();
     }
-    this.setNotice(`No match for ${this.snapshot.search}`);
+    this.viewportBodyHeight = Math.max(1, viewportHeight);
+    this.navigationTarget = this.snapshot.selected;
+    return this.trackNavigation(
+      (async () => {
+        while (
+          !this.snapshot.historyDone &&
+          !this.closed &&
+          requestGeneration === this.selectionGeneration
+        )
+          await this.loadMore();
+        if (this.closed || requestGeneration !== this.selectionGeneration) return;
+        const rows = this.snapshot.rows;
+        for (let step = 1; step <= rows.length; step += 1) {
+          const index = (this.snapshot.selected + direction * step + rows.length) % rows.length;
+          const commit = rows[index]!.commit;
+          const haystack = [
+            commit.revisionId,
+            commit.displayId,
+            commit.subject,
+            commit.body ?? "",
+            commit.authorName,
+            commit.authorEmail ?? "",
+            ...commit.decorations.map((entry) => entry.label),
+          ]
+            .join(" ")
+            .toLocaleLowerCase();
+          if (haystack.includes(needle)) {
+            this.publish({
+              selected: index,
+              entryScroll: 0,
+              selectionAnchor: null,
+              visualSelectionActive: false,
+              notice: "",
+            });
+            this.clampViewport(this.viewportBodyHeight);
+            this.navigationTarget = null;
+            return;
+          }
+        }
+        this.navigationTarget = null;
+        this.setNotice(`No match for ${this.snapshot.search}`);
+      })(),
+    );
   }
 
   private clearNotice() {
@@ -382,6 +497,7 @@ export class LogController {
   }
 
   setNotice(notice: string) {
+    if (this.closed) return;
     if (this.noticeTimer) clearTimeout(this.noticeTimer);
     const safe = sanitizeTerminalLine(notice);
     this.publish({ notice: safe });
@@ -413,156 +529,153 @@ export class LogController {
     }
   }
 
+  /** Close an unaccepted candidate once, including when quit races its read. */
+  private discardCandidate(candidate: HistoryRefreshCandidate) {
+    if (candidate.accepted) return Promise.resolve();
+    candidate.abort.abort();
+    if (candidate.source && !candidate.closePromise)
+      candidate.closePromise = Promise.resolve().then(() => candidate.source!.close());
+    return candidate.closePromise ?? Promise.resolve();
+  }
+
+  /** Stage replacement pages privately while active paging and newer navigation continue. */
   private async performRefresh(shouldApply: () => boolean): Promise<boolean> {
     if (this.closed || !shouldApply()) return false;
-    const selectedCommit = this.snapshot.rows[this.snapshot.selected]?.commit;
-    const anchorCommit =
-      this.snapshot.selectionAnchor === null
-        ? undefined
-        : this.snapshot.rows[this.snapshot.selectionAnchor]?.commit;
-    const selectedIdentity = selectedCommit
-      ? { revisionId: selectedCommit.revisionId, logicalId: selectedCommit.logicalId }
-      : undefined;
-    const anchorIdentity = anchorCommit
-      ? { revisionId: anchorCommit.revisionId, logicalId: anchorCommit.logicalId }
-      : undefined;
-    const visualSelectionActive = this.snapshot.visualSelectionActive;
-    const viewportOffset = this.snapshot.selected - this.snapshot.top;
-    this.generation += 1;
-    this.selectionGeneration += 1;
-    const refreshSelectionGeneration = this.selectionGeneration;
-    this.navigationTarget = null;
+    const candidate: HistoryRefreshCandidate = { abort: new AbortController(), accepted: false };
+    this.refreshCandidate = candidate;
     const generation = this.generation;
-    this.abort.abort();
-    await this.loadingPromise;
-    this.loadingPromise = null;
-    if (this.snapshot.loading && !this.closed && generation === this.generation) {
-      this.publish({ loading: false });
-    }
-    this.abort = new AbortController();
-    let replacement: HistoryRuntime["source"];
+    const canApply = () =>
+      !this.closed &&
+      generation === this.generation &&
+      !candidate.abort.signal.aborted &&
+      shouldApply();
+    let rows: HistoryGraphRow[] = [];
+    let checkpoint = createHistoryLaneCheckpoint();
+    let historyDone = false;
     try {
-      replacement = await this.runtime.reopenSource(this.abort.signal);
-    } catch (error) {
-      if (!this.closed && generation === this.generation) {
-        this.setNotice(error instanceof Error ? error.message : String(error));
-      }
-      return false;
-    }
-    if (this.closed || generation !== this.generation || !shouldApply()) {
-      await replacement.close();
-      if (!this.closed && generation === this.generation) this.abort = new AbortController();
-      return false;
-    }
-
-    const identities = [selectedIdentity, anchorIdentity].filter(
-      (identity): identity is NonNullable<typeof identity> => Boolean(identity),
-    );
-    let replacementRows: HistoryGraphRow[] = [];
-    let replacementCheckpoint = createHistoryLaneCheckpoint();
-    let replacementHistoryDone = false;
-    try {
-      do {
-        if (this.closed || generation !== this.generation || !shouldApply()) {
-          await replacement.close();
-          if (!this.closed && generation === this.generation) this.abort = new AbortController();
-          return false;
+      const replacement = await this.runtime.reopenSource(candidate.abort.signal);
+      candidate.source = replacement;
+      if (!canApply()) return false;
+      let needsPage = true;
+      while (true) {
+        if (needsPage) {
+          const page = await replacement.read({ limit: 256, signal: candidate.abort.signal });
+          if (!canApply()) return false;
+          if (!page.done && page.commits.length === 0)
+            throw new Error("VCS history returned an empty page before EOF.");
+          const planned = planHistoryPage(page.commits, checkpoint);
+          rows = [...rows, ...planned.rows];
+          checkpoint = planned.checkpoint;
+          historyDone = page.done;
         }
-        const page = await replacement.read({ limit: 256, signal: this.abort.signal });
-        if (this.closed || generation !== this.generation || !shouldApply()) {
-          await replacement.close();
-          if (!this.closed && generation === this.generation) this.abort = new AbortController();
-          return false;
-        }
-        if (!page.done && page.commits.length === 0) {
-          throw new Error("VCS history returned an empty page before EOF.");
-        }
-        const planned = planHistoryPage(page.commits, replacementCheckpoint);
-        replacementRows = [...replacementRows, ...planned.rows];
-        replacementCheckpoint = planned.checkpoint;
-        replacementHistoryDone = page.done;
-        if (page.done || identities.length === 0) break;
-      } while (
-        identities.some(
-          (identity) =>
-            !isHistoryIdentitySettled(replacementRows, identity, replacementHistoryDone),
-        )
-      );
-    } catch (error) {
-      await replacement.close();
-      if (!this.closed && generation === this.generation) {
-        this.abort = new AbortController();
-        this.setNotice(error instanceof Error ? error.message : String(error));
-      }
-      return false;
-    }
-    if (this.closed || generation !== this.generation || !shouldApply()) {
-      await replacement.close();
-      if (!this.closed && generation === this.generation) this.abort = new AbortController();
-      return false;
-    }
-
-    const selectedIndex = findHistoryRowIndex(replacementRows, selectedIdentity);
-    const anchorIndex = findHistoryRowIndex(replacementRows, anchorIdentity);
-    const restoredSelected = selectedIndex >= 0 ? selectedIndex : Math.max(0, anchorIndex);
-    const refreshNotice =
-      selectedIdentity && selectedIndex < 0
-        ? `Couldn’t uniquely identify selected change; moved to ${anchorIndex >= 0 ? "range anchor" : "newest change"}.`
-        : replacementRows.length === 0 && replacementHistoryDone
-          ? "No commits found."
-          : "History refreshed.";
-    const restoredAnchor = selectedIndex >= 0 && anchorIndex >= 0 ? anchorIndex : null;
-    const requestedTop = Math.max(0, restoredSelected - viewportOffset);
-    const geometry = planLogViewportGeometry({
-      rows: replacementRows,
-      selected: restoredSelected,
-      requestedTop,
-      bodyHeight: this.viewportBodyHeight,
-      groupByDay: !this.snapshot.presentation.graph,
-    });
-    const restoreRange = refreshSelectionGeneration === this.selectionGeneration;
-    const hasRestoredSelection = Boolean(replacementRows[restoredSelected]);
-    const restoredVisualSelectionActive =
-      hasRestoredSelection &&
-      (restoreRange
-        ? visualSelectionActive && restoredAnchor !== null
-        : this.snapshot.visualSelectionActive);
-    try {
-      // The runtime swaps its source synchronously before any asynchronous cursor cleanup.
-      const accepted = this.runtime.acceptSource?.(replacement);
-      this.source = replacement;
-      this.checkpoint = replacementCheckpoint;
-      this.publish({
-        rows: replacementRows,
-        selected: restoredSelected,
-        selectionAnchor: restoreRange
-          ? restoredAnchor !== restoredSelected || visualSelectionActive
-            ? restoredAnchor
-            : null
-          : restoredVisualSelectionActive
-            ? restoredSelected
-            : null,
-        visualSelectionActive: restoredVisualSelectionActive,
-        top: geometry.top,
-        historyDone: replacementHistoryDone,
-        loading: false,
-        notice: "",
-      });
-      this.setNotice(refreshNotice);
-      if (accepted) {
-        void accepted.catch((error) => {
-          if (!this.closed) this.setNotice(error instanceof Error ? error.message : String(error));
+        await this.settleNavigation();
+        if (!canApply()) return false;
+        const current = this.snapshot;
+        const selectedIdentity = current.rows[current.selected]?.commit;
+        const anchorIdentity =
+          current.selectionAnchor === null
+            ? undefined
+            : current.rows[current.selectionAnchor]?.commit;
+        const identities = [selectedIdentity, anchorIdentity].filter(
+          (identity): identity is NonNullable<typeof identity> => Boolean(identity),
+        );
+        needsPage =
+          !historyDone &&
+          identities.some((identity) => !isHistoryIdentitySettled(rows, identity, historyDone));
+        if (needsPage) continue;
+        const selectedIndex = findHistoryRowIndex(rows, selectedIdentity);
+        const anchorIndex = findHistoryRowIndex(rows, anchorIdentity);
+        const selected = selectedIndex >= 0 ? selectedIndex : Math.max(0, anchorIndex);
+        const anchor = selectedIndex >= 0 && anchorIndex >= 0 ? anchorIndex : null;
+        const hasSelection = Boolean(rows[selected]);
+        const visualSelectionActive =
+          hasSelection && current.visualSelectionActive && (!anchorIdentity || anchor !== null);
+        const selectionAnchor =
+          anchor ?? (visualSelectionActive && !anchorIdentity ? selected : null);
+        const bodyHeight = this.viewportBodyHeight;
+        const requestedTop = Math.max(0, selected - (current.selected - current.top));
+        const currentGeometry = planLogViewportGeometry({
+          rows: current.rows,
+          selected: current.selected,
+          requestedTop: current.top,
+          bodyHeight,
+          groupByDay: !current.presentation.graph,
         });
+        const geometry = planLogViewportGeometry({
+          rows,
+          selected,
+          requestedTop,
+          bodyHeight,
+          groupByDay: !current.presentation.graph,
+          requestedSelectedRowOffset: currentGeometry.selectedRowOffset,
+        });
+        // A partial candidate must not trigger the planner's EOF backfill over the reading position.
+        if (!historyDone && geometry.entries.length > 0 && geometry.backfilled) {
+          needsPage = true;
+          continue;
+        }
+        // Revalidate after the caller's guard; acceptance and publication remain synchronous.
+        if (!canApply()) return false;
+        if (
+          current !== this.snapshot ||
+          bodyHeight !== this.viewportBodyHeight ||
+          this.navigationPromise
+        )
+          continue;
+        const accepted = this.runtime.acceptSource?.(replacement);
+        candidate.accepted = true;
+        this.generation += 1;
+        const previousAbort = this.abort;
+        this.source = replacement;
+        this.abort = candidate.abort;
+        this.checkpoint = checkpoint;
+        this.loadingPromise = null;
+        previousAbort.abort();
+        this.publish({
+          rows,
+          selected,
+          selectionAnchor:
+            selectionAnchor !== selected || visualSelectionActive ? selectionAnchor : null,
+          visualSelectionActive,
+          top: geometry.top,
+          entryScroll: Math.min(
+            selectedIndex >= 0 ? current.entryScroll : 0,
+            rows[selected]
+              ? Math.max(
+                  0,
+                  commitEntryHeight(rows[selected]!, !current.presentation.graph) - bodyHeight,
+                )
+              : 0,
+          ),
+          historyDone,
+          scope: replacement.scope,
+          loading: false,
+          notice: "",
+        });
+        this.setNotice(
+          selectedIdentity && selectedIndex < 0
+            ? `Couldn’t uniquely identify selected change; moved to ${anchorIndex >= 0 ? "range anchor" : "newest change"}.`
+            : rows.length === 0 && historyDone
+              ? "No commits found."
+              : "History refreshed.",
+        );
+        if (accepted)
+          void accepted.catch((error) => {
+            if (!this.closed && this.source === replacement)
+              this.setNotice(error instanceof Error ? error.message : String(error));
+          });
+        return true;
       }
-      return true;
     } catch (error) {
-      // Acceptance owns the source from the instant the runtime swaps its cursor.
-      if (this.source !== replacement) await replacement.close();
-      if (!this.closed && generation === this.generation) {
-        this.abort = new AbortController();
-        this.setNotice(error instanceof Error ? error.message : String(error));
-      }
+      if (!this.closed) this.setNotice(error instanceof Error ? error.message : String(error));
       return false;
+    } finally {
+      try {
+        await this.discardCandidate(candidate);
+      } catch (error) {
+        if (!this.closed) this.setNotice(error instanceof Error ? error.message : String(error));
+      }
+      if (this.refreshCandidate === candidate) this.refreshCandidate = null;
     }
   }
 
@@ -606,8 +719,12 @@ export class LogController {
     this.selectionGeneration += 1;
     this.navigationTarget = null;
     this.abort.abort();
+    this.setNavigationPromise(null);
     if (this.noticeTimer) clearTimeout(this.noticeTimer);
     this.noticeTimer = null;
-    await this.runtime.close();
+    await Promise.all([
+      this.refreshCandidate ? this.discardCandidate(this.refreshCandidate) : Promise.resolve(),
+      this.runtime.close(),
+    ]);
   }
 }

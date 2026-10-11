@@ -3,6 +3,7 @@ import type {
   ExtensionVcsHistoryCommit,
   ExtensionVcsHistoryInput,
   ExtensionVcsHistoryPage,
+  ExtensionVcsHistoryScope,
   ExtensionVcsHistoryRangeReviewAction,
   ExtensionVcsHistoryRangeSelection,
   ExtensionVcsHistoryReviewAction,
@@ -52,6 +53,7 @@ export interface VcsOperations {
 
 /** Internal history cursor after extension-boundary validation. */
 export interface VcsHistorySource {
+  readonly scope?: ExtensionVcsHistoryScope;
   read(options: { limit: number; signal?: AbortSignal }): Promise<ExtensionVcsHistoryPage>;
   close(): Promise<void>;
 }

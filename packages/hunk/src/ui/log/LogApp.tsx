@@ -24,7 +24,7 @@ import {
   useViewPreferenceQuitController,
   type ViewPreferenceQuitScheduler,
 } from "../hooks/useViewPreferenceQuitController";
-import { fitText, measureTextWidth } from "../lib/text";
+import { fitText, measureTextWidth, wrapText } from "../lib/text";
 import { handleViewPreferenceQuitPromptKey } from "../lib/viewPreferenceQuitKeys";
 import type { ThemeController } from "../theme/controller";
 import { StatusLine } from "../statusLine/StatusLine";
@@ -50,13 +50,14 @@ import { monochromeLogTheme, resolveInteractiveLogPalette } from "./colorPolicy"
 import { splitHistoryTitle } from "../history/title";
 import { resolveHistoryTitlePalette } from "../history/titlePalette";
 import { formatHistoryDay } from "./formatting";
-import { LOG_DAY_HEADER_HEIGHT, planLogViewportGeometry } from "./geometry";
+import { commitEntryHeight, LOG_DAY_HEADER_HEIGHT, planLogViewportGeometry } from "./geometry";
 import { projectResponsiveLogRow, resolveLogResponsiveLayout } from "./responsiveLayout";
+import { historyScopeText } from "../history/staticProjection";
 
 /** Render graph cells with stable semantic colors from the active Hunk theme. */
 function HistoryGraphLine({ text, colors }: { text: string; colors: readonly string[] }) {
   return (
-    <text>
+    <text style={{ height: 1, flexShrink: 0 }}>
       {Array.from({ length: Math.ceil(text.length / 2) }, (_, lane) => (
         <span key={lane} fg={colors[lane % colors.length]!}>
           {text.slice(lane * 2, lane * 2 + 2)}
@@ -141,7 +142,15 @@ export function LogApp({
   const graphColors = snapshot.presentation.graph ? logPalette.graphLanes : [logPalette.timeline];
   const selection = controller.getSelection();
   const parentRow = selection?.oldest;
-  const responsiveLayout = resolveLogResponsiveLayout(terminal.width, terminal.height);
+  const scopeText = historyScopeText(
+    snapshot.scope,
+    snapshot.rows.some((row) => Boolean(row.cutoffLanes?.length)),
+  );
+  const scopeLines = scopeText ? wrapText(scopeText, Math.max(1, terminal.width - 2)) : [];
+  const responsiveLayout = resolveLogResponsiveLayout(
+    terminal.width,
+    terminal.height - scopeLines.length,
+  );
   const viewportBodyHeight = responsiveLayout.bodyHeight;
   const currentViewPreferences = useMemo(
     () => ({ ...sessionViewPreferences, theme: themeSelector.themeId }),
@@ -758,8 +767,9 @@ export function LogApp({
         onMouseScroll={(event: TuiMouseEvent) => {
           menu.closeMenu();
           const direction = event.scroll?.direction;
-          if (direction === "up") controller.move(-3, viewportBodyHeight);
-          else if (direction === "down") controller.move(3, viewportBodyHeight);
+          const delta = direction === "up" ? -3 : direction === "down" ? 3 : 0;
+          if (delta && !controller.scrollEntry(delta, viewportBodyHeight))
+            controller.move(delta, viewportBodyHeight);
         }}
       >
         {openingCommit ? (
@@ -786,7 +796,7 @@ export function LogApp({
             <text fg={theme.muted}>Preparing review…</text>
           </box>
         ) : (
-          visible.map(({ index, row, showDayHeader }) => {
+          visible.map(({ index, row, showDayHeader, height }) => {
             const selected =
               selection !== undefined &&
               index >= selection.newestIndex &&
@@ -808,148 +818,187 @@ export function LogApp({
                 key={row.commit.revisionId}
                 style={{
                   width: "100%",
-                  height: responsiveLayout.rowHeight + (showDayHeader ? LOG_DAY_HEADER_HEIGHT : 0),
+                  height,
+                  overflow: "hidden",
+                  flexShrink: 0,
                   flexDirection: "column",
                 }}
               >
-                {showDayHeader ? (
-                  <text>
-                    <span fg={logPalette.timeline}>
-                      {snapshot.presentation.unicode ? "○─" : "o-"}
-                    </span>
-                    <span fg={logPalette.separator}> </span>
-                    <span fg={logPalette.dayHeading}>
-                      {fitText(
-                        formatHistoryDay(row.commit.authoredAt),
-                        Math.max(1, terminal.width - 5),
-                      )}
-                    </span>
-                  </text>
-                ) : null}
-                {showDayHeader ? (
-                  <text fg={logPalette.timeline}>{snapshot.presentation.unicode ? "│" : "|"}</text>
-                ) : null}
                 <box
                   style={{
-                    height: responsiveLayout.rowHeight,
+                    position: "absolute",
+                    top: index === snapshot.selected ? -snapshot.entryScroll : 0,
                     width: "100%",
-                    flexDirection: "row",
-                    backgroundColor: selected ? theme.selectedHunk : theme.background,
-                  }}
-                  onMouseUp={(event: TuiMouseEvent) => {
-                    clearTransientNotice();
-                    if (event.modifiers.shift) {
-                      lastClick.current = { index: -1, at: 0 };
-                      void controller.select(index, viewportBodyHeight, { extend: true });
-                      return;
-                    }
-                    const now = Date.now();
-                    const shouldOpen =
-                      lastClick.current.index === index && now - lastClick.current.at < 400;
-                    void controller.select(index, viewportBodyHeight).then(() => {
-                      if (shouldOpen) void openSelected();
-                    });
-                    lastClick.current = { index, at: now };
+                    height:
+                      commitEntryHeight(row, !snapshot.presentation.graph) +
+                      (showDayHeader ? LOG_DAY_HEADER_HEIGHT : 0),
+                    flexDirection: "column",
                   }}
                 >
-                  {projected.graphWidth ? (
-                    <box
-                      style={{
-                        width: projected.graphWidth,
-                        height: responsiveLayout.rowHeight,
-                        flexDirection: "column",
-                      }}
-                    >
-                      <HistoryGraphLine text={projected.graph} colors={graphColors} />
-                      <HistoryGraphLine text={projected.continuation} colors={graphColors} />
-                      <HistoryGraphLine text={projected.convergence} colors={graphColors} />
-                    </box>
+                  {showDayHeader ? (
+                    <text>
+                      <span fg={logPalette.timeline}>
+                        {snapshot.presentation.unicode ? "○─" : "o-"}
+                      </span>
+                      <span fg={logPalette.separator}> </span>
+                      <span fg={logPalette.dayHeading}>
+                        {fitText(
+                          formatHistoryDay(row.commit.authoredAt),
+                          Math.max(1, terminal.width - 5),
+                        )}
+                      </span>
+                    </text>
+                  ) : null}
+                  {showDayHeader ? (
+                    <text fg={logPalette.timeline}>
+                      {snapshot.presentation.unicode ? "│" : "|"}
+                    </text>
                   ) : null}
                   <box
                     style={{
-                      width: projected.leftWidth,
                       height: responsiveLayout.rowHeight,
-                      flexDirection: "column",
-                    }}
-                  >
-                    <text fg={theme.text}>
-                      {splitHistoryTitle(row.commit, projected.title).map((span, spanIndex) => (
-                        <span key={spanIndex} fg={titlePalette[span.role]}>
-                          {span.text}
-                        </span>
-                      ))}
-                    </text>
-                    <CommitMetadataText
-                      author={projected.author}
-                      relativeTime={projected.relativeTime}
-                      authorColor={logPalette.author}
-                      separatorColor={logPalette.separator}
-                      relativeTimeColor={logPalette.relativeTime}
-                    />
-                    <text> </text>
-                  </box>
-                  {projected.columnGap ? <box style={{ width: projected.columnGap }} /> : null}
-                  <box
-                    style={{
-                      width: projected.rightWidth,
-                      height: responsiveLayout.rowHeight,
-                      flexDirection: "column",
-                      alignItems: "flex-end",
+                      width: "100%",
+                      flexDirection: "row",
+                      backgroundColor: selected ? theme.selectedHunk : theme.background,
                     }}
                     onMouseUp={(event: TuiMouseEvent) => {
-                      event.stopPropagation();
                       clearTransientNotice();
                       if (event.modifiers.shift) {
                         lastClick.current = { index: -1, at: 0 };
                         void controller.select(index, viewportBodyHeight, { extend: true });
                         return;
                       }
-                      const copyIconStart =
-                        1 +
-                        projected.graphWidth +
-                        projected.leftWidth +
-                        projected.columnGap +
-                        projected.rightWidth -
-                        measureTextWidth(projected.copyIcon);
+                      const now = Date.now();
+                      const shouldOpen =
+                        lastClick.current.index === index && now - lastClick.current.at < 400;
                       void controller.select(index, viewportBodyHeight).then(() => {
-                        if (event.x >= copyIconStart) copySelected(row);
-                        else void openSelected();
+                        if (shouldOpen) void openSelected();
                       });
+                      lastClick.current = { index, at: now };
                     }}
                   >
-                    <RevisionIdControl
-                      displayRevision={projected.displayId}
-                      revisionColor={logPalette.commitId}
-                      copyColor={logPalette.copyAction}
-                      copyIcon={projected.copyIcon}
-                      onRevisionClick={() => {
-                        clearTransientNotice();
-                        void controller
-                          .select(index, viewportBodyHeight)
-                          .then(() => openSelected());
-                      }}
-                      onShiftClick={() => {
-                        clearTransientNotice();
-                        lastClick.current = { index: -1, at: 0 };
-                        void controller.select(index, viewportBodyHeight, { extend: true });
-                      }}
-                      onCopy={() => {
-                        clearTransientNotice();
-                        void controller
-                          .select(index, viewportBodyHeight)
-                          .then(() => copySelected(row));
-                      }}
-                    />
-                    {projected.secondary ? (
-                      <text fg={logPalette.decoration}>{projected.secondary}</text>
+                    {projected.graphWidth ? (
+                      <box
+                        style={{
+                          width: projected.graphWidth,
+                          height: responsiveLayout.rowHeight,
+                          flexDirection: "column",
+                        }}
+                      >
+                        <HistoryGraphLine text={projected.graph} colors={graphColors} />
+                        <HistoryGraphLine text={projected.continuation} colors={graphColors} />
+                        <HistoryGraphLine text={projected.convergence} colors={graphColors} />
+                      </box>
                     ) : null}
+                    <box
+                      style={{
+                        width: projected.leftWidth,
+                        height: responsiveLayout.rowHeight,
+                        flexDirection: "column",
+                      }}
+                    >
+                      <text fg={theme.text}>
+                        {splitHistoryTitle(row.commit, projected.title).map((span, spanIndex) => (
+                          <span key={spanIndex} fg={titlePalette[span.role]}>
+                            {span.text}
+                          </span>
+                        ))}
+                      </text>
+                      <CommitMetadataText
+                        author={projected.author}
+                        relativeTime={projected.relativeTime}
+                        authorColor={logPalette.author}
+                        separatorColor={logPalette.separator}
+                        relativeTimeColor={logPalette.relativeTime}
+                      />
+                      <text> </text>
+                    </box>
+                    {projected.columnGap ? <box style={{ width: projected.columnGap }} /> : null}
+                    <box
+                      style={{
+                        width: projected.rightWidth,
+                        height: responsiveLayout.rowHeight,
+                        flexDirection: "column",
+                        alignItems: "flex-end",
+                      }}
+                      onMouseUp={(event: TuiMouseEvent) => {
+                        event.stopPropagation();
+                        clearTransientNotice();
+                        if (event.modifiers.shift) {
+                          lastClick.current = { index: -1, at: 0 };
+                          void controller.select(index, viewportBodyHeight, { extend: true });
+                          return;
+                        }
+                        const copyIconStart =
+                          1 +
+                          projected.graphWidth +
+                          projected.leftWidth +
+                          projected.columnGap +
+                          projected.rightWidth -
+                          measureTextWidth(projected.copyIcon);
+                        void controller.select(index, viewportBodyHeight).then(() => {
+                          if (event.x >= copyIconStart) copySelected(row);
+                          else void openSelected();
+                        });
+                      }}
+                    >
+                      <RevisionIdControl
+                        displayRevision={projected.displayId}
+                        revisionColor={logPalette.commitId}
+                        copyColor={logPalette.copyAction}
+                        copyIcon={projected.copyIcon}
+                        onRevisionClick={() => {
+                          clearTransientNotice();
+                          void controller
+                            .select(index, viewportBodyHeight)
+                            .then(() => openSelected());
+                        }}
+                        onShiftClick={() => {
+                          clearTransientNotice();
+                          lastClick.current = { index: -1, at: 0 };
+                          void controller.select(index, viewportBodyHeight, { extend: true });
+                        }}
+                        onCopy={() => {
+                          clearTransientNotice();
+                          void controller
+                            .select(index, viewportBodyHeight)
+                            .then(() => copySelected(row));
+                        }}
+                      />
+                      {projected.secondary ? (
+                        <text fg={logPalette.decoration}>{projected.secondary}</text>
+                      ) : null}
+                    </box>
                   </box>
+                  {projected.cutoffs.map((line, cut) => (
+                    <HistoryGraphLine key={cut} text={line} colors={graphColors} />
+                  ))}
+                  {projected.cutoffConvergence ? (
+                    <HistoryGraphLine text={projected.cutoffConvergence} colors={graphColors} />
+                  ) : null}
                 </box>
               </box>
             );
           })
         )}
       </box>
+      {scopeLines.length ? (
+        <box
+          style={{
+            height: scopeLines.length,
+            width: "100%",
+            flexDirection: "column",
+            paddingLeft: 1,
+            paddingRight: 1,
+          }}
+        >
+          {scopeLines.map((line, index) => (
+            <text key={index} fg={theme.muted}>
+              {line}
+            </text>
+          ))}
+        </box>
+      ) : null}
       <StatusLine
         badge={null}
         snapshot={{

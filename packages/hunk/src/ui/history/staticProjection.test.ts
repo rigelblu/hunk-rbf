@@ -12,6 +12,8 @@ import {
   renderHistoryContinuation,
   renderHistoryConvergence,
   renderHistoryGraph,
+  renderHistoryCutoffs,
+  renderHistoryCutoffConvergence,
   resolveHistoryColor,
   resolveHistoryTheme,
 } from "./staticProjection";
@@ -234,4 +236,42 @@ describe("known-empty static history titles", () => {
       }
     }
   });
+});
+
+test("HK-93 connects a sole cutoff beside a surviving ordinary lane", () => {
+  const rows = planHistoryPage([
+    { ...commit, revisionId: "branch", parentRevisionIds: ["later"], decorations: [] },
+    {
+      ...commit,
+      revisionId: "cut",
+      parentRevisionIds: ["hidden"],
+      graphCutoffParentRevisionIds: ["hidden"],
+      decorations: [],
+    },
+    { ...commit, revisionId: "later", parentRevisionIds: [], decorations: [] },
+  ]).rows;
+  expect(renderHistoryGraph(rows[1]!, true)).toBe("* |");
+  expect(renderHistoryContinuation(rows[1]!, true)).toBe("| |");
+  expect(renderHistoryCutoffs(rows[1]!, true)).toEqual(["~ |"]);
+  expect(renderHistoryConvergence(rows[1]!, true)).toBe("");
+  expect(renderHistoryCutoffConvergence(rows[1]!, true)).toBe("|/");
+  expect(renderHistoryGraph(rows[2]!, true)).toBe("*");
+});
+
+test("HK-93 preserves the node when a cutoff shares a merge lane beside an already active parent", () => {
+  const planned = planHistoryPage([
+    { ...commit, revisionId: "tip", parentRevisionIds: ["main", "merge"], decorations: [] },
+    {
+      ...commit,
+      revisionId: "merge",
+      parentRevisionIds: ["main", "hidden"],
+      graphCutoffParentRevisionIds: ["hidden"],
+      decorations: [],
+    },
+    { ...commit, revisionId: "main", parentRevisionIds: [], decorations: [] },
+  ]);
+  expect(renderHistoryGraph(planned.rows[1]!, true)).toBe("+-*");
+  expect(renderHistoryGraph(planned.rows[1]!, false)).toBe("┴─●");
+  expect(renderHistoryCutoffs(planned.rows[1]!, true)).toEqual(["| ~"]);
+  expect(planned.checkpoint.lanes).toEqual([]);
 });
