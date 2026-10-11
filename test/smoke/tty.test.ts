@@ -1,11 +1,14 @@
 import { afterAll, afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { cleanupTestConfigHomes, createTestConfigHome } from "../helpers/config-home";
 
 const repoRoot = process.cwd();
 const sourceEntrypoint = join(repoRoot, "packages/hunk/src/main.tsx");
+const hunkCommand = process.env.HUNK_TEST_EXECUTABLE
+  ? shellQuote(resolve(repoRoot, process.env.HUNK_TEST_EXECUTABLE))
+  : `${shellQuote(process.execPath)} run ${shellQuote(sourceEntrypoint)} --`;
 // Spawned hunk processes must assert built-in defaults, not the developer's ambient user config.
 const testConfigHome = createTestConfigHome();
 
@@ -15,23 +18,6 @@ const enableTtySmokeTests = process.env.HUNK_RUN_TTY_SMOKE === "1";
 if (enableTtySmokeTests) {
   setDefaultTimeout(40_000);
 }
-
-/** Check for the util-linux `script` interface these Unix-only terminal tests require. */
-function supportsControllableScript() {
-  try {
-    return (
-      Bun.spawnSync(["script", "-q", "-f", "-e", "-c", "exit 0", "/dev/null"], {
-        stdin: "ignore",
-        stdout: "ignore",
-        stderr: "ignore",
-      }).exitCode === 0
-    );
-  } catch {
-    return false;
-  }
-}
-
-const ttyToolsAvailable = supportsControllableScript();
 
 function cleanupTempDirs() {
   while (tempDirs.length > 0) {
@@ -48,8 +34,6 @@ function shellQuote(value: string) {
 
 function stripTerminalControl(text: string) {
   return text
-    .replace(/^Script started.*?\n/s, "")
-    .replace(/\nScript done.*$/s, "")
     .replace(/\x1bP[\s\S]*?\x1b\\/g, "")
     .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, "")
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
@@ -99,7 +83,7 @@ function createFixtureFiles(lines = 1) {
   );
 
   const patchProc = Bun.spawnSync(
-    ["git", "diff", "--no-index", "--no-color", "--", before, after],
+    ["git", "diff", "--no-index", "--no-color", "--", "before.ts", "after.ts"],
     {
       cwd: dir,
       stdin: "ignore",
@@ -108,7 +92,7 @@ function createFixtureFiles(lines = 1) {
     },
   );
   const coloredPatchProc = Bun.spawnSync(
-    ["git", "diff", "--no-index", "--color=always", "--", before, after],
+    ["git", "diff", "--no-index", "--color=always", "--", "before.ts", "after.ts"],
     {
       cwd: dir,
       stdin: "ignore",
@@ -177,11 +161,16 @@ async function waitUntil<T>(
 
 /** Start a real terminal command whose keyboard input the test controls directly. */
 function spawnTtySmokeProcess(command: string, cwd: string, transcript: string) {
-  return Bun.spawn(["script", "-q", "-f", "-e", "-c", command, transcript], {
+  writeFileSync(transcript, "");
+  return Bun.spawn(["/bin/sh", "-c", command], {
     cwd,
-    stdin: "pipe",
-    stdout: "ignore",
-    stderr: "pipe",
+    terminal: {
+      cols: 80,
+      rows: 24,
+      data(_terminal, data) {
+        appendFileSync(transcript, data);
+      },
+    },
     env: {
       ...process.env,
       XDG_CONFIG_HOME: testConfigHome,
@@ -194,7 +183,7 @@ function spawnTtySmokeProcess(command: string, cwd: string, transcript: string) 
   });
 }
 
-/** Read a terminal transcript if util-linux `script` has created it. */
+/** Read the transcript captured directly from the launch-owned PTY. */
 async function readTranscript(transcript: string) {
   const file = Bun.file(transcript);
   return (await file.exists()) ? await file.text() : "";
@@ -250,8 +239,8 @@ async function waitForTranscriptUpdate(
 
 /** Send one keyboard sequence to the controlled terminal. */
 async function writeTtyInput(proc: TtySmokeProcess, input: string) {
-  proc.stdin.write(input);
-  await proc.stdin.flush();
+  if (!proc.terminal) throw new Error("TTY smoke process did not allocate a terminal.");
+  proc.terminal.write(input);
 }
 
 /** Retry a readiness key until its observable terminal state appears. */
@@ -412,9 +401,17 @@ async function driveTtySmoke(options: {
     await waitForTtyExit(proc);
     return stripTerminalControl(await readTranscript(options.transcript));
   } catch (error) {
-    proc.kill();
+    // Bun's Unix PTY owns a process group; kill piped children as well as the shell.
+    try {
+      process.kill(-proc.pid, "SIGKILL");
+    } catch (cleanupError) {
+      if ((cleanupError as NodeJS.ErrnoException).code !== "ESRCH") throw cleanupError;
+    }
+    proc.terminal?.close();
     await proc.exited.catch(() => undefined);
     throw error;
+  } finally {
+    proc.terminal?.close();
   }
 }
 
@@ -439,7 +436,7 @@ async function runTtySmoke(options: {
     args.push("--agent-context", (fixture as ReturnType<typeof createFixtureFiles>).agent);
   }
 
-  const command = `bun run ${shellQuote(sourceEntrypoint)} ${args.map(shellQuote).join(" ")}`;
+  const command = `exec ${hunkCommand} ${args.map(shellQuote).join(" ")}`;
   return driveTtySmoke({
     command,
     cwd: fixture.dir,
@@ -461,7 +458,7 @@ async function runStdinPagerSmoke(options?: {
   const fixture = createFixtureFiles(options?.lines ?? 1);
   const transcript = join(fixture.dir, "stdin-pager-transcript.txt");
   const subcommand = options?.command === "pager" ? "pager" : "patch -";
-  const command = `cat ${shellQuote(fixture.coloredPatch)} | bun run ${shellQuote(sourceEntrypoint)} ${subcommand}`;
+  const command = `cat ${shellQuote(fixture.coloredPatch)} | ${hunkCommand} ${subcommand}`;
 
   return driveTtySmoke({
     command,
@@ -481,7 +478,8 @@ afterEach(() => {
 });
 
 describe("TTY render smoke", () => {
-  const ttyTest = enableTtySmokeTests && ttyToolsAvailable ? test : test.skip;
+  // Bun's native PTY is available on macOS and Linux; these shell-driven checks are Unix-only.
+  const ttyTest = enableTtySmokeTests && process.platform !== "win32" ? test : test.skip;
 
   ttyTest("split mode renders chrome and rails in a terminal transcript", async () => {
     const output = await runTtySmoke({ mode: "split", agentContext: true });

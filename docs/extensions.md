@@ -612,6 +612,14 @@ Jujutsu change id); Hunk treats it as metadata and continues to key graph and re
 immutable `revisionId`. A `head` decoration carries an optional `attachedLocalBranch`; use that field
 rather than embedding an arrow or branch identity in its display label.
 
+The isolated HK-91 candidate reserves API 30 for optional `isEmpty?: boolean` history metadata.
+`true` means the provider knows the revision contributes no changes; `false` means known nonempty;
+omission means unknown. The provider owns comparison semantics. Hunk validates Boolean values and
+uses the fact only for display titles; semantic subjects, bodies, and identifiers stay unchanged.
+JJ reports whole-revision emptiness against auto-merged parents, independently of first-parent or
+path-filtered review views. Git leaves the field omitted. External extensions must not adopt this
+candidate contract before an authorized integration.
+
 Every source must emit commits in **child-before-parent topological order**. If both a child and one
 of its parents are included, the child appears first. This invariant spans the source's complete
 lifetime: page boundaries do not reset it, and a parent returned on one page cannot be followed by

@@ -6,6 +6,10 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 
 # 🔵⋯ [Unreleased]
 
+## 🟠⋯ Fixed for Technical Users
+
+- 2026-10-11 - fix (technical) | load installed package dependencies from external extensions in the compiled Hunk binary (#hk-91)
+
 # 🔵⋯ v0.10.2 (2026-10-11)
 
 Local dogfood patch; remote integration and publication remain pending.

@@ -7,6 +7,7 @@ import {
   buildJjHistoryArgs,
   buildJjHistoryRevset,
   jjHistoryUsesBoundaryTopology,
+  loadJjReviewCommits,
   openJjHistory,
   parseJjHistory,
   planJjHistoryRangeReview,
@@ -51,6 +52,40 @@ afterEach(() => {
 });
 
 describe("Jujutsu history production", () => {
+  jjTest(
+    "reports empty merges against auto-merged parents in streamed and direct-review history",
+    async () => {
+      const repo = createJjOnlyTestRepo();
+      writeFileSync(join(repo, "base.txt"), "base\n");
+      jj(repo, "commit", "-m", "Base");
+      jj(repo, "bookmark", "create", "base", "-r", "@-");
+      jj(repo, "new", "base");
+      writeFileSync(join(repo, "left.txt"), "left\n");
+      jj(repo, "commit", "-m", "Left");
+      jj(repo, "bookmark", "create", "left", "-r", "@-");
+      jj(repo, "new", "base");
+      writeFileSync(join(repo, "right.txt"), "right\n");
+      jj(repo, "commit", "-m", "Right");
+      jj(repo, "bookmark", "create", "right", "-r", "@-");
+      jj(repo, "new", "left", "right", "-m", "Empty merge");
+      expect(jj(repo, "log", "--no-graph", "-r", "@", "-T", 'if(empty, "true", "false")')).toBe(
+        "true",
+      );
+      expect(jj(repo, "diff", "--summary", "--from", "left", "--to", "@")).toContain("right.txt");
+      for (const firstParent of [false, true]) {
+        const source = openJjHistory({ revision: "@", firstParent }, { cwd: repo });
+        try {
+          const page = await source.read({ limit: 1 });
+          expect(page.commits[0]).toMatchObject({ subject: "Empty merge", isEmpty: true });
+        } finally {
+          await source.close();
+        }
+      }
+      const direct = await loadJjReviewCommits("@", { cwd: repo });
+      expect(direct[0]).toMatchObject({ subject: "Empty merge", isEmpty: true });
+    },
+  );
+
   unixTest("cancels provider range planning without blocking the renderer", async () => {
     const temp = mkdtempSync(join(tmpdir(), "hunk-jj-range-cancel-"));
     tempDirs.push(temp);
@@ -129,6 +164,7 @@ describe("Jujutsu history production", () => {
       "main@git",
       "v1.0.0",
       "v1.0.0@origin",
+      "false",
     ].join("\0");
     expect(parseJjHistory(raw)).toEqual([
       {
@@ -149,6 +185,7 @@ describe("Jujutsu history production", () => {
           { kind: "tag", label: "v1.0.0" },
           { kind: "tag", label: "v1.0.0@origin" },
         ],
+        isEmpty: false,
       },
     ]);
   });
@@ -173,10 +210,12 @@ describe("Jujutsu history production", () => {
       "",
       "",
       "",
+      "true",
     ].join("\0");
     const parsed = parseJjHistory(raw, false, true)[0]!;
     expect(parsed.parentRevisionIds).toEqual(["b".repeat(40)]);
     expect(parsed.graphParentRevisionIds).toEqual([]);
+    expect(parsed.isEmpty).toBe(true);
   });
 
   test("drops JJ's synthetic root and excluded merge parents", () => {
@@ -194,8 +233,100 @@ describe("Jujutsu history production", () => {
       "",
       "",
       "",
+      "false",
     ].join("\0");
-    expect(parseJjHistory(raw, true)[0]!.parentRevisionIds).toEqual(["b".repeat(40)]);
+    const parsed = parseJjHistory(raw, true)[0]!;
+    expect(parsed.parentRevisionIds).toEqual(["b".repeat(40)]);
+    expect(parsed.isEmpty).toBe(false);
+  });
+
+  test("strictly parses literal true and false for isEmpty and rejects invalid values", () => {
+    const makeRaw = (emptyValue: string) =>
+      [
+        "a".repeat(40),
+        "aaaaaaaa",
+        "k".repeat(32),
+        "b".repeat(40),
+        "Ada",
+        "",
+        "2026-01-01T00:00:00+00:00",
+        "Commit\n",
+        "0",
+        "",
+        "",
+        "",
+        "",
+        emptyValue,
+      ].join("\0");
+
+    expect(parseJjHistory(makeRaw("true"))[0]!.isEmpty).toBe(true);
+    expect(parseJjHistory(makeRaw("false"))[0]!.isEmpty).toBe(false);
+
+    for (const invalid of ["1", "0", "True", "False", "", "null", "undefined"]) {
+      expect(() => parseJjHistory(makeRaw(invalid))).toThrow(
+        "Jujutsu returned an invalid history record.",
+      );
+    }
+  });
+
+  test("rejects truncated history records missing expected fields", () => {
+    const fields = [
+      "a".repeat(40),
+      "aaaaaaaa",
+      "k".repeat(32),
+      "b".repeat(40),
+      "Ada",
+      "",
+      "2026-01-01T00:00:00+00:00",
+      "Commit\n",
+      "0",
+      "",
+      "",
+      "",
+      "",
+      // missing 14th field
+    ];
+    expect(() => parseJjHistory(fields.join("\0"))).toThrow(
+      "Jujutsu returned a truncated history record.",
+    );
+  });
+
+  unixTest("streams records across split chunk boundaries without losing emptiness", async () => {
+    const temp = mkdtempSync(join(tmpdir(), "hunk-jj-split-"));
+    tempDirs.push(temp);
+    const executable = join(temp, "chunked-jj");
+    const script = `#!/bin/sh
+case "$*" in
+  *" root")
+    echo "${temp}"
+    exit 0
+    ;;
+esac
+printf '%s\\0%s\\0%s\\0%s\\0' "${"a".repeat(40)}" "aaaaaaaa" "${"k".repeat(32)}" ""
+printf '%s\\0%s\\0%s\\0%s\\0' "Ada" "" "2026-01-01T00:00:00+00:00" "First split"
+printf '%s\\0%s\\0%s\\0%s\\0%s\\0' "0" "" "" "" ""
+printf 'tr'
+sleep 0.02
+printf 'ue\\0'
+printf '%s\\0%s\\0%s\\0%s\\0' "${"b".repeat(40)}" "bbbbbbbb" "${"k".repeat(32)}" "${"a".repeat(40)}"
+printf '%s\\0%s\\0%s\\0%s\\0' "Ada" "" "2026-01-02T00:00:00+00:00" "Second split"
+printf '%s\\0%s\\0%s\\0%s\\0%s\\0' "0" "" "" "" ""
+printf 'fal'
+sleep 0.02
+printf 'se\\0'
+`;
+    writeFileSync(executable, script);
+    chmodSync(executable, 0o755);
+
+    const source = openJjHistory({}, { cwd: temp, jjExecutable: executable });
+    const page = await source.read({ limit: 4 });
+    await source.close();
+
+    expect(page.commits).toHaveLength(2);
+    expect(page.commits[0]!.isEmpty).toBe(true);
+    expect(page.commits[0]!.subject).toBe("First split");
+    expect(page.commits[1]!.isEmpty).toBe(false);
+    expect(page.commits[1]!.subject).toBe("Second split");
   });
 
   test("owns default and explicitly selected parent review semantics", async () => {
@@ -256,6 +387,7 @@ describe("Jujutsu history production", () => {
         "Second commit",
         "First commit",
       ]);
+      expect(commits.map((commit) => commit.isEmpty)).toEqual([true, false, false]);
       expect(commits[1]!.body).toBe("Detailed body.");
       expect(commits[1]!.displayId).toMatch(/^[k-z]{8}$/);
       expect(commits[1]!.logicalId).toMatch(/^[k-z]{32}$/);
@@ -271,6 +403,7 @@ describe("Jujutsu history production", () => {
       const filtered = openJjHistory({ pathspecs: ["history.txt"] }, { cwd: repo });
       const filteredPage = await filtered.read({ limit: 4 });
       await filtered.close();
+      expect(filteredPage.commits.map((commit) => commit.isEmpty)).toEqual([false, false]);
       const filteredWithParent = filteredPage.commits.find(
         (commit) => commit.parentRevisionIds.length > 0,
       );

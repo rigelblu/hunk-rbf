@@ -13,7 +13,7 @@ import {
 import { runAbortableCommand } from "@hunk/vcs/async-process";
 import { normalizePathForOS } from "@hunk/vcs/path";
 
-const HISTORY_FIELDS_PER_COMMIT = 13;
+const HISTORY_FIELDS_PER_COMMIT = 14;
 const REF_SEPARATOR = "\x1f";
 const FULL_COMMIT_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const DISPLAY_ID_PATTERN = /^[a-z0-9]{4,64}$/;
@@ -35,6 +35,7 @@ const JJ_HISTORY_TEMPLATE =
     'remote_bookmarks.map(|r| r.name() ++ "@" ++ r.remote()).join("\\x1f")',
     'local_tags.map(|r| r.name()).join("\\x1f")',
     'remote_tags.map(|r| r.name() ++ "@" ++ r.remote()).join("\\x1f")',
+    'if(empty, "true", "false")',
   ].join(' ++ "\\0" ++ ') + ' ++ "\\0"';
 
 export interface JjHistoryOptions {
@@ -181,12 +182,14 @@ export function parseJjHistory(
     const remoteBookmarks = fields[offset + 10]!;
     const localTags = fields[offset + 11]!;
     const remoteTags = fields[offset + 12]!;
+    const emptyField = fields[offset + 13]!;
 
     if (
       !FULL_COMMIT_ID_PATTERN.test(revisionId) ||
       !DISPLAY_ID_PATTERN.test(displayId) ||
       !logicalId ||
-      !authoredAt
+      !authoredAt ||
+      (emptyField !== "true" && emptyField !== "false")
     ) {
       throw new Error("Jujutsu returned an invalid history record.");
     }
@@ -215,6 +218,7 @@ export function parseJjHistory(
       authoredAt,
       decorations,
       logicalId,
+      isEmpty: emptyField === "true",
     });
   }
   return commits;

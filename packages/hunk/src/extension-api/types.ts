@@ -21,7 +21,7 @@
  * Extensions can branch on `hunk.apiVersion` so a newer Hunk can keep loading
  * older extensions without guessing at their expectations.
  */
-export const HUNK_EXTENSION_API_VERSION = 29;
+export const HUNK_EXTENSION_API_VERSION = 30;
 export type HunkExtensionApiVersion = typeof HUNK_EXTENSION_API_VERSION;
 
 export type ExtensionNotifyType = "info" | "warning" | "error";
@@ -818,6 +818,16 @@ export interface ExtensionVcsHistoryCommit {
    * continues to key graph and review operations by the immutable `revisionId`.
    */
   logicalId?: string;
+  /**
+   * Whether the provider reports this revision as contributing no changes.
+   *
+   * `true` indicates a known-empty revision, `false` indicates a known-nonempty
+   * revision, and `undefined` indicates that the provider does not report
+   * revision emptiness. The provider owns the comparison semantics; this fact
+   * never changes the semantic subject or body. API 30 is reserved to the
+   * isolated HK-91 candidate until an authorized integration.
+   */
+  isEmpty?: boolean;
 }
 
 /** Provider-neutral history traversal accepted by `hunk log`. */

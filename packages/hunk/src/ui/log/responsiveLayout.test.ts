@@ -221,3 +221,69 @@ describe("responsive log layout", () => {
     expect(projected.metadata).toStartWith("adalovelace");
   });
 });
+
+describe("known-empty responsive titles", () => {
+  test("preserves the whole marker at actual six, seven, eight, and nine-cell consumer budgets", () => {
+    const emptyRow = planHistoryPage([
+      {
+        ...commit,
+        displayId: "x",
+        parentRevisionIds: [],
+        decorations: [],
+        isEmpty: true,
+        subject: "123456789",
+      },
+    ]).rows[0]!;
+    const actual = new Map<number, string>();
+    for (let width = 5; width <= 80; width += 1) {
+      const projected = projectResponsiveLogRow({
+        row: emptyRow,
+        presentation: { ...presentation, unicode: false, decorations: false },
+        layout: resolveLogResponsiveLayout(width, 24),
+        width,
+        now,
+      });
+      actual.set(projected.leftWidth, projected.title);
+    }
+    expect(actual.get(6)).toBe("(empt.");
+    expect(actual.get(7)).toBe("(empty)");
+    expect(actual.get(8)).toBe("(empty)");
+    expect(actual.get(9)).toBe("(empty) .");
+  });
+
+  test("keeps labels independent of presentation controls and leaves semantic fields unchanged", () => {
+    for (const subject of [
+      "(no description set)",
+      "日本語 👨‍👩‍👧‍👦 " + "long ".repeat(25) + "\x1b[2J\tend",
+    ]) {
+      for (const isEmpty of [true, false, undefined]) {
+        const input = { ...commit, subject, isEmpty };
+        const inputRow = planHistoryPage([input]).rows[0]!;
+        for (const width of [40, 80, 120]) {
+          for (const graph of [true, false]) {
+            for (const unicode of [true, false]) {
+              for (const decorations of [true, false]) {
+                const projected = projectResponsiveLogRow({
+                  row: inputRow,
+                  presentation: { ...presentation, graph, unicode, decorations },
+                  layout: resolveLogResponsiveLayout(width, 24),
+                  width,
+                  now,
+                });
+                expect(projected.title.startsWith("(empty) ")).toBe(isEmpty === true);
+                expect(measureTextWidth(projected.title)).toBeLessThanOrEqual(projected.leftWidth);
+                expect(projected.title).not.toContain("\x1b");
+                expect(projected.title).not.toContain("\t");
+                expect(projected.displayId).toBe(commit.displayId);
+                expect(resolveLogResponsiveLayout(width, 24).rowHeight).toBe(3);
+              }
+            }
+          }
+        }
+        expect(input.subject).toBe(subject);
+        expect(input.body).toBe(commit.body);
+        expect(input.revisionId).toBe(commit.revisionId);
+      }
+    }
+  });
+});

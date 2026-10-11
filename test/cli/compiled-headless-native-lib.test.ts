@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { createServer } from "node:net";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
@@ -256,6 +256,38 @@ describe("compiled headless native-library loading", () => {
 
     expect(proc.exitCode).toBe(0);
     expect(Buffer.from(proc.stdout).toString("utf8")).toBe("ok\n");
+    expect(Buffer.from(proc.stderr).toString("utf8")).toBe("");
+    expect(nativeArtifacts(temp)).toEqual([]);
+  });
+
+  compiledTest("resolves an external extension dependency through hoisted node_modules", () => {
+    const { env, temp } = createTestEnvironment();
+    symlinkSync(
+      resolve(import.meta.dir, "..", "..", "node_modules"),
+      resolve(temp, "node_modules"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    const extensionPath = resolve(temp, "dependency-cli.ts");
+    writeFileSync(
+      extensionPath,
+      `import { marked } from "marked";
+export default function (hunk) {
+  hunk.registerCliCommand({ name: "dependency-probe", summary: "Probe" }, async (_args, ctx) => {
+    await ctx.stdout.write(marked("# External dependency"));
+    return { kind: "exit" };
+  });
+}\n`,
+    );
+
+    const proc = Bun.spawnSync([executable!, "--extension", extensionPath, "dependency-probe"], {
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(proc.exitCode).toBe(0);
+    expect(Buffer.from(proc.stdout).toString("utf8")).toBe("<h1>External dependency</h1>\n");
     expect(Buffer.from(proc.stderr).toString("utf8")).toBe("");
     expect(nativeArtifacts(temp)).toEqual([]);
   });

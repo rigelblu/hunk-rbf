@@ -118,3 +118,8 @@ removedContentBg = "#78081acc"
 ```
 
 Hunk composites partial alpha over the actual ordinary or moved diff row, then applies selection and readable foreground contrast. Existing six-digit colors remain exact, and opaque eight-digit colors are accepted anywhere a custom-theme color is valid. Partial alpha is intentionally limited to `addedContentBg` and `removedContentBg`; validation errors name any unsupported key.
+
+# 🔵⋯ Empty JJ revisions in the HK-91 candidate
+The isolated HK-91 candidate shows `(empty)` before a JJ revision's description in interactive, compact, and medium history. JJ reports whether the whole revision contributes changes against its auto-merged parents. A described revision can be empty; an undescribed revision can contain changes. Ref, graph, and ASCII controls leave the empty label visible.
+
+Git reporting remains unknown in this slice. Hunk RBF product work covers JJ and Git; Sapling is out of scope. This candidate is separate from the installed release.
