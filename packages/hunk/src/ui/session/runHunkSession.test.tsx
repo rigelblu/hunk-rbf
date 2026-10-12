@@ -111,6 +111,47 @@ describe("runHunkSession", () => {
     expect(await running).toBe(143);
   });
 
+  test("raw-mode Ctrl-C goes to the newest claim that takes it, and requests a quit only when none does", async () => {
+    const events: string[] = [];
+    const { deps } = createTestDeps(events);
+    let interrupt: (() => void) | undefined;
+    deps.installInterrupt = ((_renderer: unknown, onInterrupt: () => void) => {
+      interrupt = onInterrupt;
+      return { dispose: () => undefined };
+    }) as never;
+    let context: Parameters<Parameters<typeof runHunkSession>[0]["render"]>[0] | undefined;
+    const running = runHunkSession(
+      {
+        stdin,
+        stdout,
+        useMouse: true,
+        signals: [],
+        interruptExitCode: 130,
+        render: (value) => {
+          context = value;
+          return null;
+        },
+      },
+      deps,
+    );
+    await Promise.resolve();
+
+    const asked: string[] = [];
+    const withdrawOlder = context!.claimInterrupt(() => (asked.push("older"), true));
+    const withdrawNewer = context!.claimInterrupt(() => (asked.push("newer"), false));
+    interrupt?.();
+    expect(asked).toEqual(["newer", "older"]);
+    expect(context!.externalQuitSignal.aborted).toBe(false);
+
+    withdrawOlder();
+    withdrawNewer();
+    interrupt?.();
+    expect(asked).toEqual(["newer", "older"]);
+    expect(context!.externalQuitSignal.aborted).toBe(true);
+    context!.finish();
+    expect(await running).toBe(130);
+  });
+
   test("still tears down the terminal when awaited session cleanup fails", async () => {
     const events: string[] = [];
     const { deps } = createTestDeps(events);

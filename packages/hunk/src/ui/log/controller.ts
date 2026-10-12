@@ -784,32 +784,13 @@ export class LogController {
         const selectionAnchor =
           anchor ?? (visualSelectionActive && !anchorIdentity ? selected : null);
         const bodyHeight = this.viewportBodyHeight;
-        const width = this.viewportWidth;
-        const previousTop = findHistoryRowIndex(rows, current.rows[current.top]?.commit);
-        const requestedTop =
-          previousTop >= 0
-            ? Math.min(selected, previousTop)
-            : Math.max(0, selected - (current.selected - current.top));
-        const currentGeometry = planLogViewportGeometry({
-          width,
-          presentation: current.presentation,
-          requestedSelectedRowOffset: this.viewportAnchorOffset,
-          rows: current.rows,
-          selected: current.selected,
-          requestedTop: current.top,
-          bodyHeight,
-          groupByDay: !current.presentation.graph,
-        });
-        const geometry = planLogViewportGeometry({
-          width,
-          presentation: current.presentation,
+        const { geometry, entryScroll } = this.planReplacementViewport(
+          current,
           rows,
           selected,
-          requestedTop,
           bodyHeight,
-          groupByDay: !current.presentation.graph,
-          requestedSelectedRowOffset: currentGeometry.selectedRowOffset,
-        });
+          selectedIndex >= 0,
+        );
         // A partial candidate must not trigger the planner's EOF backfill over the reading position.
         if (!historyDone && geometry.entries.length > 0 && geometry.backfilled) {
           needsPage = true;
@@ -847,18 +828,7 @@ export class LogController {
             selectionAnchor !== selected || visualSelectionActive ? selectionAnchor : null,
           visualSelectionActive,
           top: geometry.top,
-          entryScroll: Math.min(
-            selectedIndex >= 0 ? current.entryScroll : 0,
-            rows[selected]
-              ? Math.max(
-                  0,
-                  commitEntryHeight(rows[selected]!, !current.presentation.graph, {
-                    width,
-                    presentation: current.presentation,
-                  }) - bodyHeight,
-                )
-              : 0,
-          ),
+          entryScroll,
           historyDone,
           scope: replacement.scope,
           loading: false,
@@ -879,7 +849,7 @@ export class LogController {
         return true;
       }
     } catch (error) {
-      if (!this.closed) {
+      if (!this.closed && (candidate.accepted || generation === this.generation)) {
         if (this.snapshot.marks.length > 0) this.publish({ markStatus: "refresh-failed" });
         this.setNotice(error instanceof Error ? error.message : String(error));
       }
@@ -891,7 +861,12 @@ export class LogController {
         if (!this.closed) this.setNotice(error instanceof Error ? error.message : String(error));
       }
       if (this.refreshCandidate === candidate) this.refreshCandidate = null;
-      if (!this.closed && !candidate.accepted && this.snapshot.markStatus === "checking")
+      if (
+        !this.closed &&
+        !candidate.accepted &&
+        generation === this.generation &&
+        this.snapshot.markStatus === "checking"
+      )
         this.publish({
           markStatus: this.snapshot.marks.length ? "refresh-failed" : previousMarkStatus,
         });
@@ -901,6 +876,43 @@ export class LogController {
   /* ------------------------------------------------------------------------ */
   /* Query replacement                                                          */
   /* ------------------------------------------------------------------------ */
+
+  /**
+   * Plan where replacement rows sit: the selected row keeps the screen offset it had, and a tall
+   * selected entry keeps its scroll only when it is the same entry (`keepEntryScroll`). A refresh
+   * and a query replacement both place their new rows with this.
+   */
+  private planReplacementViewport(
+    current: LogSnapshot,
+    rows: readonly HistoryGraphRow[],
+    selected: number,
+    bodyHeight: number,
+    keepEntryScroll: boolean,
+  ) {
+    const requestedTop = Math.max(0, selected - (current.selected - current.top));
+    const currentGeometry = planLogViewportGeometry({
+      rows: current.rows,
+      selected: current.selected,
+      requestedTop: current.top,
+      bodyHeight,
+      groupByDay: !current.presentation.graph,
+    });
+    const geometry = planLogViewportGeometry({
+      rows,
+      selected,
+      requestedTop,
+      bodyHeight,
+      groupByDay: !current.presentation.graph,
+      requestedSelectedRowOffset: currentGeometry.selectedRowOffset,
+    });
+    const entryScroll = Math.min(
+      keepEntryScroll ? current.entryScroll : 0,
+      rows[selected]
+        ? Math.max(0, commitEntryHeight(rows[selected]!, !current.presentation.graph) - bodyHeight)
+        : 0,
+    );
+    return { geometry, entryScroll };
+  }
 
   /**
    * Plan graph links for commits read under the accepted query. A custom expression can leave out
@@ -979,36 +991,13 @@ export class LogController {
           complete: page.done && revisionMarkLogicalFallbackEligible(nextInput),
         },
       );
-      const bodyHeight = this.viewportBodyHeight;
-      const groupByDay = !before.presentation.graph;
-      const beforeGeometry = planLogViewportGeometry({
-        rows: before.rows,
-        selected: before.selected,
-        requestedTop: before.top,
-        bodyHeight,
-        groupByDay,
-      });
-      const geometry = planLogViewportGeometry({
+      const { geometry, entryScroll } = this.planReplacementViewport(
+        before,
         rows,
-        selected: focus.selected,
-        requestedTop:
-          focus.outcome === "kept"
-            ? Math.max(0, focus.selected - (before.selected - before.top))
-            : 0,
-        bodyHeight,
-        groupByDay,
-        ...(focus.outcome === "kept"
-          ? { requestedSelectedRowOffset: beforeGeometry.selectedRowOffset }
-          : {}),
-      });
-      const focusedRow = rows[focus.selected];
-      const entryScroll =
-        focus.outcome === "kept" && focusedRow
-          ? Math.min(
-              before.entryScroll,
-              Math.max(0, commitEntryHeight(focusedRow, groupByDay) - bodyHeight),
-            )
-          : 0;
+        focus.selected,
+        this.viewportBodyHeight,
+        focus.outcome === "kept",
+      );
 
       const accepted = replacement.accept(target, opened);
       candidate.accepted = true;
@@ -1023,6 +1012,10 @@ export class LogController {
       this.markGeneration += 1;
       this.navigationTarget = null;
       this.setNavigationPromise(null);
+      // A refresh still in flight read the previous query. Abort it, and forget its promise so the
+      // next refresh starts fresh instead of joining one that can no longer publish.
+      this.refreshCandidate?.abort.abort();
+      this.refreshPromise = null;
       const previousAbort = this.abort;
       this.source = opened;
       this.acceptedInput = nextInput;
@@ -1043,7 +1036,8 @@ export class LogController {
         historyDone: page.done,
         scope: opened.scope,
         loading: false,
-        notice: rows.length === 0 && page.done ? "No commits found." : "",
+        // An empty result is a valid answer; the list says so and the status line stays quiet.
+        notice: "",
         query: {
           editable: true,
           mode,

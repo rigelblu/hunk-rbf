@@ -1,5 +1,11 @@
 import type { KeyEvent, MouseEvent as TuiMouseEvent } from "@opentui/core";
-import { flushSync, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
+import {
+  flushSync,
+  useKeyboard,
+  usePaste,
+  useRenderer,
+  useTerminalDimensions,
+} from "@opentui/react";
 import { basename } from "node:path";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { APP_COMMAND_NAMES } from "../../core/run/commandCatalog";
@@ -55,8 +61,26 @@ import { monochromeLogTheme, resolveInteractiveLogPalette } from "./colorPolicy"
 import { splitHistoryTitle } from "../history/title";
 import { resolveHistoryTitlePalette } from "../history/titlePalette";
 import { formatHistoryDay } from "./formatting";
-import { LOG_DAY_HEADER_HEIGHT } from "./geometry";
-import { projectResponsiveLogRow, resolveLogViewportBodyHeight } from "./responsiveLayout";
+import { commitEntryHeight, LOG_DAY_HEADER_HEIGHT, planLogViewportGeometry } from "./geometry";
+import { projectResponsiveLogRow, resolveLogResponsiveLayout } from "./responsiveLayout";
+import { historyQueryViewRows, planHistoryQueryView } from "./historyQueryView";
+import { RevsetEditorDialog, type FieldHandle } from "./RevsetEditorDialog";
+import {
+  beginRequest,
+  decideApply,
+  editDraft,
+  editRevsetStatusHint,
+  endRequest,
+  failureNotice,
+  highlightRow,
+  insertHighlighted,
+  moveHighlight,
+  openRevsetEditor,
+  planRevsetEditor,
+  scrollNotice,
+  type EditorActionId,
+  type RevsetEditorState,
+} from "./revsetEditor";
 import { historyScopeText } from "../history/staticProjection";
 
 /** Cells for the focus `>` and review-range `|` markers at the start of every revision row. */
@@ -103,6 +127,8 @@ export function LogApp({
   themeController,
   useColor,
   quitScheduler,
+  previousInputs,
+  claimInterrupt,
 }: {
   controller: LogController;
   runtime: InteractiveHistoryRuntime;
@@ -118,6 +144,8 @@ export function LogApp({
   quitScheduler?: ViewPreferenceQuitScheduler;
   /** Session-lifetime list of applied revsets the editor offers again. */
   previousInputs?: PreviousInputs;
+  /** Registers this surface's claim on raw-mode Ctrl-C, which would otherwise quit the session. */
+  claimInterrupt?: (claim: () => boolean) => () => void;
 }) {
   const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
   const terminal = useTerminalDimensions();
@@ -163,8 +191,16 @@ export function LogApp({
     snapshot.scope,
     snapshot.rows.some((row) => Boolean(row.cutoffLanes?.length)),
   );
-  const scopeLines = scopeText ? wrapText(scopeText, Math.max(1, terminal.width - 2)) : [];
-  const viewportBodyHeight = resolveLogViewportBodyHeight(terminal.height - scopeLines.length);
+  const queryView = planHistoryQueryView(snapshot.query, terminal);
+  const scopeLines =
+    scopeText && !queryView.replacesScopeLine
+      ? wrapText(scopeText, Math.max(1, terminal.width - 2))
+      : [];
+  const responsiveLayout = resolveLogResponsiveLayout(
+    terminal.width,
+    terminal.height - scopeLines.length - historyQueryViewRows(queryView),
+  );
+  const viewportBodyHeight = responsiveLayout.bodyHeight;
   const currentViewPreferences = useMemo(
     () => ({
       ...sessionViewPreferences,
@@ -313,6 +349,181 @@ export function LogApp({
     }
     await openSelected(undefined, true);
   };
+  // The revset editor. Its state lives here while it is open; applying goes through the controller.
+  const queryGeneration = snapshot.query?.generation ?? 0;
+  const watchedQueryGeneration = useRef(queryGeneration);
+  const [editor, setEditor] = useState<RevsetEditorState | null>(null);
+  // Keys in one stdin chunk read the draft the previous key wrote without waiting for a render.
+  // Opening and closing commit synchronously so those keys reach the correct native field.
+  const editorRef = useRef<RevsetEditorState | null>(null);
+  const editorAbort = useRef<AbortController | null>(null);
+  const editorField = useRef<FieldHandle | null>(null);
+  const updateEditor = (
+    next:
+      | RevsetEditorState
+      | null
+      | ((current: RevsetEditorState | null) => RevsetEditorState | null),
+  ) => {
+    const value = typeof next === "function" ? next(editorRef.current) : next;
+    editorRef.current = value;
+    // Close before a later opening key can reuse the old native field and its caret.
+    if (value === null) flushSync(() => setEditor(null));
+    else setEditor(value);
+    // The field has its own buffer, which only follows React at the next commit. Keep it level
+    // with the draft now, so a key later in the same chunk edits the text this change made.
+    const field = editorField.current;
+    if (value && field) {
+      // The input puts its caret after the text it is given.
+      if (field.value !== value.draft) field.value = value.draft;
+      if (value.phase === "editing") field.focus();
+      else field.blur();
+    }
+  };
+  const editorLayout = editor ? planRevsetEditor(editor, terminal) : null;
+  const openEditor = () => {
+    const query = controller.getSnapshot().query;
+    if (!query?.editable || editorRef.current || reviewPending.current) return;
+    // Mount and focus the native input before the next key or paste in this stdin chunk.
+    flushSync(() => updateEditor(openRevsetEditor(query, previousInputs?.list() ?? [])));
+  };
+  /** Esc, Ctrl+C and an outside click: abort a busy request first, close the editor second. */
+  const cancelEditor = () => {
+    const current = editorRef.current;
+    if (!current) return;
+    if (current.phase === "editing") {
+      updateEditor(null);
+      return;
+    }
+    editorAbort.current?.abort();
+    editorAbort.current = null;
+    updateEditor(endRequest(current));
+  };
+  // Raw-mode Ctrl-C reaches the session before any key handler, so an open editor claims it there.
+  const cancelEditorRef = useRef(cancelEditor);
+  cancelEditorRef.current = cancelEditor;
+  useEffect(
+    () =>
+      claimInterrupt?.(() => {
+        if (!editorRef.current) return false;
+        cancelEditorRef.current();
+        return true;
+      }),
+    [claimInterrupt],
+  );
+  /** Read current bounds for input events that precede React's resize commit. */
+  const planEditorForInput = (state: RevsetEditorState) =>
+    planRevsetEditor(state, { width: renderer.width, height: renderer.height });
+  const runEditorRequest = (request: Parameters<typeof beginRequest>[1]) => {
+    const current = editorRef.current;
+    if (!current || current.phase !== "editing") return;
+    const layout = planEditorForInput(current);
+    if (layout.kind === "too-small") return;
+    const abort = new AbortController();
+    editorAbort.current = abort;
+    updateEditor(
+      beginRequest(current, request, {
+        height: layout.frame.height,
+        top: layout.frame.top,
+        compact: layout.compact,
+      }),
+    );
+    void controller.replaceQuery(request, abort.signal).then((result) => {
+      if (editorAbort.current === abort) editorAbort.current = null;
+      // An Esc already returned the editor to its draft.
+      if (abort.signal.aborted) return;
+      if (result.status === "applied") {
+        previousInputs?.recordOutcome(request, result);
+        updateEditor(null);
+      } else if (result.status === "failed") {
+        updateEditor(
+          (latest) => latest && endRequest(latest, failureNotice(request, result.reason)),
+        );
+      } else {
+        updateEditor((latest) => latest && endRequest(latest));
+      }
+    });
+  };
+  const applyEditor = () => {
+    const current = editorRef.current;
+    if (!current || current.phase !== "editing") return;
+    if (planEditorForInput(current).kind === "too-small") return;
+    const decision = decideApply(current);
+    if (decision.kind === "reject")
+      updateEditor({ ...current, notice: decision.notice, noticeOffset: 0 });
+    else if (decision.kind === "noop") updateEditor(null);
+    else runEditorRequest(decision.request);
+  };
+  const runEditorAction = (id: EditorActionId) => {
+    if (id === "cancel") cancelEditor();
+    else if (id === "apply") applyEditor();
+    else runEditorRequest({ kind: "reset" });
+  };
+  const insertEditorRow = (index: number) => {
+    const current = editorRef.current;
+    if (!current || current.phase !== "editing") return;
+    if (planEditorForInput(current).kind === "too-small") return;
+    updateEditor(insertHighlighted(highlightRow(current, index)));
+    // Insertion places the caret at the end even when the field already held this text.
+    editorField.current?.gotoBufferEnd();
+  };
+  /** Handle one key for the open editor; false leaves it to the focused field. */
+  const handleEditorKey = (key: KeyEvent) => {
+    const current = editorRef.current;
+    if (!current) return false;
+    const layout = planEditorForInput(current);
+    const name = key.name;
+    const busy = current.phase !== "editing";
+    if (name === "escape" || (key.ctrl && name === "c")) return (cancelEditor(), true);
+    // The too-small screen has no field: nothing edits the draft or acts on it, and only a cancel
+    // gets through. The draft is kept for when the terminal grows again.
+    if (layout.kind === "too-small") return true;
+    if (name === "f2") return (applyEditor(), true);
+    if (name === "f3") return (runEditorAction("reset"), true);
+    if (name === "return" || name === "enter") {
+      if (busy) return true;
+      if (current.highlight !== null) insertEditorRow(current.highlight);
+      else applyEditor();
+      return true;
+    }
+    const step =
+      name === "tab"
+        ? key.shift
+          ? -1
+          : 1
+        : name === "down" || (key.ctrl && name === "n")
+          ? 1
+          : name === "up" || (key.ctrl && name === "p")
+            ? -1
+            : 0;
+    if (step !== 0) {
+      if (!busy && layout.kind === "layout" && layout.listVisible)
+        updateEditor(moveHighlight(current, step));
+      return true;
+    }
+    if (name === "pageup" || name === "pagedown") {
+      if (layout.kind === "layout" && layout.noticeScroll) {
+        const page = layout.noticeScroll.visible;
+        updateEditor(scrollNotice(current, layout, name === "pageup" ? -page : page));
+      }
+      return true;
+    }
+    // While busy the field is read-only, and a key that follows Apply in the same chunk must not
+    // edit it before the field loses focus.
+    if (busy) return true;
+    // A layout without a field consumes editing keys; the native field handles every other edit.
+    return !editorField.current;
+  };
+  // Keep paste away from a busy or hidden field, including one awaiting the resize commit.
+  usePaste((event) => {
+    const current = editorRef.current;
+    if (!current) return;
+    if (
+      current.phase !== "editing" ||
+      planEditorForInput(current).kind === "too-small" ||
+      !editorField.current
+    )
+      event.preventDefault();
+  });
   const inactiveHistoryCommandNames = useMemo(() => {
     const names = new Set(APP_COMMAND_NAMES);
     for (const registered of buildSessionCommands(runtime.extensionSession.current.registry)) {
@@ -343,6 +554,7 @@ export function LogApp({
     "hunk.history.refresh": () => void controller.refresh(),
     "hunk.app.quit": (key) => requestLogQuit(key.ctrl && key.name === "c" ? 130 : undefined),
     "hunk.view.openThemeSelector": () => themeSelector.openThemeSelector(),
+    "hunk.history.editRevset": () => openEditor(),
     "hunk.history.toggleGraph": () => controller.togglePresentation("graph"),
     "hunk.history.toggleUnicode": () => controller.togglePresentation("unicode"),
     "hunk.history.toggleAuthor": () => controller.togglePresentation("author"),
@@ -455,6 +667,9 @@ export function LogApp({
       commandItem("hunk.history.toggleDecorations", {
         checked: snapshot.presentation.decorations,
       }),
+      ...(snapshot.query?.editable
+        ? [{ kind: "separator" } as const, commandItem("hunk.history.editRevset")]
+        : []),
     ],
     navigate: [
       commandItem("hunk.history.previousCommit"),
@@ -488,6 +703,7 @@ export function LogApp({
   const menu = useMenuController(menus);
 
   const activeInteraction = Boolean(
+    editor ||
     menu.activeMenuId ||
     statusLineState.prompt ||
     parentSelectorIndex !== null ||
@@ -502,6 +718,10 @@ export function LogApp({
   interactionActive.current = activeInteraction;
 
   useEffect(() => {
+    // Consume the restart flag even while auto-refresh is off, so a later enable is not mistaken
+    // for a restart caused by an Apply.
+    const queryRestart = watchedQueryGeneration.current !== queryGeneration;
+    watchedQueryGeneration.current = queryGeneration;
     if (!autoRefreshEnabled) return;
     if (!runtime.historyWatchPlan || !runtime.historyWatchSignature) {
       controller.setNotice("This VCS provider supports manual history refresh only.");
@@ -513,7 +733,8 @@ export function LogApp({
     let watchController: ReturnType<typeof createWatchController> | undefined;
     const start = async () => {
       try {
-        const returnedFromReview = refreshOnMountGeneration > 0;
+        // A new accepted query restarts the watch without a refresh: Apply already read it.
+        const returnedFromReview = refreshOnMountGeneration > 0 && !queryRestart;
         const refreshedOnReturn = returnedFromReview ? await controller.refresh() : true;
         const initialSignature = refreshedOnReturn
           ? await runtime.historyWatchSignature!(abort.signal)
@@ -581,6 +802,7 @@ export function LogApp({
     controller,
     onAutoRefreshEnabledChange,
     refreshOnMountGeneration,
+    queryGeneration,
     runtime,
   ]);
 
@@ -667,6 +889,11 @@ export function LogApp({
         if (quit?.match(key)) quit.run(key, 1);
       }
       consume();
+      return;
+    }
+    if (editorRef.current) {
+      // The open editor owns every key; typing it does not handle goes to the focused field.
+      if (handleEditorKey(key)) consume();
       return;
     }
     if (marksDialogIndex !== null) {
@@ -768,6 +995,14 @@ export function LogApp({
     transientNotice ||
     snapshot.notice ||
     `${runtime.providerName} · ${snapshot.rows.length}${snapshot.historyDone ? " commits" : "+ commits"}`;
+  const statusHintShown = editRevsetStatusHint(
+    statusHint,
+    snapshot.query?.editable
+      ? findAppCommandById(commands, "hunk.history.editRevset")?.keyLabels[0]
+      : undefined,
+    statusText,
+    terminal.width,
+  );
   const unresolvedMarks = snapshot.marks.filter((entry) => entry.kind === "unresolved").length;
   const statusItems: StatusItem[] = [
     { id: "log:status", spans: [{ text: statusText, tone: "muted" }], priority: 1 },
@@ -821,10 +1056,10 @@ export function LogApp({
   if (snapshot.search) {
     statusItems.push({ id: "log:search", spans: [{ text: `/${snapshot.search}`, tone: "muted" }] });
   }
-  if (statusHint) {
+  if (statusHintShown) {
     statusItems.push({
       id: "log:hint",
-      spans: [{ text: statusHint, tone: "muted" }],
+      spans: [{ text: statusHintShown, tone: "muted" }],
       alignment: "right",
       priority: -1,
     });
@@ -850,6 +1085,27 @@ export function LogApp({
         onToggleMenu={menu.toggleMenu}
       />
       <box style={{ width: "100%", height: 1 }} />
+      {queryView.top.length ? (
+        <box
+          style={{
+            height: queryView.top.length,
+            width: "100%",
+            flexDirection: "column",
+            paddingLeft: 1,
+            paddingRight: 1,
+          }}
+        >
+          {queryView.top.map((row, index) =>
+            row.kind === "blank" ? (
+              <box key={index} style={{ width: "100%", height: 1 }} />
+            ) : (
+              <text key={index} fg={row.kind === "revset" ? theme.text : theme.muted}>
+                {row.text}
+              </text>
+            ),
+          )}
+        </box>
+      ) : null}
       <box
         style={{
           width: "100%",
@@ -891,7 +1147,9 @@ export function LogApp({
             <text fg={theme.muted}>Preparing review…</text>
           </box>
         ) : snapshot.historyDone && visible.length === 0 ? (
-          <text fg={theme.muted}>No commits</text>
+          <text fg={theme.muted}>
+            {snapshot.query?.mode === "custom" ? "No revisions match this revset." : "No commits"}
+          </text>
         ) : (
           visible.map(({ index, row, showDayHeader, height }) => {
             const selected =
@@ -1196,6 +1454,23 @@ export function LogApp({
           })
         )}
       </box>
+      {queryView.bottom.length ? (
+        <box
+          style={{
+            height: queryView.bottom.length,
+            width: "100%",
+            flexDirection: "column",
+            paddingLeft: 1,
+            paddingRight: 1,
+          }}
+        >
+          {queryView.bottom.map((line, index) => (
+            <text key={index} fg={theme.muted}>
+              {line}
+            </text>
+          ))}
+        </box>
+      ) : null}
       {scopeLines.length ? (
         <box
           style={{
@@ -1266,6 +1541,23 @@ export function LogApp({
           }}
         />
       ) : null}
+      {editor && editorLayout ? (
+        <RevsetEditorDialog
+          state={editor}
+          layout={editorLayout}
+          terminalWidth={terminal.width}
+          terminalHeight={terminal.height}
+          theme={chromeTheme}
+          onDraftChange={(draft) => updateEditor((current) => current && editDraft(current, draft))}
+          onInsert={insertEditorRow}
+          onAction={runEditorAction}
+          onScrollNotice={(delta) =>
+            updateEditor((current) => current && scrollNotice(current, editorLayout, delta))
+          }
+          onClose={cancelEditor}
+          fieldRef={editorField}
+        />
+      ) : null}
       {parentSelectorIndex !== null && parentRow ? (
         <ParentSelectorDialog
           parentRevisionIds={parentRow.commit.parentRevisionIds}
@@ -1296,7 +1588,11 @@ export function LogApp({
       ) : null}
       {showHelp ? (
         <HelpDialog
-          sections={buildHistoryHelpSections(commands)}
+          sections={buildHistoryHelpSections(
+            snapshot.query?.editable
+              ? commands
+              : commands.filter((command) => command.id !== "hunk.history.editRevset"),
+          )}
           terminalHeight={terminal.height}
           terminalWidth={terminal.width}
           theme={chromeTheme}

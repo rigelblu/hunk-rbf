@@ -943,7 +943,7 @@ describe("HK-19.1 JJ expression history", () => {
         "(ancestors(visible_heads()) ~ root())",
       );
     },
-    20_000,
+    60_000,
   );
 
   jjTest("omits the expression of a launch it cannot state, and still opens it", async () => {

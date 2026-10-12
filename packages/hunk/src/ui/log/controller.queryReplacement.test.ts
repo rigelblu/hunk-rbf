@@ -281,7 +281,7 @@ describe("LogController.replaceQuery", () => {
       rows: [],
       selected: 0,
       historyDone: true,
-      notice: "No commits found.",
+      notice: "",
     });
     expect(controller.getSelection()).toBeUndefined();
     await controller.close();
@@ -887,6 +887,27 @@ describe("LogController.replaceQuery rules", () => {
     await controller.close();
   });
 
+  test("an entry scroll resets when focus is not kept", async () => {
+    const launch: TestEntry[] = ["a", "b", "c", "d", "e", "f"].map((revisionId) =>
+      revisionId === "e" ? { revisionId, cutoffs: ["p1", "p2", "p3", "p4", "p5"] } : { revisionId },
+    );
+    const { controller, table } = await loadedController();
+    table.launch!.entries = launch;
+    await controller.replaceQuery({ kind: "reset" });
+    controller.clampViewport(4);
+    await controller.select(4, 4);
+    expect(controller.scrollEntry(2, 4)).toBeTrue();
+    expect(controller.getSnapshot().entryScroll).toBe(2);
+
+    // The focused revision is not in the new rows, so the newest row is selected from the top.
+    table.q = {
+      entries: [{ revisionId: "z", cutoffs: ["p1", "p2", "p3", "p4", "p5"] }, { revisionId: "y" }],
+    };
+    await controller.replaceQuery({ kind: "apply", expression: "q" });
+    expect(controller.getSnapshot()).toMatchObject({ selected: 0, entryScroll: 0, top: 0 });
+    await controller.close();
+  });
+
   test("quit during a pending read discards the candidate exactly once", async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -932,6 +953,225 @@ describe("LogController.replaceQuery rules", () => {
     expect(result).toEqual({ status: "applied", mode: "custom", expression: "q" });
     expect(subjects(controller)).toEqual(["n1"]);
     expect(log.accepted).toEqual(["q"]);
+    await controller.close();
+  });
+});
+
+describe("a refresh racing a query replacement", () => {
+  const STALE = "History session changed while refreshing.";
+
+  /** Make the refresh path fail the way the real bootstrap does once its source has changed. */
+  function failReopenAfter(runtime: { reopenSource: (signal?: AbortSignal) => Promise<unknown> }) {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    runtime.reopenSource = async () => {
+      await gate;
+      throw new Error(STALE);
+    };
+    return release;
+  }
+
+  test("a refresh inside reopenSource when an Apply publishes leaves the applied view clean", async () => {
+    const { controller, runtime } = await loadedController({
+      queries: { q: { entries: [{ revisionId: "n1" }, { revisionId: "n2" }] } },
+    });
+    controller.toggleMark(0);
+    await controller.select(2, 10);
+    const release = failReopenAfter(runtime);
+
+    const refreshing = controller.refresh();
+    expect(controller.getSnapshot().markStatus).toBe("checking");
+    await controller.replaceQuery({ kind: "apply", expression: "q" });
+    expect(controller.getSnapshot().notice).toBe("Selected newest; previous not loaded.");
+    release();
+    expect(await refreshing).toBeFalse();
+
+    const after = controller.getSnapshot();
+    expect(after.markStatus).toBe("ready");
+    expect(after.notice).toBe("Selected newest; previous not loaded.");
+    expect(after.marks).toHaveLength(1);
+    // Marking still works straight after: nothing is stuck in a failed or checking state.
+    expect(controller.toggleMark(0)).toBeTrue();
+    expect(controller.getSnapshot().marks).toHaveLength(2);
+    await controller.close();
+  });
+
+  test("an Apply that starts while a refresh is pending and publishes first drops the refresh's later failure", async () => {
+    const { controller, runtime, table } = await loadedController({
+      queries: { q: { entries: [{ revisionId: "n1" }, { revisionId: "n2" }] } },
+    });
+    controller.toggleMark(0);
+    await controller.select(2, 10);
+    const releaseRefresh = failReopenAfter(runtime);
+    let releaseApply!: () => void;
+    table.q!.gate = new Promise<void>((resolve) => {
+      releaseApply = resolve;
+    });
+
+    const refreshing = controller.refresh();
+    const applying = controller.replaceQuery({ kind: "apply", expression: "q" });
+    releaseApply();
+    expect((await applying).status).toBe("applied");
+    // The refresh fails only after the Apply published; that failure must not land on the new view.
+    releaseRefresh();
+    expect(await refreshing).toBeFalse();
+
+    const after = controller.getSnapshot();
+    expect(after.markStatus).toBe("ready");
+    expect(after.notice).toBe("Selected newest; previous not loaded.");
+    expect(controller.toggleMark(0)).toBeTrue();
+    await controller.close();
+  });
+
+  test("a refresh that starts while an Apply is pending, and fails after it published, is dropped", async () => {
+    const { controller, runtime, table } = await loadedController({
+      queries: { q: { entries: [{ revisionId: "n1" }, { revisionId: "n2" }] } },
+    });
+    controller.toggleMark(0);
+    await controller.select(2, 10);
+    let releaseApply!: () => void;
+    table.q!.gate = new Promise<void>((resolve) => {
+      releaseApply = resolve;
+    });
+
+    const applying = controller.replaceQuery({ kind: "apply", expression: "q" });
+    const releaseRefresh = failReopenAfter(runtime);
+    const refreshing = controller.refresh();
+    releaseApply();
+    expect((await applying).status).toBe("applied");
+    releaseRefresh();
+    expect(await refreshing).toBeFalse();
+
+    const after = controller.getSnapshot();
+    expect(after.markStatus).toBe("ready");
+    expect(after.notice).toBe("Selected newest; previous not loaded.");
+    expect(controller.toggleMark(0)).toBeTrue();
+    await controller.close();
+  });
+
+  test("an Apply that lands during a refresh frees the next refresh to start and publish", async () => {
+    const { controller, runtime, log } = await loadedController({
+      queries: { q: { entries: [{ revisionId: "n1" }] } },
+    });
+    // The first refresh never finishes on its own.
+    let releaseStuck!: () => void;
+    const stuck = new Promise<void>((resolve) => {
+      releaseStuck = resolve;
+    });
+    const reopen = runtime.reopenSource.bind(runtime);
+    let calls = 0;
+    let firstSignal: AbortSignal | undefined;
+    runtime.reopenSource = async (signal) => {
+      calls += 1;
+      if (calls === 1) {
+        firstSignal = signal;
+        await stuck;
+        throw new Error("History session changed while refreshing.");
+      }
+      return reopen(signal);
+    };
+    const firstRefresh = controller.refresh();
+    await controller.replaceQuery({ kind: "apply", expression: "q" });
+    // The superseded refresh was told to stop; the abort is how it learns its work is moot.
+    expect(firstSignal?.aborted).toBeTrue();
+    // Without clearing the pending refresh this call would join it and reopen nothing.
+    const secondRefresh = controller.refresh();
+    expect(await secondRefresh).toBeTrue();
+    expect(calls).toBe(2);
+    expect(log.opened.at(-1)).toBe("q");
+    expect(controller.getSnapshot().notice).toBe("History refreshed.");
+    releaseStuck();
+    expect(await firstRefresh).toBeFalse();
+    // The newer refresh had already finished here. The overlapping case, where the aborted
+    // refresh winds down while the newer one is still checking, has its own test below.
+    expect(controller.getSnapshot().notice).toBe("History refreshed.");
+    expect(controller.getSnapshot().markStatus).toBe("ready");
+    await controller.close();
+  });
+
+  test("a superseded refresh winding down does not overwrite the freed refresh's checking status", async () => {
+    const { controller, runtime } = await loadedController({
+      queries: {
+        q: { entries: [{ revisionId: "l1", logicalId: "change-l1" }, { revisionId: "n1" }] },
+      },
+    });
+    // l1 stays in the applied view, so one resolved mark exists throughout.
+    controller.toggleMark(0);
+    let releaseStuck!: () => void;
+    const stuck = new Promise<void>((resolve) => {
+      releaseStuck = resolve;
+    });
+    let releaseSecond!: () => void;
+    const second = new Promise<void>((resolve) => {
+      releaseSecond = resolve;
+    });
+    const reopen = runtime.reopenSource.bind(runtime);
+    let calls = 0;
+    runtime.reopenSource = async (signal) => {
+      calls += 1;
+      if (calls === 1) {
+        await stuck;
+        throw new Error(STALE);
+      }
+      await second;
+      return reopen(signal);
+    };
+
+    const firstRefresh = controller.refresh();
+    expect((await controller.replaceQuery({ kind: "apply", expression: "q" })).status).toBe(
+      "applied",
+    );
+    expect(controller.getSnapshot().markStatus).toBe("ready");
+    // The `r` that the Apply freed starts a refresh that is still reading.
+    const secondRefresh = controller.refresh();
+    expect(calls).toBe(2);
+    expect(controller.getSnapshot().markStatus).toBe("checking");
+
+    // The superseded refresh now winds down; it must publish no mark status of its own.
+    const seen: string[] = [];
+    controller.subscribe(() => seen.push(controller.getSnapshot().markStatus));
+    releaseStuck();
+    expect(await firstRefresh).toBeFalse();
+    expect(controller.getSnapshot().markStatus).toBe("checking");
+    expect(seen).not.toContain("refresh-failed");
+    // Marking stays blocked while the second refresh checks, then works.
+    expect(controller.toggleMark(1)).toBeFalse();
+
+    releaseSecond();
+    expect(await secondRefresh).toBeTrue();
+    expect(controller.getSnapshot().markStatus).toBe("ready");
+    expect(controller.toggleMark(1)).toBeTrue();
+    await controller.close();
+  });
+
+  test("a refresh that fails with no replacement in between still reports the failure", async () => {
+    const { controller, runtime } = await loadedController();
+    controller.toggleMark(0);
+    const release = failReopenAfter(runtime);
+    const refreshing = controller.refresh();
+    release();
+    expect(await refreshing).toBeFalse();
+    expect(controller.getSnapshot().markStatus).toBe("refresh-failed");
+    expect(controller.getSnapshot().notice).toBe(STALE);
+    await controller.close();
+  });
+
+  test("a refresh that was accepted and then throws inside its own publish still reports the failure", async () => {
+    const { controller, runtime } = await loadedController();
+    controller.toggleMark(0);
+    // The listener runs inside the refresh's publish, after the refresh was accepted.
+    let first = true;
+    controller.subscribe(() => {
+      if (controller.getSnapshot().notice === "History refreshed." && first) {
+        first = false;
+        throw new Error("a subscriber failed");
+      }
+    });
+    void runtime;
+    expect(await controller.refresh()).toBeFalse();
+    expect(controller.getSnapshot().notice).toBe("a subscriber failed");
     await controller.close();
   });
 });

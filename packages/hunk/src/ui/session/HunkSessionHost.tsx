@@ -32,6 +32,7 @@ import { ThemeController } from "../theme/controller";
 import { trackLiveAppearance } from "../theme/liveAppearance";
 import { watchTerminalColors } from "../theme/terminalColorWatcher";
 import { PreviousInputs } from "./previousInputs";
+import type { HunkSessionRenderContext } from "./runHunkSession";
 import { applySessionViewPreferences } from "./viewPreferences";
 
 export interface HistorySurfaceRoute {
@@ -139,6 +140,7 @@ export function HunkSessionHost({
   initialRoute,
   initialization,
   externalQuitSignal,
+  claimInterrupt,
   onQuit,
   startupNoticeResolver,
   systemAppearanceResolver,
@@ -148,6 +150,8 @@ export function HunkSessionHost({
   initialRoute: HunkSurfaceRoute;
   initialization: InteractiveSessionInitialization;
   externalQuitSignal: AbortSignal;
+  /** Lets the history surface keep raw-mode Ctrl-C for an open overlay instead of quitting. */
+  claimInterrupt?: HunkSessionRenderContext["claimInterrupt"];
   onQuit: (exitCode?: number) => void;
   startupNoticeResolver?: () => Promise<StartupNotice | null>;
   /** Read macOS appearance; production passes the macOS resolver and tests leave it unset. */
@@ -480,6 +484,7 @@ export function HunkSessionHost({
       refreshOnMountGeneration={historyReturnGeneration}
       themeController={themeController}
       previousInputs={previousInputs}
+      {...(claimInterrupt ? { claimInterrupt } : {})}
     />
   );
 }

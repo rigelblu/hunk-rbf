@@ -79,6 +79,7 @@ const HISTORY_COMMANDS = [
     locus: "client-local",
     publicToExtensions: false,
     group: "view",
+    helpSection: "Application",
   },
   {
     id: "hunk.history.toggleGraph",

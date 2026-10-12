@@ -8,9 +8,11 @@ import type { AppTheme } from "../../themes";
 export function ModalFrame({
   children,
   compact = false,
+  fitTitle = false,
   height,
   onClose,
   onMouseScroll,
+  top: requestedTop,
   terminalHeight,
   terminalWidth,
   theme,
@@ -20,9 +22,13 @@ export function ModalFrame({
   children: ReactNode;
   /** Drop the title and bottom padding rows, for terminals too short for the normal frame. */
   compact?: boolean;
+  /** Size the title so the title row and `[Esc]` fill the row exactly, with no wrapped blank row. */
+  fitTitle?: boolean;
   height: number;
   onClose?: () => void;
   onMouseScroll?: (event: TuiMouseEvent) => void;
+  /** Hold the top edge at this row instead of centering; off by default. */
+  top?: number;
   terminalHeight: number;
   terminalWidth: number;
   theme: AppTheme;
@@ -40,9 +46,15 @@ export function ModalFrame({
     terminalWidth,
     terminalHeight,
     compact,
+    top: requestedTop,
   });
   const closeText = onClose ? "[Esc]" : "";
-  const titleWidth = Math.max(1, clampedWidth - 2 - (closeText ? closeText.length + 1 : 0));
+  const titleWidth = Math.max(
+    1,
+    fitTitle
+      ? clampedWidth - 4 - closeText.length
+      : clampedWidth - 2 - (closeText ? closeText.length + 1 : 0),
+  );
 
   return (
     <>

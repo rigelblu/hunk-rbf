@@ -174,6 +174,25 @@ Interactive history uses two rows normally. Workspace names fit beside author/ti
 
 `hunk log --vcs jj --static` uses the existing scrollback format. Terminal output fits the terminal width; output piped to a file includes every name.
 
+# 🔵⋯ Edit the active JJ revset
+
+In interactive `hunk log --vcs jj`, history shows the complete revset above the list, with the mode and the row limit:
+
+```text
+Revset: (((trunk()..visible_heads()) | trunk()) ~ root())
+Launch policy · Limit: 100
+```
+
+Press `L`, or choose **View → Edit revset…**, to edit that revset. `F2` applies it exactly as written: no hidden author, date or path filters and no extra ancestry are added, and the row limit from `-n` stays separate. Applying text that has not changed closes the editor and changes nothing. `F3` restores the launch policy, including the mainline default and its fallback. `Esc`, `Ctrl-C` or a click outside cancels, and none of them quits Hunk from the editor. While a revset is being applied or restored, the first `Esc` or `Ctrl-C` aborts it and keeps your draft; a second one closes the editor.
+
+Revsets you applied earlier in this session are listed under **Previous inputs**, newest first. `Tab`/`Shift+Tab`, `Up`/`Down` or `Ctrl-N`/`Ctrl-P` highlight one, and `Enter` inserts it into the field without applying it; `Enter` with nothing highlighted applies the field. The list holds up to 50 revsets, survives opening a diff from history and returning, and is cleared when you quit. Nothing is saved to disk. A failed apply, a Reset and the launch revset are not added.
+
+If JJ rejects a revset, the editor stays open with your draft and shows JJ's reason as `Revset not applied: …`, without the source-diagram rows; `PgUp`/`PgDn` scroll a long reason. History behind the editor does not change.
+
+After a successful apply, focus stays on the revision you had selected if it is among the first rows of the new result; otherwise the newest row is selected and the status line says `Selected newest; previous not loaded.` Marks whose revision is in those rows stay marked, and the others stay in **Review marks** as unresolved. While a custom revset is active, history draws no graph links, and range selection and range review are unavailable (`Custom revset: graph links and range review unavailable.`), because a custom set can leave out commits between two rows. **Reset** brings both back. On terminals shorter than 15 rows, launch policy adds nothing to the history screen, and a custom revset adds one `Custom revset: …` row.
+
+Other providers do not offer the editor. Completion of revset functions, aliases and names is not part of this change.
+
 # 🔵⋯ Mark separate revisions in history
 
 In interactive `hunk log`, press `x` or click a revision's checkbox to mark or unmark that exact revision. Ctrl-click also toggles its mark, including on the revision ID and copy icon. Marking keeps your highlighted row and review range in place. Space and Shift+Space still page; remap `hunk.history.toggleMark` through the normal keybindings.

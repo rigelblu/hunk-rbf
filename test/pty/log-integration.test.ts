@@ -979,22 +979,54 @@ async function waitForTestFile(path: string) {
 
 const refreshRaceTest = process.platform === "win32" ? test.skip : test;
 const groupedRefreshTest = Bun.which("jj") ? test : test.skip;
-groupedRefreshTest(
-  "keeps the nearest feasible reading row after JJ authored-day rewrites",
-  async () => {
-    const cwd = mkdtempSync(join(tmpdir(), "hunk-log-day-refresh-"));
-    tempDirs.push(cwd);
-    const jj = (...args: string[]) => {
-      const result = Bun.spawnSync(
-        [
-          "jj",
-          "--config",
-          'user.name="History Tester"',
-          "--config",
-          'user.email="history@example.com"',
-          ...args,
-        ],
-        { cwd, stdout: "pipe", stderr: "pipe" },
+groupedRefreshTest("keeps the physical reading row after JJ authored-day rewrites", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "hunk-log-day-refresh-"));
+  tempDirs.push(cwd);
+  const jj = (...args: string[]) => {
+    const result = Bun.spawnSync(
+      [
+        "jj",
+        "--config",
+        'user.name="History Tester"',
+        "--config",
+        'user.email="history@example.com"',
+        ...args,
+      ],
+      { cwd, stdout: "pipe", stderr: "pipe" },
+    );
+    if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+    return result.stdout.toString().trim();
+  };
+  jj("git", "init", "--no-colocate", ".");
+  jj("describe", "-m", "Dated entry 0");
+  for (let index = 1; index < 50; index += 1) jj("new", "-m", `Dated entry ${index}`);
+  jj("metaedit", "-r", "all() ~ root()", "--author-timestamp", "2026-01-01T12:00:00Z");
+  const identities = jj(
+    "log",
+    "--no-graph",
+    "-r",
+    "all() ~ root()",
+    "-T",
+    'change_id ++ "\\n"',
+  ).split("\n");
+  const session = await harness.launchHunk({
+    args: ["log", "--vcs", "jj", "--all", "--color", "never", "--no-extensions"],
+    cwd,
+    cols: 90,
+    // Three more rows than before: the JJ history screen now shows its revset, mode and a gap.
+    rows: 29,
+  });
+  try {
+    await session.waitForText(/Dated entry 49/, { timeout: 15_000 });
+    for (let index = 0; index < 8; index += 1) await session.press("down");
+    session.resize({ cols: 90, rows: 46 });
+    await session.waitIdle();
+    const selectedPhysicalRow = () =>
+      session.getTerminalData().lines.findIndex((line) =>
+        line.spans
+          .map((span) => span.text)
+          .join("")
+          .includes("Dated entry 41"),
       );
       if (result.exitCode !== 0) throw new Error(result.stderr.toString());
       return result.stdout.toString().trim();
@@ -1347,7 +1379,8 @@ describe("HK-93 focused working history", () => {
       cwd,
       env,
       cols: 80,
-      rows: 24,
+      // Three more rows than before: the JJ history screen now shows its revset, mode and a gap.
+      rows: 27,
     });
     try {
       const initial = await session.waitForText(/Tall cutoff commit/, { timeout: 15_000 });
@@ -1756,4 +1789,472 @@ test("candidate diff command renders an actual changed file in a real terminal",
   } finally {
     session.close();
   }
+});
+
+/** Build the HK-19 fixture: a merge of mainline work and an old-based sibling, trunk set to `main`. */
+function createHk19PtyTestRepo() {
+  const cwd = mkdtempSync(join(tmpdir(), "hunk-hk19-pty-"));
+  const configHome = mkdtempSync(join(tmpdir(), "hunk-hk19-pty-config-"));
+  const env = { ...process.env, XDG_CONFIG_HOME: configHome };
+  tempDirs.push(cwd, configHome);
+  const jj = (...args: string[]) => {
+    const result = Bun.spawnSync(
+      [
+        "jj",
+        "--config",
+        'user.name="History Tester"',
+        "--config",
+        'user.email="history@example.com"',
+        ...args,
+      ],
+      { cwd, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+    );
+    if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+    return result.stdout.toString().trim();
+  };
+  jj("git", "init", "--no-colocate", ".");
+  jj("config", "set", "--repo", 'revset-aliases."trunk()"', "none()");
+  const add = (bookmark: string, subject: string, ...parents: string[]) => {
+    jj("new", ...parents);
+    writeFileSync(join(cwd, `${bookmark}.ts`), `export const ${bookmark} = true;\n`);
+    jj("describe", "-m", subject);
+    const id = jj("log", "--no-graph", "-r", "@", "-T", "commit_id");
+    jj("bookmark", "create", bookmark, "-r", id);
+    return id;
+  };
+  const oldA = add("old-a", "Hidden old A", "root()");
+  const oldB = add("old-b", "Hidden old B", oldA);
+  const main = add("main", "Mainline boundary", oldB);
+  const feature = add("feature", "Feature current work", main);
+  const sibling = add("sibling", "Old-based sibling", oldA);
+  const other = add("other", "Protected branch", main);
+  add("merge-work", "Merge current work", feature, sibling);
+  jj("config", "set", "--repo", 'revset-aliases."trunk()"', "main");
+  jj("config", "set", "--repo", 'revset-aliases."immutable_heads()"', `main | ${other}`);
+  return { cwd, jj, env };
+}
+
+const HK19_LAUNCH_REVSET = "(((trunk()..visible_heads()) | trunk()) ~ root())";
+const HK19_ARGS = ["log", "--vcs", "jj", "--color", "never", "--no-extensions", "-n", "100"];
+
+describe("HK-19.1 revset editor", () => {
+  (Bun.which("jj") ? test : test.skip)(
+    "opening, Ctrl+U, text and Apply in one raw write replace the launch expression",
+    async () => {
+      const { cwd, env } = createHk19PtyTestRepo();
+      const session = await harness.launchHunk({ args: HK19_ARGS, cwd, env, cols: 80, rows: 32 });
+      try {
+        await session.waitForText(/Launch policy · Limit: 100/, { timeout: 15_000 });
+        session.writeRaw("L\x15@-\x1bOQ");
+        const custom = await harness.waitForSnapshot(
+          session,
+          (text) => text.includes("Custom revset · Limit: 100") && !text.includes("Edit revset"),
+          15_000,
+        );
+        expect(custom).toContain("Revset: @-");
+        expect(custom).toContain("Old-based sibling");
+        expect(custom).toContain("Feature current work");
+        expect(custom).not.toContain("Merge current work");
+        expect(custom).not.toContain("Revset not applied");
+      } finally {
+        session.close();
+      }
+    },
+  );
+
+  (Bun.which("jj") ? test : test.skip)(
+    "L edits the active revset: apply, custom row, restriction, reset and a reused previous input",
+    async () => {
+      const { cwd, env } = createHk19PtyTestRepo();
+      const session = await harness.launchHunk({ args: HK19_ARGS, cwd, env, cols: 80, rows: 32 });
+      try {
+        const launch = await session.waitForText(/Launch policy · Limit: 100/, { timeout: 15_000 });
+        expect(launch).toContain(`Revset: ${HK19_LAUNCH_REVSET}`);
+        expect(launch).toContain("Merge current work");
+        expect(launch).toContain("L edit revset · v select · Enter open · F10 menu");
+        expect(launch).not.toContain("Custom revset");
+
+        session.writeRaw("L");
+        const editor = await session.waitForText(/Edit revset/, { timeout: 5_000 });
+        expect(editor).toContain("No previous inputs yet.");
+        expect(editor).toContain("[F2] Apply  [F3] Reset  [Esc] Cancel");
+        session.sendKey(["ctrl", "u"]);
+        await session.type("@-");
+        await session.waitForText(/Revset: @-/, { timeout: 5_000 });
+        session.sendKey("f2");
+        const custom = await harness.waitForSnapshot(
+          session,
+          (text) =>
+            text.includes("Old-based sibling") &&
+            text.includes("Custom revset · Limit: 100") &&
+            !text.includes("Edit revset"),
+          15_000,
+        );
+        expect(custom).toContain("Revset: @-");
+        expect(custom).toContain("Feature current work");
+        expect(custom).not.toContain("Merge current work");
+        expect(custom).toContain("Custom revset: graph links and range review unavailable.");
+        expect(custom).toContain("Selected newest; previous not loaded.");
+
+        // Reset restores launch policy and the five launch rows.
+        session.writeRaw("L");
+        await session.waitForText(/Edit revset/, { timeout: 5_000 });
+        session.sendKey("f3");
+        const reset = await harness.waitForSnapshot(
+          session,
+          (text) =>
+            text.includes("Launch policy · Limit: 100") &&
+            text.includes("Merge current work") &&
+            !text.includes("Edit revset"),
+          15_000,
+        );
+        expect(reset).not.toContain("graph links and range review unavailable");
+
+        // The earlier input is offered again; Enter inserts it without applying.
+        session.writeRaw("L");
+        const reopened = await session.waitForText(/Previous inputs/, { timeout: 5_000 });
+        expect(reopened).toContain("@-");
+        session.sendKey("tab");
+        await session.waitForText(/Enter insert/, { timeout: 5_000 });
+        session.sendKey("enter");
+        const inserted = await session.waitForText(/Revset: @-/, { timeout: 5_000 });
+        expect(inserted).toContain("Edit revset");
+        expect(inserted).toContain("Custom revset · Limit: 100");
+        session.sendKey("f2");
+        await harness.waitForSnapshot(
+          session,
+          (text) => text.includes("Old-based sibling") && !text.includes("Edit revset"),
+          15_000,
+        );
+      } finally {
+        session.close();
+      }
+    },
+  );
+
+  (Bun.which("jj") ? test : test.skip)(
+    "a failing revset names JJ's reason without its diagram and keeps the draft and the accepted view",
+    async () => {
+      const { cwd, env } = createHk19PtyTestRepo();
+      const session = await harness.launchHunk({ args: HK19_ARGS, cwd, env, cols: 80, rows: 32 });
+      try {
+        await session.waitForText(/Launch policy · Limit: 100/, { timeout: 15_000 });
+        session.writeRaw("L");
+        await session.waitForText(/Edit revset/, { timeout: 5_000 });
+        session.sendKey("end");
+        await session.type(" & missing_function()");
+        session.sendKey("f2");
+        const failed = await session.waitForText(/Revset not applied:/, { timeout: 15_000 });
+        expect(failed).toContain("Function `missing_function` doesn't exist");
+        expect(failed).toMatch(/Caused by:\s+--> 1:\d+/);
+        expect(failed).not.toContain("Failed to parse revset");
+        expect(failed).not.toMatch(/^\s*\d*\s*\|/m);
+        expect(failed).toContain("Edit revset");
+        expect(failed).toContain("Custom revset · Limit: 100");
+        session.sendKey("escape");
+        const closed = await harness.waitForSnapshot(
+          session,
+          (text) => !text.includes("Edit revset"),
+          5_000,
+        );
+        // The failure changed nothing behind the editor.
+        expect(closed).toContain("Launch policy · Limit: 100");
+        expect(closed).toContain("Merge current work");
+      } finally {
+        session.close();
+      }
+    },
+  );
+
+  (Bun.which("jj") ? test : test.skip)(
+    "under 15 rows launch policy adds nothing, the compact editor fits, and a custom revset adds one row",
+    async () => {
+      const { cwd, env } = createHk19PtyTestRepo();
+      const session = await harness.launchHunk({ args: HK19_ARGS, cwd, env, cols: 40, rows: 12 });
+      try {
+        const launch = await session.waitForText(/Merge current/, { timeout: 15_000 });
+        expect(launch).not.toContain("Revset:");
+        expect(launch).not.toContain("Launch policy");
+        expect(launch).not.toContain("Limit:");
+        session.writeRaw("L");
+        const editor = await session.waitForText(/Edit revset/, { timeout: 5_000 });
+        expect(editor).toContain("Launch policy · Limit: 100");
+        expect(editor).toContain("[F2] Apply  [F3] Reset");
+        expect(editor).toContain("[Esc] Cancel");
+        session.sendKey(["ctrl", "u"]);
+        await session.type("@-");
+        session.sendKey("f2");
+        const custom = await harness.waitForSnapshot(
+          session,
+          (text) => text.includes("Custom revset: @-") && !text.includes("Edit revset"),
+          15_000,
+        );
+        expect(custom).not.toContain("graph links");
+        expect(custom).not.toContain("Limit:");
+      } finally {
+        session.close();
+      }
+    },
+  );
+
+  (Bun.which("jj") ? test : test.skip)(
+    "keys written together each see the previous key's result: text and F2 in one write apply the text",
+    async () => {
+      const { cwd, env } = createHk19PtyTestRepo();
+      const session = await harness.launchHunk({ args: HK19_ARGS, cwd, env, cols: 80, rows: 32 });
+      try {
+        await session.waitForText(/Launch policy · Limit: 100/, { timeout: 15_000 });
+        session.writeRaw("L");
+        await session.waitForText(/Edit revset/, { timeout: 5_000 });
+        session.sendKey(["ctrl", "u"]);
+        await session.type("@");
+        await session.waitForText(/Revset: @\s/, { timeout: 5_000 });
+        // One write: the next character and F2 reach the app in the same chunk.
+        session.writeRaw("-\x1bOQ");
+        const custom = await harness.waitForSnapshot(
+          session,
+          (text) => text.includes("Custom revset · Limit: 100") && !text.includes("Edit revset"),
+          15_000,
+        );
+        expect(custom).toContain("Revset: @-");
+        expect(custom).toContain("Old-based sibling");
+        expect(custom).not.toContain("Merge current work");
+      } finally {
+        session.close();
+      }
+    },
+  );
+
+  for (const [cols, rows] of [
+    [40, 8],
+    [40, 10],
+    [80, 9],
+  ] as const) {
+    (Bun.which("jj") ? test : test.skip)(
+      `the editor stays inside its frame at ${cols}x${rows}: nothing on the border or the status row`,
+      async () => {
+        const { cwd, env } = createHk19PtyTestRepo();
+        const session = await harness.launchHunk({ args: HK19_ARGS, cwd, env, cols, rows });
+        try {
+          await session.waitForText(/Merge current/, { timeout: 15_000 });
+          session.writeRaw("L");
+          const screen = await session.waitForText(/Edit revset/, { timeout: 5_000 });
+          const lines = screen.split("\n");
+          const top = lines.findIndex((line) => line.includes("┌"));
+          const bottom = lines.findIndex((line) => line.includes("└"));
+          expect(top).toBeGreaterThanOrEqual(0);
+          expect(bottom).toBeGreaterThan(top);
+          // Only the frame's own border glyphs sit on its border rows; history may show around them.
+          expect(lines[top]!.replace(/.*┌─+┐/, "")).not.toMatch(/\[F\d\]|\[Esc\]/);
+          expect(lines[top]).toMatch(/┌─+┐/);
+          expect(lines[bottom]).toMatch(/└─+┘/);
+          // The three actions stay, and the status row below the frame holds no editor text.
+          for (const action of ["[F2] Apply", "[F3] Reset", "[Esc] Cancel"])
+            expect(screen).toContain(action);
+          const status = lines.at(-1) ?? "";
+          expect(status).not.toMatch(/\[F\d\]|\[Esc\]|Enter (apply|insert)/);
+          expect(bottom).toBeLessThan(lines.length - 1);
+        } finally {
+          session.close();
+        }
+      },
+    );
+  }
+
+  (Bun.which("jj") ? test : test.skip)(
+    "resizing with the editor open keeps the draft through compact and too-small screens",
+    async () => {
+      const { cwd, env } = createHk19PtyTestRepo();
+      const session = await harness.launchHunk({ args: HK19_ARGS, cwd, env, cols: 80, rows: 32 });
+      try {
+        await session.waitForText(/Launch policy · Limit: 100/, { timeout: 15_000 });
+        session.writeRaw("L");
+        await session.waitForText(/Edit revset/, { timeout: 5_000 });
+        session.sendKey(["ctrl", "u"]);
+        await session.type("@-");
+        await session.waitForText(/Revset: @-/, { timeout: 5_000 });
+        session.resize({ cols: 40, rows: 12 });
+        const compact = await session.waitForText(/\[Esc\] Cancel/, { timeout: 5_000 });
+        expect(compact).toContain("Revset: @-");
+        session.resize({ cols: 24, rows: 8 });
+        await session.waitForText(/Terminal too small/, { timeout: 5_000 });
+        session.resize({ cols: 80, rows: 32 });
+        const back = await session.waitForText(/Revset: @-/, { timeout: 5_000 });
+        expect(back).toContain("Edit revset");
+        session.sendKey("f2");
+        await harness.waitForSnapshot(
+          session,
+          (text) => text.includes("Old-based sibling") && !text.includes("Edit revset"),
+          15_000,
+        );
+      } finally {
+        session.close();
+      }
+    },
+  );
+
+  (Bun.which("jj") ? test : test.skip)(
+    "Escape closes the editor before it clears an active selection, and a custom revset refuses a range",
+    async () => {
+      const { cwd, env } = createHk19PtyTestRepo();
+      const session = await harness.launchHunk({ args: HK19_ARGS, cwd, env, cols: 120, rows: 32 });
+      try {
+        await session.waitForText(/Launch policy · Limit: 100/, { timeout: 15_000 });
+        session.writeRaw("x");
+        await session.waitForText(/1 marked/, { timeout: 5_000 });
+        session.writeRaw("L");
+        await session.waitForText(/Edit revset/, { timeout: 5_000 });
+        session.sendKey("escape");
+        const closed = await harness.waitForSnapshot(
+          session,
+          (text) => !text.includes("Edit revset"),
+          5_000,
+        );
+        expect(closed).toContain("1 marked");
+
+        session.writeRaw("L");
+        await session.waitForText(/Edit revset/, { timeout: 5_000 });
+        session.sendKey(["ctrl", "u"]);
+        await session.type("all()");
+        session.sendKey("f2");
+        await harness.waitForSnapshot(
+          session,
+          (text) => text.includes("Custom revset · Limit: 100") && !text.includes("Edit revset"),
+          15_000,
+        );
+        session.writeRaw("v");
+        const refused = await session.waitForText(/Multi-commit selection is unavailable/, {
+          timeout: 5_000,
+        });
+        expect(refused).not.toContain("in review range");
+      } finally {
+        session.close();
+      }
+    },
+  );
+});
+
+describe("HK-19.1 Ctrl+C with the editor open", () => {
+  /** Whether the app has left its alternate screen, which is how a quit shows in the raw output. */
+  const hasQuit = (session: Session) => session.getRawOutput().includes("\x1b[?1049l");
+  const waitForQuit = async (session: Session, milliseconds: number) => {
+    const startedAt = Date.now();
+    while (!hasQuit(session) && Date.now() - startedAt < milliseconds) await Bun.sleep(25);
+    return hasQuit(session);
+  };
+
+  (Bun.which("jj") ? test : test.skip)(
+    "Ctrl+C closes an idle editor and Hunk stays; with no editor it quits",
+    async () => {
+      const { cwd, env } = createHk19PtyTestRepo();
+      const session = await harness.launchHunk({ args: HK19_ARGS, cwd, env, cols: 80, rows: 32 });
+      try {
+        await session.waitForText(/Launch policy · Limit: 100/, { timeout: 15_000 });
+        session.writeRaw("L");
+        await session.waitForText(/Edit revset/, { timeout: 5_000 });
+        session.writeRaw("\x03");
+        const closed = await harness.waitForSnapshot(
+          session,
+          (text) => !text.includes("Edit revset"),
+          5_000,
+        );
+        expect(closed).toContain("Launch policy · Limit: 100");
+        expect(await waitForQuit(session, 1_000)).toBeFalse();
+        // The editor opens again, so the session is alive and has not been told to quit.
+        session.writeRaw("L");
+        await session.waitForText(/Edit revset/, { timeout: 5_000 });
+        session.sendKey("escape");
+        await harness.waitForSnapshot(session, (text) => !text.includes("Edit revset"), 5_000);
+        // With the editor closed Ctrl+C quits as it always did.
+        session.writeRaw("\x03");
+        expect(await waitForQuit(session, 3_000)).toBeTrue();
+      } finally {
+        session.close();
+      }
+    },
+  );
+
+  (Bun.which("jj") ? test : test.skip)(
+    "Ctrl+C while applying cancels the request and keeps the draft; a second closes the editor",
+    async () => {
+      const { cwd, env } = createHk19PtyTestRepo();
+      const realJj = Bun.which("jj");
+      if (!realJj) throw new Error("jj is required for this fixture.");
+      const bin = mkdtempSync(join(tmpdir(), "hunk-hk19-slow-jj-"));
+      tempDirs.push(bin);
+      const started = join(bin, "started");
+      const release = join(bin, "release");
+      const wrapper = join(bin, "jj");
+      writeFileSync(
+        wrapper,
+        `#!/bin/sh\ncase " $* " in *"all()"*) : > ${quoteTestShellArgument(started)}; while [ ! -e ${quoteTestShellArgument(release)} ]; do sleep 0.05; done ;; esac\nexec ${quoteTestShellArgument(realJj)} "$@"\n`,
+      );
+      chmodSync(wrapper, 0o755);
+      const session = await harness.launchHunk({
+        args: HK19_ARGS,
+        cwd,
+        env: { ...env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+        cols: 80,
+        rows: 32,
+      });
+      try {
+        await session.waitForText(/Launch policy · Limit: 100/, { timeout: 15_000 });
+        session.writeRaw("L");
+        await session.waitForText(/Edit revset/, { timeout: 5_000 });
+        session.sendKey(["ctrl", "u"]);
+        await session.type("all()");
+        session.sendKey("f2");
+        await session.waitForText(/Applying revset…/, { timeout: 10_000 });
+        await waitForTestFile(started);
+        session.writeRaw("\x03");
+        const back = await harness.waitForSnapshot(
+          session,
+          (text) => text.includes("Edit revset") && !text.includes("Applying revset…"),
+          5_000,
+        );
+        expect(back).toContain("Revset: all()");
+        expect(await waitForQuit(session, 1_000)).toBeFalse();
+        session.writeRaw("\x03");
+        const closed = await harness.waitForSnapshot(
+          session,
+          (text) => !text.includes("Edit revset"),
+          5_000,
+        );
+        expect(closed).toContain("Launch policy · Limit: 100");
+        expect(await waitForQuit(session, 1_000)).toBeFalse();
+        writeFileSync(release, "");
+      } finally {
+        writeFileSync(release, "");
+        session.close();
+      }
+    },
+  );
+});
+
+describe("HK-19.1 on Git history", () => {
+  test("shows nothing new and L does nothing", async () => {
+    const cwd = createHistoryRepo();
+    const session = await harness.launchHunk({
+      args: ["log", "--color", "never", "--no-extensions"],
+      cwd,
+      cols: 100,
+      rows: 24,
+    });
+    try {
+      const before = await session.waitForText(/Git · 2 commits/, { timeout: 15_000 });
+      for (const text of ["Revset:", "Launch policy", "Limit:", "edit revset"])
+        expect(before).not.toContain(text);
+      session.writeRaw("L");
+      await sleep(400);
+      const after = await session.text({ immediate: true });
+      expect(after).not.toContain("Edit revset");
+      expect(after).not.toContain("Revset:");
+      expect(after).toContain("Git · 2 commits");
+      await session.press("f10");
+      await session.press("right");
+      expect(await session.text({ immediate: true })).not.toContain("Edit revset");
+    } finally {
+      session.close();
+    }
+  });
 });

@@ -11,11 +11,15 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 ## 🟠⋯ Added for End Users
 
 - 2026-10-11 - feat (ux) | mark separate history revisions with x, checkboxes, or Ctrl-click; preserve marks independently from highlighted and range review, and recover unresolved marks after refresh (#hk-27)
+- 2026-10-12 - feat (ux) | edit the complete active JJ revset in `hunk log` with `L`, reuse earlier revsets from this session, and restore launch policy with Reset; completion is not available yet (#hk-19)
 
 ## 🟠⋯ Added for Technical Users
 
+- 2026-10-12 - feat (technical) | let a history provider opt in to complete expression input and report the exact query text through extension API 32; providers without `acceptsExpression` keep today's behavior (#hk-19)
+
 ## 🟠⋯ Fixed for End Users
 
+- 2026-10-12 - fix (ux) | preserve native revset editing when opening and typing arrive together, block input at unsupported terminal sizes, and move the caret to the end when reusing a previous input (#hk-19)
 - 2026-10-11 - fix (ux) | retain history cursor ownership and the highlighted terminal row while refresh stages replacement pages (#hk-28 dependency for hk-27)
 - 2026-10-11 - fix (ux) | use the configured root theme in history even when revision reviews have a different `[show]` theme (#hk-95)
 - 2026-10-12 - fix (ux) | refresh history automatically without a delay or an error notice when Hunk runs in a secondary JJ workspace (#hk-85)
