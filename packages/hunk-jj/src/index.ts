@@ -18,6 +18,7 @@ import {
   getJjHistoryWatchSignature,
   planJjHistoryRangeReview,
 } from "./history";
+import { resolveJjRepoStoreDirectory } from "./repoStore";
 import { readJjFileSource } from "./source";
 import { describeDiffRange } from "@hunk/vcs/diff-target";
 import { commitReviewInfo, comparisonReviewInfo } from "@hunk/vcs/review-info";
@@ -184,7 +185,8 @@ export function createJjVcsAdapter({ jjExecutable = "jj" }: Readonly<JjVcsAdapte
         return getJjHistoryWatchSignature(input, { cwd, jjExecutable, signal });
       },
       watchPlan(_input, { cwd }) {
-        const opHeads = join(cwd, ".jj", "repo", "op_heads");
+        // A secondary workspace shares the initial workspace's store, where operations land.
+        const opHeads = join(resolveJjRepoStoreDirectory(cwd), "op_heads");
         return {
           coverage: "hybrid" as const,
           targets: [
