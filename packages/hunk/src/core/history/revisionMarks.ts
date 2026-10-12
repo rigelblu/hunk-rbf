@@ -63,14 +63,18 @@ export function revisionMark(
 }
 
 /**
- * Require complete, unlimited, unfiltered traversal evidence before logical fallback. Only the
- * input kinds listed here can be eligible: an unlisted kind is denied, and the `never` binding
- * fails typecheck until a new kind states its own rule.
+ * Require complete, unlimited, unfiltered traversal evidence before logical fallback. The rows
+ * must hold every visible revision in scope for an absent exact id to mean "rewritten": under a
+ * revision expression or `--first-parent` the marked revision can sit unchanged outside the rows.
+ * Only the input kinds listed here can be eligible: an unlisted kind is denied, and the `never`
+ * binding fails typecheck until a new kind states its own rule.
  */
 export function revisionMarkLogicalFallbackEligible(input: HistoryCommandInput): boolean {
   switch (input.kind) {
     case "history":
       return (
+        input.revision === undefined &&
+        !input.firstParent &&
         input.maxCount === undefined &&
         input.author === undefined &&
         input.grep === undefined &&

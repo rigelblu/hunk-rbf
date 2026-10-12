@@ -64,6 +64,22 @@ describe("revision mark input kinds", () => {
     expect(revisionMarkLogicalFallbackEligible(createTestUnlistedInput({}))).toBeFalse();
   });
 
+  test("denies the logical fallback when a revision or first-parent filter selects the rows", () => {
+    for (const filter of [
+      { revision: "@" },
+      { firstParent: true },
+      { revision: "@", firstParent: true },
+    ]) {
+      expect(revisionMarkLogicalFallbackEligible(createTestHistoryInput(filter))).toBeFalse();
+    }
+    // Neither the default launch nor `--all` narrows the visible revisions in scope.
+    expect(revisionMarkLogicalFallbackEligible(createTestHistoryInput())).toBeTrue();
+    expect(revisionMarkLogicalFallbackEligible(createTestHistoryInput({ all: true }))).toBeTrue();
+    expect(
+      revisionMarkLogicalFallbackEligible(createTestHistoryInput({ firstParent: false })),
+    ).toBeTrue();
+  });
+
   test("keys an unlisted input kind on its whole input, apart from every listed kind", () => {
     const first = revisionMarkTraversalKey(createTestUnlistedInput({ expression: "mine()" }));
     const second = revisionMarkTraversalKey(createTestUnlistedInput({ expression: "trunk()" }));

@@ -1753,7 +1753,7 @@ test("refresh disables new marks before and after clearing and guard refusal kee
   await controller.close();
 });
 
-test("checking recovery cannot remove unresolved marks; unchanged explicit scope allows logical rewrite", async () => {
+test("checking recovery cannot remove unresolved marks; an explicit revision scope never follows a logical rewrite", async () => {
   const { runtime, setHistory } = createTestRuntime([{ revisionId: "old", logicalId: "logical" }]);
   runtime.input.revision = "explicit-scope";
   runtime.input.firstParent = true;
@@ -1775,7 +1775,10 @@ test("checking recovery cannot remove unresolved marks; unchanged explicit scope
   expect(controller.getSnapshot().marks).toHaveLength(1);
   release();
   await refreshing;
-  expect(controller.getOperationTargets()).toMatchObject({ revisionIds: ["rewritten"] });
+  expect(controller.getSnapshot().marks).toMatchObject([
+    { kind: "unresolved", reason: "incomplete", mark: { revisionId: "old" } },
+  ]);
+  expect(controller.getOperationTargets()).toMatchObject({ kind: "blocked", reason: "unresolved" });
   setHistory([{ revisionId: "another", logicalId: "logical" }]);
   runtime.input.revision = "different-scope";
   await controller.refresh();
@@ -2103,7 +2106,8 @@ describe("revision marks across repeated refreshes", () => {
       [],
     );
     // The input changes before any refresh: the rows on screen still come from the old one.
-    runtime.input.revision = "other-revset";
+    // `all` changes the traversal without filtering it, so a later rewrite can still follow.
+    runtime.input.all = true;
     controller.toggleMark(0);
     expect(await refreshTo([change("another"), "T1"], boundedAt("T1"))).toEqual(["incomplete:old"]);
     // A mark made on the refreshed rows records them, so a rewrite there follows.
@@ -2114,4 +2118,106 @@ describe("revision marks across repeated refreshes", () => {
     ]);
     await controller.close();
   });
+});
+
+describe("revision marks under a revision or first-parent filter", () => {
+  const change = (revisionId: string, logicalId = "k") => ({ revisionId, logicalId });
+
+  /** Mount a history under the given input, load every row, and mark the named revision. */
+  async function createTestFilteredMark(
+    input: Partial<HistoryRuntime["input"]>,
+    history: TestHistoryEntry[],
+    marked: string,
+  ) {
+    const { runtime, setHistory } = createTestRuntime(history);
+    Object.assign(runtime.input, input);
+    const controller = new LogController(runtime);
+    await controller.last(20);
+    expect(
+      controller.toggleMark(
+        controller.getSnapshot().rows.findIndex((row) => row.commit.revisionId === marked),
+      ),
+    ).toBe(true);
+    /** Replace the provider's history, refresh once, and report the mark as `state:revision`. */
+    const refreshTo = async (next: TestHistoryEntry[]) => {
+      setHistory(next);
+      expect(await controller.refresh()).toBe(true);
+      expect(controller.getSnapshot().markStatus).toBe("ready");
+      return controller
+        .getSnapshot()
+        .marks.map((entry) =>
+          entry.kind === "resolved"
+            ? `resolved:${entry.revisionId}`
+            : `${entry.reason}:${entry.mark.revisionId}`,
+        );
+    };
+    return { controller, refreshTo };
+  }
+
+  for (const [name, input] of [
+    ["a revision", { revision: "@" }],
+    ["first-parent", { firstParent: true }],
+    ["a revision and first-parent", { revision: "@", firstParent: true }],
+  ] as const) {
+    test(`never re-targets a mark to a divergent copy that enters the rows under ${name}`, async () => {
+      // `jj edit <other copy>` moves `@` only: the marked copy is still visible, outside the rows.
+      const { controller, refreshTo } = await createTestFilteredMark(
+        input,
+        [change("c1"), "base"],
+        "c1",
+      );
+      for (let refresh = 0; refresh < 3; refresh += 1) {
+        expect(await refreshTo([change("c2"), "base"])).toEqual(["incomplete:c1"]);
+        expect(controller.getOperationTargets()).toMatchObject({
+          kind: "blocked",
+          reason: "unresolved",
+          unresolved: [{ revisionId: "c1" }],
+        });
+      }
+      await controller.close();
+    });
+
+    test(`never calls an unchanged revision missing when it leaves the rows under ${name}`, async () => {
+      // `jj new main` moves `@` elsewhere: the marked revision is unchanged, outside the rows.
+      const { controller, refreshTo } = await createTestFilteredMark(
+        input,
+        [change("Y", "y-change"), "base"],
+        "Y",
+      );
+      for (let refresh = 0; refresh < 3; refresh += 1)
+        expect(await refreshTo(["elsewhere", "base"])).toEqual(["incomplete:Y"]);
+      await controller.close();
+    });
+
+    test(`keeps an exact match resolved under ${name}`, async () => {
+      const { controller, refreshTo } = await createTestFilteredMark(
+        input,
+        [change("c1"), "base"],
+        "c1",
+      );
+      expect(await refreshTo(["newer", change("c1"), "base"])).toEqual(["resolved:c1"]);
+      expect(await refreshTo([change("c2"), "base"])).toEqual(["incomplete:c1"]);
+      expect(await refreshTo([change("c1"), "base"])).toEqual(["resolved:c1"]);
+      await controller.close();
+    });
+  }
+
+  for (const [name, input] of [
+    ["the default view", {}],
+    ["--all", { all: true }],
+  ] as const)
+    test(`still follows a rewrite across two refreshes in ${name}`, async () => {
+      const { controller, refreshTo } = await createTestFilteredMark(
+        input,
+        [change("c1"), "base"],
+        "c1",
+      );
+      expect(await refreshTo([change("c2"), "base"])).toEqual(["resolved:c2"]);
+      expect(await refreshTo([change("c3"), "base"])).toEqual(["resolved:c3"]);
+      expect(controller.getOperationTargets()).toMatchObject({
+        kind: "ready",
+        revisionIds: ["c3"],
+      });
+      await controller.close();
+    });
 });

@@ -21,6 +21,7 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 - 2026-10-12 - fix (ux) | refresh history automatically without a delay or an error notice when Hunk runs in a secondary JJ workspace (#hk-85)
 - 2026-10-12 - fix (ux) | move the selection on every PageDown and wheel step in a terminal too short to show one history entry (#hk-93)
 - 2026-10-12 - fix (ux) | give a narrow static history row's cells to the subject when its ref list is clipped too far to name any ref (#hk-92)
+- 2026-10-12 - fix (ux) | never move a history mark to a different revision under a revision expression or `--first-parent`; the cost is that a mark on a rewritten revision shows as incomplete there and is not followed (#hk-27)
 
 # 🔵⋯ v0.11.0 (2026-10-13)
 
