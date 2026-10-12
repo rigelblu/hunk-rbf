@@ -180,6 +180,29 @@ describe("LogController", () => {
     await controller.close();
   });
 
+  test("moves the selection on every page and wheel step when the body is shorter than one entry", async () => {
+    for (const bodyHeight of [1, 2]) {
+      const { runtime } = createTestRuntime(["one", "two", "three", "four", "five"]);
+      const controller = new LogController(runtime);
+      await controller.loadMore();
+      await controller.loadMore();
+      controller.clampViewport(bodyHeight);
+      await controller.page(1, bodyHeight);
+      expect(controller.getSnapshot().selected).toBe(1);
+      await controller.page(1, bodyHeight);
+      expect(controller.getSnapshot().selected).toBe(2);
+      await controller.halfPage(1, bodyHeight);
+      expect(controller.getSnapshot().selected).toBe(3);
+      await controller.page(-1, bodyHeight);
+      expect(controller.getSnapshot().selected).toBe(2);
+      // The wheel moves the selection whenever the entry declines the scroll.
+      expect(controller.scrollEntry(3, bodyHeight)).toBe(false);
+      expect(controller.scrollEntry(-3, bodyHeight)).toBe(false);
+      expect(controller.getSnapshot().entryScroll).toBe(0);
+      await controller.close();
+    }
+  });
+
   test("preserves rapid navigation targets while bounded continuation is loading", async () => {
     const { runtime } = createTestRuntime(["one", "two", "three", "four"]);
     const controller = new LogController(runtime);

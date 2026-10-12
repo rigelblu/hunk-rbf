@@ -12,7 +12,7 @@ import {
 } from "../../core/history/revisionMarks";
 import { sanitizeTerminalLine } from "../../lib/terminalText";
 import type { HistoryRuntime } from "../history/types";
-import { commitEntryHeight, planLogViewportGeometry } from "./geometry";
+import { commitEntryHeight, LOG_ENTRY_HEIGHT, planLogViewportGeometry } from "./geometry";
 
 import type { LogPresentation } from "./presentation";
 export type { LogPresentation } from "./presentation";
@@ -464,7 +464,8 @@ export class LogController {
   /** Scroll an oversized entry through existing wheel/page controls without selecting its stubs. */
   scrollEntry(delta: number, viewportBodyHeight: number) {
     const row = this.snapshot.rows[this.snapshot.selected];
-    if (!row) return false;
+    // A body shorter than one entry shows no entry to scroll inside, so paging keeps moving.
+    if (!row || viewportBodyHeight < LOG_ENTRY_HEIGHT) return false;
     const maximum = Math.max(
       0,
       commitEntryHeight(row, !this.snapshot.presentation.graph, this.entryDimensions()) -
