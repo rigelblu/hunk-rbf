@@ -29,6 +29,7 @@ import { toUserFacingError } from "../core/run/errors";
 import { toInternalVcsPatchResult } from "./vcsPatchResult";
 import type {
   ExtensionVcsHistoryCommit,
+  ExtensionVcsHistoryInput,
   ExtensionVcsHistoryRangeSelection,
   ExtensionVcsHistoryReviewAction,
   ExtensionVcsHistorySource,
@@ -232,8 +233,142 @@ function normalizeHistoryScope(
   throw new Error("VCS history returned an invalid scope kind or fallback reason.");
 }
 
+/** Longest accepted `input.expression` or `source.expression`, in UTF-16 units. */
+const MAX_HISTORY_EXPRESSION_UNITS = 65_536;
+
+const historyExpressionForbiddenCharacters = /[\x00-\x1f\x7f-\x9f\u2028\u2029]/;
+
+const legacyHistorySelectorKeys = [
+  "revision",
+  "all",
+  "firstParent",
+  "author",
+  "grep",
+  "since",
+  "until",
+  "pathspecs",
+] as const;
+
+/** Check one expression against the executable-text rule, length first so a long value is never scanned. */
+function historyExpressionProblem(value: string): string | undefined {
+  if (value.length > MAX_HISTORY_EXPRESSION_UNITS) {
+    return `VCS history expression must be at most ${MAX_HISTORY_EXPRESSION_UNITS} UTF-16 units.`;
+  }
+  if (historyExpressionForbiddenCharacters.test(value)) {
+    return "VCS history expression must not contain control characters or line breaks.";
+  }
+  return undefined;
+}
+
+/** The history input a wrapper forwards, and the expression text a source must echo for it. */
+interface ParsedHistoryInput {
+  input: ExtensionVcsHistoryInput;
+  expectedExpression?: string;
+}
+
+/**
+ * Validate and rebuild one history input before any provider callback sees it, for open,
+ * watchSignature and watchPlan alike. Every field is read once, and the wrappers forward only
+ * the rebuilt object. Expression input must come from a provider that registered
+ * `acceptsExpression`, carry no legacy selector, hold a safe-integer `maxCount` if any, and hold
+ * an executable expression that is not blank; the forwarded text is trimmed.
+ */
+function parseHistoryInput(
+  input: ExtensionVcsHistoryInput,
+  acceptsExpression: boolean,
+): ParsedHistoryInput {
+  if (typeof input !== "object" || input === null) {
+    throw new Error("VCS history input must be an object.");
+  }
+  const fields = snapshotProperties(input as Record<string, unknown>, [
+    "kind",
+    "expression",
+    "maxCount",
+    ...legacyHistorySelectorKeys,
+  ]);
+  if (fields.kind === undefined) {
+    if (fields.expression !== undefined) {
+      throw new Error('VCS history input carries an expression without kind "expression".');
+    }
+    const legacy: Record<string, unknown> = {};
+    for (const key of ["maxCount", ...legacyHistorySelectorKeys] as const) {
+      const value = fields[key];
+      if (value === undefined) continue;
+      legacy[key] = key === "pathspecs" && Array.isArray(value) ? [...value] : value;
+    }
+    return { input: legacy as ExtensionVcsHistoryInput };
+  }
+  if (fields.kind !== "expression") {
+    throw new Error("VCS history input has an unsupported kind.");
+  }
+  if (!acceptsExpression) {
+    throw new Error("This VCS adapter does not accept expression history input.");
+  }
+  if (legacyHistorySelectorKeys.some((key) => fields[key] !== undefined)) {
+    throw new Error("VCS history expression input cannot combine with other selectors.");
+  }
+  const draft = fields.expression;
+  if (typeof draft !== "string") {
+    throw new Error("VCS history expression input requires an expression string.");
+  }
+  const problem = historyExpressionProblem(draft);
+  if (problem) throw new Error(problem);
+  const expression = draft.trim();
+  if (!expression) {
+    throw new Error("VCS history expression input requires a non-empty expression.");
+  }
+  const maxCount = fields.maxCount;
+  if (maxCount !== undefined && (!Number.isSafeInteger(maxCount) || (maxCount as number) < 0)) {
+    throw new Error("VCS history expression input maxCount must be a non-negative integer.");
+  }
+  return {
+    input: {
+      kind: "expression",
+      expression,
+      ...(maxCount !== undefined ? { maxCount: maxCount as number } : {}),
+    },
+    expectedExpression: expression,
+  };
+}
+
+/**
+ * Read a source's `expression` once and decide what the host keeps. A source opened for
+ * expression input must echo the trimmed input text exactly or the open is rejected. Any other
+ * source keeps a non-blank executable expression as given and silently loses anything else,
+ * including a value whose getter throws.
+ */
+function normalizeHistorySourceExpression(
+  source: ExtensionVcsHistorySource,
+  expectedExpression: string | undefined,
+): string | undefined {
+  let value: unknown;
+  let readFailed = false;
+  try {
+    value = source.expression;
+  } catch {
+    readFailed = true;
+  }
+  if (expectedExpression !== undefined) {
+    if (readFailed || value !== expectedExpression) {
+      throw new Error("VCS history source must echo the exact expression it was opened with.");
+    }
+    return value;
+  }
+  // Length is checked inside the problem test before any scan, so test it before the trim.
+  return !readFailed &&
+    typeof value === "string" &&
+    !historyExpressionProblem(value) &&
+    value.trim()
+    ? value
+    : undefined;
+}
+
 /** Copy and validate one extension-provided history commit before it reaches core or UI. */
-function normalizeHistoryCommit(value: unknown): ExtensionVcsHistoryCommit {
+function normalizeHistoryCommit(
+  value: unknown,
+  /** Drop cutoff parents unread: an expression source's rows never show a mainline cutoff. */
+  ignoreCutoffParents = false,
+): ExtensionVcsHistoryCommit {
   if (!isPlainObject(value)) {
     throw new Error("VCS history returned a commit that is not an object.");
   }
@@ -242,7 +377,8 @@ function normalizeHistoryCommit(value: unknown): ExtensionVcsHistoryCommit {
     "displayId",
     "parentRevisionIds",
     "graphParentRevisionIds",
-    "graphCutoffParentRevisionIds",
+    // Left out when ignored, so a throwing accessor cannot fail the page.
+    ...(ignoreCutoffParents ? [] : ["graphCutoffParentRevisionIds"]),
     "subject",
     "body",
     "authorName",
@@ -299,7 +435,7 @@ function normalizeHistoryCommit(value: unknown): ExtensionVcsHistoryCommit {
     safeRevision(parent, "VCS history graph parent revision id"),
   );
   let graphCutoffParentRevisionIds: string[] | undefined;
-  if (snapshot.graphCutoffParentRevisionIds !== undefined) {
+  if (!ignoreCutoffParents && snapshot.graphCutoffParentRevisionIds !== undefined) {
     if (!Array.isArray(snapshot.graphCutoffParentRevisionIds))
       throw new Error("VCS history cutoff parents must be an array.");
     graphCutoffParentRevisionIds = snapshotArray(snapshot.graphCutoffParentRevisionIds, 256).map(
@@ -435,6 +571,8 @@ function normalizeHistoryReviewAction(value: unknown): ExtensionVcsHistoryReview
 /** Wrap an extension history source with bounded reads, copying, cleanup, and error translation. */
 async function toInternalHistorySource(
   source: ExtensionVcsHistorySource,
+  /** The text of the expression input the source was opened for, when it was. */
+  expectedExpression?: string,
 ): Promise<VcsHistorySource> {
   if (!isPlainObject(source)) {
     throw new Error("VCS history open() must return a source object.");
@@ -466,19 +604,23 @@ async function toInternalHistorySource(
   };
 
   let scope: ReturnType<typeof normalizeHistoryScope>;
+  let expression: string | undefined;
   try {
-    scope = normalizeHistoryScope(source.scope);
+    // A source opened for expression input makes no mainline claim, so its scope is not read.
+    scope = expectedExpression === undefined ? normalizeHistoryScope(source.scope) : undefined;
+    expression = normalizeHistorySourceExpression(source, expectedExpression);
   } catch (error) {
     try {
       await close();
     } catch {
-      /* Keep invalid scope as the primary failure. */
+      /* Keep the invalid scope or echo as the primary failure. */
     }
     throw error;
   }
 
   return {
     ...(scope ? { scope } : {}),
+    ...(expression !== undefined ? { expression } : {}),
     async read({ limit, signal }) {
       if (closed || done) return { commits: [], done: true };
       if (!Number.isSafeInteger(limit) || limit <= 0) {
@@ -500,7 +642,9 @@ async function toInternalHistorySource(
         } catch {
           throw new Error("VCS history returned more commits than the requested page limit.");
         }
-        const commits = commitValues.map(normalizeHistoryCommit);
+        const commits = commitValues.map((commit) =>
+          normalizeHistoryCommit(commit, expectedExpression !== undefined),
+        );
         for (const commit of commits) {
           if (acceptedIds.has(commit.revisionId)) {
             throw new Error(`VCS history returned duplicate revision ${commit.revisionId}.`);
@@ -595,6 +739,7 @@ export function toInternalVcsAdapter(
         "planRangeReview",
         "watchSignature",
         "watchPlan",
+        "acceptsExpression",
       ])
     : undefined;
   const historyOpen = historyFields?.open;
@@ -602,6 +747,11 @@ export function toInternalVcsAdapter(
   const historyPlanRangeReview = historyFields?.planRangeReview;
   const historyWatchSignature = historyFields?.watchSignature;
   const historyWatchPlan = historyFields?.watchPlan;
+  const historyAcceptsExpression = historyFields?.acceptsExpression;
+  if (historyAcceptsExpression !== undefined && typeof historyAcceptsExpression !== "boolean") {
+    throw new Error("registerVcsAdapter history acceptsExpression must be a boolean.");
+  }
+  const acceptsExpression = historyAcceptsExpression === true;
   if (
     history !== undefined &&
     (!isPlainObject(history) ||
@@ -664,17 +814,12 @@ export function toInternalVcsAdapter(
     operations: internalOperations,
     ...(history && {
       history: {
+        ...(acceptsExpression && { acceptsExpression: true as const }),
         async open(input, context) {
           try {
-            const source = await openHistory.call(
-              history,
-              {
-                ...input,
-                ...(input.pathspecs ? { pathspecs: [...input.pathspecs] } : {}),
-              },
-              context,
-            );
-            return await toInternalHistorySource(source);
+            const parsed = parseHistoryInput(input, acceptsExpression);
+            const source = await openHistory.call(history, parsed.input, context);
+            return await toInternalHistorySource(source, parsed.expectedExpression);
           } catch (error) {
             throw toUserFacingError(error);
           }
@@ -742,7 +887,11 @@ export function toInternalVcsAdapter(
         ...(typeof historyGetWatchSignature === "function" && {
           watchSignature(input, context) {
             try {
-              const signature = historyGetWatchSignature.call(history, input, context);
+              const signature = historyGetWatchSignature.call(
+                history,
+                parseHistoryInput(input, acceptsExpression).input,
+                context,
+              );
               return typeof signature === "string"
                 ? signature
                 : signature.catch((error) => {
@@ -756,7 +905,11 @@ export function toInternalVcsAdapter(
         ...(typeof historyGetWatchPlan === "function" && {
           watchPlan(input, context) {
             try {
-              return historyGetWatchPlan.call(history, input, context);
+              return historyGetWatchPlan.call(
+                history,
+                parseHistoryInput(input, acceptsExpression).input,
+                context,
+              );
             } catch (error) {
               throw toUserFacingError(error);
             }

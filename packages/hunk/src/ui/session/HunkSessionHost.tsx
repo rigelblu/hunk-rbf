@@ -31,6 +31,7 @@ import { resolveHistoryAuthorLabel } from "../log/formatting";
 import { ThemeController } from "../theme/controller";
 import { trackLiveAppearance } from "../theme/liveAppearance";
 import { watchTerminalColors } from "../theme/terminalColorWatcher";
+import { PreviousInputs } from "./previousInputs";
 import { applySessionViewPreferences } from "./viewPreferences";
 
 export interface HistorySurfaceRoute {
@@ -62,6 +63,8 @@ export interface HunkSessionHostDeps {
   prepareReview?: typeof prepareEmbeddedHistoryReview;
   createReviewRuntime?: typeof createReviewSessionRuntime;
   viewPreferenceQuitScheduler?: ViewPreferenceQuitScheduler;
+  /** Create the session's previous-input list; tests count calls to prove it is made once. */
+  createPreviousInputs?: () => PreviousInputs;
 }
 
 /** Truncate one display field without splitting Unicode code points or exceeding transport bytes. */
@@ -156,6 +159,11 @@ export function HunkSessionHost({
   const renderer = useRenderer();
   const prepareReview = deps.prepareReview ?? prepareEmbeddedHistoryReview;
   const createReviewRuntime = deps.createReviewRuntime ?? createReviewSessionRuntime;
+  // Session lifetime: this list outlives every routed surface, so opening a diff from history and
+  // returning keeps it, and quitting drops it.
+  const [previousInputs] = useState(() =>
+    (deps.createPreviousInputs ?? (() => new PreviousInputs()))(),
+  );
   const [themeController] = useState(() => {
     // A review launch shows macOS appearance from its first frame. History startup keeps its own
     // theme resolution, and the tracking below still records the live mode for reviews it opens.
@@ -471,6 +479,7 @@ export function HunkSessionHost({
       onAutoRefreshEnabledChange={setAutoRefreshEnabled}
       refreshOnMountGeneration={historyReturnGeneration}
       themeController={themeController}
+      previousInputs={previousInputs}
     />
   );
 }

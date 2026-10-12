@@ -84,6 +84,8 @@ export type {
   ExtensionVcsHistoryCommit,
   ExtensionVcsHistoryDecoration,
   ExtensionVcsHistoryInput,
+  ExtensionVcsExpressionHistoryInput,
+  ExtensionVcsLegacyHistoryInput,
   ExtensionVcsHistoryPage,
   ExtensionVcsHistoryReviewAction,
   ExtensionVcsHistoryReviewOptions,

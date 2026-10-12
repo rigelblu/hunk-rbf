@@ -72,6 +72,15 @@ const HISTORY_COMMANDS = [
   },
   sharedHistoryCommand("hunk.view.openThemeSelector", "view", "Application"),
   {
+    id: "hunk.history.editRevset",
+    title: "Edit revset…",
+    category: "history",
+    defaultKeys: ["L"],
+    locus: "client-local",
+    publicToExtensions: false,
+    group: "view",
+  },
+  {
     id: "hunk.history.toggleGraph",
     title: "Graph view",
     category: "history",

@@ -21,7 +21,7 @@
  * Extensions can branch on `hunk.apiVersion` so a newer Hunk can keep loading
  * older extensions without guessing at their expectations.
  */
-export const HUNK_EXTENSION_API_VERSION = 31;
+export const HUNK_EXTENSION_API_VERSION = 32;
 export type HunkExtensionApiVersion = typeof HUNK_EXTENSION_API_VERSION;
 
 export type ExtensionNotifyType = "info" | "warning" | "error";
@@ -837,8 +837,10 @@ export interface ExtensionVcsHistoryCommit {
   isEmpty?: boolean;
 }
 
-/** Provider-neutral history traversal accepted by `hunk log`. */
-export interface ExtensionVcsHistoryInput {
+/** Provider-neutral history traversal accepted by `hunk log`, selected by flags and filters. */
+export interface ExtensionVcsLegacyHistoryInput {
+  kind?: undefined;
+  expression?: never;
   revision?: string;
   all?: boolean;
   firstParent?: boolean;
@@ -849,6 +851,33 @@ export interface ExtensionVcsHistoryInput {
   until?: string;
   pathspecs?: string[];
 }
+
+/**
+ * History traversal selected by one complete provider-language expression.
+ *
+ * The expression is the whole set of revisions: a provider adds no ancestry, filters or default
+ * bounds of its own, and an expression combined with any legacy selector is an error. Hunk
+ * delivers it only to a provider that sets `acceptsExpression` on its history capability, and
+ * `maxCount` stays a separate row limit.
+ */
+export interface ExtensionVcsExpressionHistoryInput {
+  kind: "expression";
+  expression: string;
+  maxCount?: number;
+  revision?: never;
+  all?: never;
+  firstParent?: never;
+  author?: never;
+  grep?: never;
+  since?: never;
+  until?: never;
+  pathspecs?: never;
+}
+
+/** Provider-neutral history traversal accepted by `hunk log`. */
+export type ExtensionVcsHistoryInput =
+  | ExtensionVcsLegacyHistoryInput
+  | ExtensionVcsExpressionHistoryInput;
 
 /**
  * One bounded history read in child-before-parent topological order.
@@ -871,6 +900,15 @@ export type ExtensionVcsHistoryScope =
 export interface ExtensionVcsHistorySource {
   /** Immutable for this source lifetime; omitted for explicit and legacy traversal. */
   readonly scope?: ExtensionVcsHistoryScope;
+  /**
+   * Immutable text of the complete accepted query, without the separate row limit.
+   *
+   * A source opened for `kind: "expression"` input must echo that input's exact text, or Hunk
+   * closes it and rejects the open. A source for legacy input may omit it. A value that is not a
+   * string, is over 65,536 UTF-16 units, or carries a control character or line break is
+   * dropped, and the source stays open without it.
+   */
+  readonly expression?: string;
   /** Read the next page while preserving the source-wide topological order. */
   read(options: { limit: number; signal?: AbortSignal }): Promise<ExtensionVcsHistoryPage>;
   close(): void | Promise<void>;
@@ -910,6 +948,13 @@ export type ExtensionVcsHistoryRangeReviewAction = Extract<
 
 /** Optional read-only history capability implemented independently of review operations. */
 export interface ExtensionVcsHistoryCapability {
+  /**
+   * Accept `kind: "expression"` input at `open`, `watchSignature` and `watchPlan`.
+   *
+   * Read once at registration; it must be a boolean. When omitted or `false`, Hunk rejects
+   * expression input before it reaches any callback.
+   */
+  acceptsExpression?: boolean;
   open(
     input: ExtensionVcsHistoryInput,
     context: ExtensionVcsLoadContext,

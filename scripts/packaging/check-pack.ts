@@ -52,6 +52,9 @@ import type {
   ExtensionVerticalPane,
   ExtensionVcsAdapter,
   ExtensionVcsDiffInput,
+  ExtensionVcsExpressionHistoryInput,
+  ExtensionVcsHistoryInput,
+  ExtensionVcsLegacyHistoryInput,
   ExtensionVcsLoadContext,
   ExtensionVcsPatchResult,
   ExtensionWorkspaceWriteResult,
@@ -368,6 +371,31 @@ export default function (hunk: HunkExtensionAPI) {
     },
   };
   hunk.registerVcsAdapter(adapter);
+
+  const expressionHistoryInput: ExtensionVcsExpressionHistoryInput = {
+    kind: "expression",
+    expression: "all()",
+    maxCount: 10,
+  };
+  const legacyHistoryInput: ExtensionVcsLegacyHistoryInput = { revision: "tip", maxCount: 10 };
+  const historyInputs: ExtensionVcsHistoryInput[] = [expressionHistoryInput, legacyHistoryInput];
+  hunk.registerVcsAdapter({
+    id: "hg-expression",
+    name: "Mercurial expressions",
+    detect: () => null,
+    history: {
+      acceptsExpression: true,
+      open(input: ExtensionVcsHistoryInput) {
+        return {
+          expression: input.kind === "expression" ? input.expression : undefined,
+          read: async () => ({ commits: [], done: true }),
+          close() {},
+        };
+      },
+      planReview: (commit) => ({ kind: "revision-show", revisionId: commit.revisionId }),
+    },
+  });
+  void historyInputs;
 
   hunk.transformChangeset((changeset: ExtensionChangeset) => ({
     ...changeset,

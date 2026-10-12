@@ -11,6 +11,7 @@ import { persistedViewPreferencesFromOptions } from "../../core/run/config";
 import { createEmptyExtensionLoadResult } from "../../extensions/types";
 import type { InteractiveHistoryRuntime } from "../history/types";
 import { LogController } from "../log/controller";
+import { PreviousInputs } from "./previousInputs";
 import { availableThemes } from "../themes";
 import {
   HunkSessionHost,
@@ -185,6 +186,67 @@ test("routes repeated history reviews through fresh runtimes and returns instead
     expect(stops[0]).toHaveBeenCalledTimes(1);
     expect(stops[1]).toHaveBeenCalledTimes(1);
     expect(quit).not.toHaveBeenCalled();
+  } finally {
+    setup.renderer.destroy();
+    await history.controller.close();
+  }
+});
+
+test("keeps one previous-input list across history reviews for the whole session", async () => {
+  const history = await createHistoryRoute();
+  const created: PreviousInputs[] = [];
+  let instance = 0;
+  const deps: HunkSessionHostDeps = {
+    createPreviousInputs: () => {
+      const inputs = new PreviousInputs();
+      created.push(inputs);
+      return inputs;
+    },
+    prepareReview: (async () => {
+      const bootstrap = createTestVcsAppBootstrap({
+        changesetId: `review-${++instance}`,
+        files: [createTestDiffFile({ id: "review.ts", path: "review.ts" })],
+      });
+      bootstrap.extensions = history.runtime.extensionSession.current;
+      return {
+        bootstrap,
+        initialization: history.runtime.initialization,
+        borrowsExtensions: true,
+      };
+    }) as never,
+    createReviewRuntime: (() => ({
+      hostClient: undefined,
+      reviewProducer: undefined,
+      stop: mock(() => undefined),
+    })) as never,
+  };
+  const setup = await testRender(
+    <HunkSessionHost
+      initialRoute={history}
+      initialization={history.runtime.initialization}
+      externalQuitSignal={new AbortController().signal}
+      onQuit={mock(() => undefined)}
+      deps={deps}
+    />,
+    { width: 100, height: 20 },
+  );
+  try {
+    await setup.renderOnce();
+    expect(created).toHaveLength(1);
+    created[0]!.record("@-");
+
+    for (let trip = 0; trip < 2; trip += 1) {
+      await act(async () => setup.mockInput.pressEnter());
+      await settle(setup);
+      expect(setup.captureCharFrame()).not.toContain("Commits on");
+      await act(async () => setup.mockInput.pressKey("q"));
+      await settle(setup);
+      expect(setup.captureCharFrame()).toContain("History row");
+    }
+
+    // Two round trips through a review neither rebuilt nor emptied the list.
+    expect(created).toHaveLength(1);
+    expect(created[0]!.list()).toEqual(["@-"]);
   } finally {
     setup.renderer.destroy();
     await history.controller.close();

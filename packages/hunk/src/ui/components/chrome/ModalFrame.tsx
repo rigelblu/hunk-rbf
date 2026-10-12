@@ -7,6 +7,7 @@ import type { AppTheme } from "../../themes";
 /** Render a centered framed modal container that other dialogs can reuse. */
 export function ModalFrame({
   children,
+  compact = false,
   height,
   onClose,
   onMouseScroll,
@@ -17,6 +18,8 @@ export function ModalFrame({
   width,
 }: {
   children: ReactNode;
+  /** Drop the title and bottom padding rows, for terminals too short for the normal frame. */
+  compact?: boolean;
   height: number;
   onClose?: () => void;
   onMouseScroll?: (event: TuiMouseEvent) => void;
@@ -36,6 +39,7 @@ export function ModalFrame({
     height,
     terminalWidth,
     terminalHeight,
+    compact,
   });
   const closeText = onClose ? "[Esc]" : "";
   const titleWidth = Math.max(1, clampedWidth - 2 - (closeText ? closeText.length + 1 : 0));
@@ -76,7 +80,7 @@ export function ModalFrame({
           style={{
             paddingLeft: 1,
             paddingRight: 1,
-            paddingTop: 1,
+            paddingTop: compact ? 0 : 1,
             flexDirection: "row",
           }}
         >
@@ -96,7 +100,7 @@ export function ModalFrame({
           style={{
             paddingLeft: 1,
             paddingRight: 1,
-            paddingBottom: 1,
+            paddingBottom: compact ? 0 : 1,
             flexDirection: "column",
             flexGrow: 1,
           }}

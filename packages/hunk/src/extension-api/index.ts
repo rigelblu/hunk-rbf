@@ -163,6 +163,8 @@ export type {
   ExtensionVcsHistoryCommit,
   ExtensionVcsHistoryDecoration,
   ExtensionVcsHistoryInput,
+  ExtensionVcsExpressionHistoryInput,
+  ExtensionVcsLegacyHistoryInput,
   ExtensionVcsHistoryPage,
   ExtensionVcsHistoryRangeReviewAction,
   ExtensionVcsHistoryRangeSelection,

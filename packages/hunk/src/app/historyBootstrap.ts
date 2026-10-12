@@ -10,8 +10,10 @@ import {
   createInteractiveSessionInitialization,
   type InteractiveSessionInitialization,
 } from "../core/session/initialization";
+import type { HistoryQueryReplacement, HistoryQueryTarget } from "../core/history/queryReplacement";
 import type {
   ExtensionVcsHistoryCommit,
+  ExtensionVcsHistoryInput,
   ExtensionVcsHistoryRangeReviewAction,
   ExtensionVcsHistoryRangeSelection,
   ExtensionVcsHistoryReviewAction,
@@ -70,8 +72,11 @@ export interface HistoryBootstrap {
     options?: ExtensionVcsHistoryReviewOptions,
     signal?: AbortSignal,
   ): Promise<ExtensionVcsHistoryRangeReviewAction>;
-  historyWatchPlan?: ExtensionVcsWatchPlan;
-  historyWatchSignature?: (signal?: AbortSignal) => string | Promise<string>;
+  /** Follows the accepted query, so a custom revset moves its watch with it. */
+  readonly historyWatchPlan?: ExtensionVcsWatchPlan;
+  readonly historyWatchSignature?: (signal?: AbortSignal) => string | Promise<string>;
+  /** Present only when the selected provider accepts expression input. */
+  queryReplacement?: HistoryQueryReplacement;
   reopenSource(signal?: AbortSignal): Promise<VcsHistorySource>;
   acceptSource(source: VcsHistorySource): Promise<void>;
   close(): Promise<void>;
@@ -141,7 +146,7 @@ export async function loadHistoryBootstrap({
   }
   const repoRoot = selectedDetection?.repoRoot ?? cwd;
 
-  const historyInput = {
+  const launchHistoryInput: ExtensionVcsHistoryInput = {
     ...(input.revision ? { revision: input.revision } : {}),
     ...(input.all ? { all: true } : {}),
     ...(input.firstParent ? { firstParent: true } : {}),
@@ -152,12 +157,22 @@ export async function loadHistoryBootstrap({
     ...(input.until !== undefined ? { until: input.until } : {}),
     ...(input.pathspecs ? { pathspecs: [...input.pathspecs] } : {}),
   };
+  // The query refresh and watch use: the launch input until a custom expression is accepted.
+  let acceptedHistoryInput: ExtensionVcsHistoryInput = launchHistoryInput;
+  const historyInputFor = (target: HistoryQueryTarget): ExtensionVcsHistoryInput =>
+    target.kind === "launch"
+      ? launchHistoryInput
+      : {
+          kind: "expression",
+          expression: target.expression,
+          ...(target.maxCount !== undefined ? { maxCount: target.maxCount } : {}),
+        };
   const openSource = (signal?: AbortSignal) =>
-    openVcsHistory(adapter, historyInput, { cwd: repoRoot, signal }, catalog);
+    openVcsHistory(adapter, acceptedHistoryInput, { cwd: repoRoot, signal }, catalog);
   let historyWatchPlan: ExtensionVcsWatchPlan | undefined;
   let historyWatchPlanNotice: string | undefined;
   try {
-    historyWatchPlan = getVcsHistoryWatchPlan(adapter, historyInput, { cwd: repoRoot });
+    historyWatchPlan = getVcsHistoryWatchPlan(adapter, acceptedHistoryInput, { cwd: repoRoot });
   } catch (error) {
     if (adapter.history?.watchSignature) {
       historyWatchPlan = { coverage: "poll-only", targets: [] };
@@ -228,11 +243,46 @@ export async function loadHistoryBootstrap({
         return planVcsHistoryRangeReview(adapter, selection, { cwd: repoRoot, signal }, options);
       },
     }),
-    ...(historyWatchPlan && {
-      historyWatchPlan,
-      historyWatchSignature(signal) {
-        return getVcsHistoryWatchSignature(adapter, historyInput, { cwd: repoRoot, signal });
-      },
+    get historyWatchPlan() {
+      return historyWatchPlan;
+    },
+    get historyWatchSignature() {
+      return historyWatchPlan
+        ? (signal?: AbortSignal) =>
+            getVcsHistoryWatchSignature(adapter, acceptedHistoryInput, { cwd: repoRoot, signal })
+        : undefined;
+    },
+    ...(adapter.history?.acceptsExpression && {
+      queryReplacement: {
+        open(target, signal) {
+          return openVcsHistory(
+            adapter,
+            historyInputFor(target),
+            { cwd: repoRoot, signal },
+            catalog,
+          );
+        },
+        async accept(target, replacement) {
+          if (closed) {
+            await replacement.close();
+            throw new Error("History session is closed.");
+          }
+          const previous = source;
+          source = replacement;
+          acceptedHistoryInput = historyInputFor(target);
+          try {
+            historyWatchPlan = getVcsHistoryWatchPlan(adapter, acceptedHistoryInput, {
+              cwd: repoRoot,
+            });
+          } catch {
+            // Polling still follows the accepted query when the event plan cannot be built.
+            historyWatchPlan = adapter.history?.watchSignature
+              ? { coverage: "poll-only", targets: [] }
+              : undefined;
+          }
+          await previous.close();
+        },
+      } satisfies HistoryQueryReplacement,
     }),
     async reopenSource(signal) {
       if (closed) throw new Error("History session is closed.");

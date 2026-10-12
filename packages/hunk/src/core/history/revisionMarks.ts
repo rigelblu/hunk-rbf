@@ -1,5 +1,5 @@
 import type { ExtensionVcsHistoryScope } from "../../extension-api/types";
-import type { HistoryCommandInput } from "../run/commandInputs";
+import type { HistoryAcceptedInput } from "../run/commandInputs";
 import type { HistoryCommit, HistoryGraphRow } from "./types";
 
 /** Retain the last known immutable identity and description of one marked revision. */
@@ -69,8 +69,12 @@ export function revisionMark(
  * Only the input kinds listed here can be eligible: an unlisted kind is denied, and the `never`
  * binding fails typecheck until a new kind states its own rule.
  */
-export function revisionMarkLogicalFallbackEligible(input: HistoryCommandInput): boolean {
+export function revisionMarkLogicalFallbackEligible(input: HistoryAcceptedInput): boolean {
   switch (input.kind) {
+    // A symbolic expression such as `@` can resolve elsewhere between reads, so no read of it
+    // proves a revision gone.
+    case "expression":
+      return false;
     case "history":
       return (
         input.revision === undefined &&
@@ -83,8 +87,8 @@ export function revisionMarkLogicalFallbackEligible(input: HistoryCommandInput):
         !input.pathspecs?.length
       );
     default: {
-      const unlistedKind: never = input.kind;
-      void unlistedKind;
+      const unlistedInput: never = input;
+      void unlistedInput;
       return false;
     }
   }
@@ -96,8 +100,10 @@ export function revisionMarkLogicalFallbackEligible(input: HistoryCommandInput):
  * input, so two different inputs never compare equal, and the `never` binding fails typecheck
  * until a new kind lists its fields.
  */
-export function revisionMarkTraversalKey(input: HistoryCommandInput): string {
+export function revisionMarkTraversalKey(input: HistoryAcceptedInput): string {
   switch (input.kind) {
+    case "expression":
+      return JSON.stringify([input.kind, input.expression, input.maxCount]);
     case "history":
       return JSON.stringify([
         input.kind,
@@ -112,8 +118,8 @@ export function revisionMarkTraversalKey(input: HistoryCommandInput): string {
         input.pathspecs ?? [],
       ]);
     default: {
-      const unlistedKind: never = input.kind;
-      return JSON.stringify([unlistedKind, input]);
+      const unlistedInput: never = input;
+      return JSON.stringify([(unlistedInput as { kind?: unknown }).kind, unlistedInput]);
     }
   }
 }

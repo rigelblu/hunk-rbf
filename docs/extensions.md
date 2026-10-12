@@ -312,8 +312,8 @@ and retires the replaced instance at that explicit ownership boundary.
 
 ### `hunk.apiVersion`
 
-The API generation this Hunk speaks (currently `31`). Branch on it if you want
-one file to support several Hunk versions. Version 31 adds optional history scope and direct cutoff-parent facts; version 30 adds optional `isEmpty` history metadata; version 29 adds optional history-watch hooks; version 28 adds host-owned syntax highlighting for
+The API generation this Hunk speaks (currently `32`). Branch on it if you want
+one file to support several Hunk versions. Version 32 adds provider-language expression history input behind the `acceptsExpression` capability flag, plus `source.expression`; version 31 adds optional history scope and direct cutoff-parent facts; version 30 adds optional `isEmpty` history metadata; version 29 adds optional history-watch hooks; version 28 adds host-owned syntax highlighting for
 file-view code documents; version 27 adds `ctx.selection.files`, the visible files in review order;
 version 26 adds the status line (`ctx.statusLine` items and `ctx.prompts.line()` inline prompts);
 version 25 adds Promise-returning watch signatures and watch cancellation; version 24 adds review
@@ -585,6 +585,71 @@ The snippet above demonstrates static history production only; it is not a compl
 adapter. Add a `revision-show` operation for `revision-show` actions and a `working-tree-diff`
 operation that accepts `rangeEndpoints` for `revision-range` actions before advertising interactive
 opening. Otherwise Enter reports that the corresponding review operation is unsupported.
+
+API version 32 adds expression history input. A history provider that sets
+`acceptsExpression: true` on its `history` capability receives
+`{ kind: "expression", expression, maxCount? }` at `open`, `watchSignature` and `watchPlan`. The
+expression is the complete set of revisions in the provider's own language. The provider adds no
+ancestry, filters or default bounds, and `maxCount` stays a separate row limit. Hunk keeps no revset
+parser: the provider validates the text and reports errors.
+
+```ts
+hunk.registerVcsAdapter({
+  id: "hg-revsets",
+  name: "Mercurial revsets",
+  detect: () => null,
+  history: {
+    acceptsExpression: true,
+    async open(input) {
+      // `kind` tells the two input shapes apart; legacy input omits it.
+      const text = input.kind === "expression" ? input.expression : legacyRevset(input.revision);
+      return {
+        // Expression sources must echo the trimmed input text exactly.
+        ...(input.kind === "expression" ? { expression: input.expression } : {}),
+        async read({ signal }) {
+          signal?.throwIfAborted();
+          void text;
+          return { commits: [], done: true };
+        },
+        close() {},
+      };
+    },
+    planReview: (commit) => ({ kind: "revision-show", revisionId: commit.revisionId }),
+  },
+});
+
+function legacyRevset(revision: string | undefined) {
+  return revision ?? "tip";
+}
+```
+
+Hunk checks every history input before it reaches a callback. It rebuilds the input from a single
+read of its fields, and forwards only that copy to `open`, `watchSignature` and `watchPlan`. The
+expression arrives trimmed of leading and trailing whitespace, and `source.expression` is compared
+against that trimmed text. An input that carries `expression`
+without `kind: "expression"`, carries any other `kind`, or combines the expression with
+`revision`, `all`, `firstParent`, `author`, `grep`, `since`, `until` or `pathspecs` is rejected.
+So is an expression that is missing, not a string, blank, over 65,536 UTF-16 units, or contains a
+control character or line break. A provider that omitted `acceptsExpression` or set it to `false`
+never receives expression input; Hunk reads the flag once at registration and rejects a value that
+is not a boolean. Providers without the flag behave as before, and legacy input keeps its shape
+(`kind` omitted).
+
+A source opened for expression input must expose `source.expression` equal to the input text, to the
+character. Hunk closes the source and rejects the open if it is missing or differs. A source opened
+for legacy input may expose `source.expression` to describe its complete query. Hunk drops a value
+that is not a string, is over 65,536 UTF-16 units, or contains a control character or line break, or
+whose getter throws, and keeps the source open without it. A blank value is dropped too.
+
+For a source opened for expression input, Hunk ignores `source.scope` without reading it and
+ignores every commit's `graphCutoffParentRevisionIds` without reading them. A custom expression
+makes no mainline-cutoff claim. `maxCount` on expression input must be omitted or a safe integer
+of at least 0.
+
+`ExtensionVcsHistoryInput` is now a union of `ExtensionVcsLegacyHistoryInput` and
+`ExtensionVcsExpressionHistoryInput`. An `interface X extends ExtensionVcsHistoryInput` no longer
+compiles; use an intersection type instead. Extensions requiring this contract should declare
+`{ "hunk": { "apiVersion": 32 } }`.
 
 API version 31 adds optional `source.scope` and `commit.graphCutoffParentRevisionIds`.
 Scope is either `{ kind: "bounded", boundaryRevisionId }` or

@@ -20,14 +20,17 @@ export function resolveModalGeometry({
   terminalHeight,
   terminalWidth,
   width,
+  compact = false,
 }: {
   width: number;
   height: number;
   terminalWidth: number;
   terminalHeight: number;
+  /** Let a short-terminal dialog use all but one row, as its compact frame has no padding rows. */
+  compact?: boolean;
 }): ModalGeometry {
   const availableWidth = Math.max(1, terminalWidth - 2);
-  const availableHeight = Math.max(1, terminalHeight - 2);
+  const availableHeight = Math.max(1, terminalHeight - (compact ? 1 : 2));
   const resolvedWidth = Math.max(1, Math.min(width, availableWidth));
   const resolvedHeight = Math.max(1, Math.min(height, availableHeight));
 

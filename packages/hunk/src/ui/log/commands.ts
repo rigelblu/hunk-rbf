@@ -43,6 +43,7 @@ export function isHistoryCommandEnabled(id: HistoryCommandId, snapshot: LogSnaps
     id === "hunk.history.startVisualSelection"
   )
     return Boolean(selected);
+  if (id === "hunk.history.editRevset") return snapshot.query?.editable === true;
   if (id === "hunk.history.toggleMark") return Boolean(selected) && snapshot.markStatus === "ready";
   if (id === "hunk.history.reviewMarks") return snapshot.marks.length > 0;
   if (id === "hunk.history.clearSelection")

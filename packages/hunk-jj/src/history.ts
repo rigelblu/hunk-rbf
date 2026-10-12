@@ -5,6 +5,7 @@ import {
   type ExtensionVcsHistoryCommit,
   type ExtensionVcsHistoryDecoration,
   type ExtensionVcsHistoryInput,
+  type ExtensionVcsLegacyHistoryInput,
   type ExtensionVcsHistoryRangeReviewAction,
   type ExtensionVcsHistoryRangeSelection,
   type ExtensionVcsHistoryReviewOptions,
@@ -61,10 +62,11 @@ function requireHistoryRevision(value: string) {
   return value;
 }
 
-/** Build the provider-owned revset while preserving honest Jujutsu semantics. */
-export function buildJjHistoryRevset(
-  input: ExtensionVcsHistoryInput,
-  scope?: ExtensionVcsHistoryScope,
+/** Compose the legacy revset around a boundary written either as a commit id or as `trunk()`. */
+function composeJjHistoryRevset(
+  input: ExtensionVcsLegacyHistoryInput,
+  scope: ExtensionVcsHistoryScope | undefined,
+  boundary: string | undefined,
 ) {
   const start = input.revision
     ? `(${requireHistoryRevision(input.revision)})`
@@ -75,8 +77,8 @@ export function buildJjHistoryRevset(
   const selection =
     scope?.kind === "bounded"
       ? input.firstParent
-        ? `((first_ancestors(visible_heads()) ~ ancestors(${scope.boundaryRevisionId})) | ${scope.boundaryRevisionId})`
-        : `((${scope.boundaryRevisionId}..visible_heads()) | ${scope.boundaryRevisionId})`
+        ? `((first_ancestors(visible_heads()) ~ ancestors(${boundary})) | ${boundary})`
+        : `((${boundary}..visible_heads()) | ${boundary})`
       : scope?.kind === "fallback"
         ? `${input.firstParent ? "first_ancestors" : "ancestors"}(visible_heads())`
         : traversal;
@@ -93,7 +95,60 @@ export function buildJjHistoryRevset(
   if (input.until !== undefined) {
     filters.push(`author_date(before:${quoteRevsetString(input.until)})`);
   }
-  return filters.join(" & ");
+  return filters;
+}
+
+/** Build the provider-owned revset while preserving honest Jujutsu semantics. */
+export function buildJjHistoryRevset(
+  input: ExtensionVcsHistoryInput,
+  scope?: ExtensionVcsHistoryScope,
+) {
+  // Expression input is the complete revset; nothing is added around it.
+  if (input.kind === "expression") return input.expression;
+  return composeJjHistoryRevset(
+    input,
+    scope,
+    scope?.kind === "bounded" ? scope.boundaryRevisionId : undefined,
+  ).join(" & ");
+}
+
+/** Longest expression text a source may report, matching the host's executable-text rule. */
+const MAX_EXPRESSION_UNITS = 65_536;
+const EXPRESSION_FORBIDDEN_CHARACTERS = /[\x00-\x1f\x7f-\x9f\u2028\u2029]/;
+/** Pathspecs that mean the same bare path as a `jj log` fileset argument and a `files()` string. */
+const PLAIN_PATHSPEC_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9_./-]*$/;
+
+/**
+ * Describe the complete revset a legacy launch selected, so the editor can show and edit it.
+ *
+ * The text uses symbolic `trunk()` and `visible_heads()` for the default policy instead of the
+ * commit ids the cursor was pinned to. Returns undefined when the launch cannot be stated
+ * exactly: a pathspec that is not a plain path (the CLI parses each as a fileset expression,
+ * which `files()` does not repeat), or text the executable-text rule would reject.
+ */
+export function buildJjHistoryExpression(
+  input: ExtensionVcsLegacyHistoryInput,
+  scope?: ExtensionVcsHistoryScope,
+): string | undefined {
+  let filters: string[];
+  try {
+    filters = composeJjHistoryRevset(input, scope, "trunk()");
+  } catch {
+    return undefined;
+  }
+  if (input.pathspecs?.length) {
+    if (!input.pathspecs.every((path) => PLAIN_PATHSPEC_PATTERN.test(path))) return undefined;
+    filters.push(`files(${input.pathspecs.map(quoteRevsetString).join(" | ")})`);
+  }
+  const text = filters.join(" & ");
+  return text.length <= MAX_EXPRESSION_UNITS && !EXPRESSION_FORBIDDEN_CHARACTERS.test(text)
+    ? text
+    : undefined;
+}
+
+/** Pass a revset as the `--revisions` value; a leading hyphen needs the joined form to stay a value. */
+function buildJjRevisionArgs(revset: string) {
+  return revset.startsWith("-") ? [`--revisions=${revset}`] : ["--revisions", revset];
 }
 
 /** Build one deterministic, non-mutating `jj log` invocation. */
@@ -106,13 +161,12 @@ export function buildJjHistoryArgs(input: ExtensionVcsHistoryInput, prepared?: P
     "never",
     "log",
     "--no-graph",
-    "--revisions",
-    buildJjHistoryRevset(input, prepared?.scope),
+    ...buildJjRevisionArgs(buildJjHistoryRevset(input, prepared?.scope)),
     "--template",
     prepared?.template ?? JJ_HISTORY_TEMPLATE,
   ];
   if (input.maxCount !== undefined) args.push("--limit", String(input.maxCount));
-  if (input.pathspecs?.length) args.push("--", ...input.pathspecs);
+  if (input.kind !== "expression" && input.pathspecs?.length) args.push("--", ...input.pathspecs);
   return args;
 }
 
@@ -134,6 +188,7 @@ async function prepareJjHistory(
     await runJjHistoryQuery(
       ["op", "log", "--no-graph", "--limit", "1", "--template", 'id ++ "\\n"'],
       options,
+      input.kind === "expression",
     )
   ).trim();
   if (!/^[0-9a-f]{128}$/.test(operationId))
@@ -143,7 +198,8 @@ async function prepareJjHistory(
     template: JJ_HISTORY_TEMPLATE,
     fieldsPerCommit: HISTORY_FIELDS_PER_COMMIT,
   };
-  if (input.revision || input.all) return plan;
+  // Expression input is its own scope: no mainline lookup, no cutoff field.
+  if (input.kind === "expression" || input.revision || input.all) return plan;
   const output = await runJjHistoryQuery(
     [
       "--at-op",
@@ -188,8 +244,13 @@ export async function getJjHistoryWatchSignature(
     cwd,
     signal,
   });
-  if (result.exitCode !== 0)
-    throw new Error(result.stderr.trim() || "Jujutsu could not read history.");
+  if (result.exitCode !== 0) {
+    throw new Error(
+      (input.kind === "expression"
+        ? filterJjExpressionError(result.stderr)
+        : result.stderr.trim()) || "Jujutsu could not read history.",
+    );
+  }
   return prepared.scope ? `${JSON.stringify(prepared.scope)}\n${result.stdout}` : result.stdout;
 }
 
@@ -358,10 +419,35 @@ export async function countJjReviewCommits(revset: string, options: JjHistoryOpt
   return count;
 }
 
+/**
+ * Reduce JJ's stderr for a revset the user typed to the text that explains the fault.
+ *
+ * Drops a leading `Error: `, then the `Failed to parse revset: ` preamble behind it, then every
+ * source-diagram row (an optional line number followed by `|`), whose carets point at the wrong
+ * text once the host wraps the message. Position lines, `=` detail lines and JJ's hint keep their
+ * line breaks. Text in a shape this does not know stays whole.
+ */
+export function filterJjExpressionError(stderr: string) {
+  let text = stderr.trim();
+  if (text.startsWith("Error: ")) {
+    text = text.slice("Error: ".length);
+    if (text.startsWith("Failed to parse revset: ")) {
+      text = text.slice("Failed to parse revset: ".length);
+    }
+  }
+  return text
+    .split("\n")
+    .filter((line) => !/^\s*\d*\s*\|/.test(line))
+    .join("\n")
+    .trim();
+}
+
 /** Run one cancellable JJ query used while preparing a history range. */
 async function runJjHistoryQuery(
   args: string[],
   { cwd, jjExecutable = "jj", signal }: JjHistoryOptions,
+  /** Report a failure with the expression-input error text instead of today's first line. */
+  expressionErrors = false,
 ) {
   let result: Awaited<ReturnType<typeof runAbortableCommand>>;
   try {
@@ -376,6 +462,11 @@ async function runJjHistoryQuery(
     });
   }
   if (result.exitCode !== 0) {
+    if (expressionErrors) {
+      throw new HunkExtensionUserError(
+        filterJjExpressionError(result.stderr) || "Jujutsu could not read this repository.",
+      );
+    }
     throw new HunkExtensionUserError(
       result.stderr.trim().split("\n")[0] || "Jujutsu could not read this repository.",
       { suggestions: ["Check the revision and repository, then try again."] },
@@ -425,7 +516,11 @@ export async function planJjHistoryRangeReview(
 }
 
 /** Run a small synchronous JJ query used only to establish the repository root. */
-function resolveHistoryRepoRoot({ cwd, jjExecutable = "jj" }: JjHistoryOptions) {
+function resolveHistoryRepoRoot(
+  { cwd, jjExecutable = "jj" }: JjHistoryOptions,
+  /** Report a failure with the expression-input error text instead of today's first line. */
+  expressionErrors = false,
+) {
   let result: ReturnType<typeof Bun.spawnSync>;
   try {
     result = Bun.spawnSync(
@@ -438,6 +533,12 @@ function resolveHistoryRepoRoot({ cwd, jjExecutable = "jj" }: JjHistoryOptions) 
     });
   }
   if (result.exitCode !== 0) {
+    if (expressionErrors) {
+      throw new HunkExtensionUserError(
+        filterJjExpressionError(result.stderr?.toString() ?? "") ||
+          "Jujutsu could not read this repository.",
+      );
+    }
     const message = result.stderr?.toString().trim().split("\n")[0];
     throw new HunkExtensionUserError(message || "Jujutsu could not read this repository.", {
       suggestions: ["Run `hunk log --vcs jj` from a Jujutsu workspace."],
@@ -450,7 +551,9 @@ function resolveHistoryRepoRoot({ cwd, jjExecutable = "jj" }: JjHistoryOptions) 
 
 /** Return whether traversal filters can omit direct parents from the emitted commit stream. */
 export function jjHistoryUsesBoundaryTopology(input: ExtensionVcsHistoryInput) {
+  // A custom expression can select any set, so its rows never promise their direct parents.
   return Boolean(
+    input.kind === "expression" ||
     input.author !== undefined ||
     input.grep !== undefined ||
     input.since !== undefined ||
@@ -466,13 +569,36 @@ export async function openJjHistory(
 ): Promise<ExtensionVcsHistorySource & { repoRoot: string }> {
   const { cwd, jjExecutable = "jj", signal } = options;
   signal?.throwIfAborted();
-  const repoRoot = resolveHistoryRepoRoot({ cwd, jjExecutable });
+  const repoRoot = resolveHistoryRepoRoot({ cwd, jjExecutable }, input.kind === "expression");
   const prepared = await prepareJjHistory(input, { ...options, cwd: repoRoot });
   signal?.throwIfAborted();
+  const expression =
+    input.kind === "expression"
+      ? input.expression
+      : buildJjHistoryExpression(input, prepared.scope);
   if (input.maxCount === 0) {
+    // JJ validates the revset even for zero rows, so a bad expression fails here, not as empty.
+    if (input.kind === "expression") {
+      await runJjHistoryQuery(
+        [
+          "--at-op",
+          prepared.operationId,
+          "log",
+          "--no-graph",
+          ...buildJjRevisionArgs(input.expression),
+          "--limit",
+          "0",
+          "--template",
+          'commit_id ++ "\\n"',
+        ],
+        { ...options, cwd: repoRoot },
+        true,
+      );
+    }
     return {
       repoRoot,
       ...(prepared.scope ? { scope: prepared.scope } : {}),
+      ...(expression !== undefined ? { expression } : {}),
       async read() {
         return { commits: [], done: true };
       },
@@ -562,10 +688,15 @@ export async function openJjHistory(
     if (!failure && (fields.length > 0 || buffered.length > 0)) {
       failure = new Error("Jujutsu returned a truncated history record.");
     } else if (!failure && code !== 0 && !closed) {
-      failure = new HunkExtensionUserError(
-        stderr.trim().split("\n")[0] || "Jujutsu could not read this history.",
-        { suggestions: ["Check the revset, filters, and filesets, then try again."] },
-      );
+      failure =
+        input.kind === "expression"
+          ? new HunkExtensionUserError(
+              filterJjExpressionError(stderr) || "Jujutsu could not read this history.",
+            )
+          : new HunkExtensionUserError(
+              stderr.trim().split("\n")[0] || "Jujutsu could not read this history.",
+              { suggestions: ["Check the revset, filters, and filesets, then try again."] },
+            );
     }
     completed = true;
     wake();
@@ -594,6 +725,7 @@ export async function openJjHistory(
   return {
     repoRoot,
     ...(prepared.scope ? { scope: prepared.scope } : {}),
+    ...(expression !== undefined ? { expression } : {}),
     async read({ limit, signal }) {
       if (reading) throw new Error("Concurrent Jujutsu history reads are not supported.");
       if (signal?.aborted) {

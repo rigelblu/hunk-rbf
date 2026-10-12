@@ -178,6 +178,7 @@ export function createJjVcsAdapter({ jjExecutable = "jj" }: Readonly<JjVcsAdapte
     // reviewing it as plain Git would show the wrong working copy.
     detectionPriority: HUNK_VCS_DETECTION_BASELINE_PRIORITY + 200,
     history: {
+      acceptsExpression: true,
       open(input, { cwd, signal }) {
         return openJjHistory(input, { cwd, jjExecutable, signal });
       },

@@ -54,12 +54,16 @@ export interface VcsOperations {
 /** Internal history cursor after extension-boundary validation. */
 export interface VcsHistorySource {
   readonly scope?: ExtensionVcsHistoryScope;
+  /** Exact accepted query text; absent when the provider omitted it or it failed validation. */
+  readonly expression?: string;
   read(options: { limit: number; signal?: AbortSignal }): Promise<ExtensionVcsHistoryPage>;
   close(): Promise<void>;
 }
 
 /** Optional provider-neutral read-only history and review-planning capability. */
 export interface VcsHistoryCapability {
+  /** True only when the provider registered `acceptsExpression: true`; set once at registration. */
+  readonly acceptsExpression?: true;
   open(input: ExtensionVcsHistoryInput, context: VcsLoadContext): Promise<VcsHistorySource>;
   planReview(
     commit: ExtensionVcsHistoryCommit,

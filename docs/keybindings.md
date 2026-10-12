@@ -70,7 +70,12 @@ through history; `u`/`d` or `Ctrl-U`/`Ctrl-D` move by half a page; `g`/`G` or `H
 selection when the terminal forwards modifiers, click a commit id to open it immediately, click the adjacent copy
 icon to copy its full immutable id, click elsewhere on a row to select it, or double-click a row to open it.
 Range selection is unavailable with `--all` or author, message, date, and path filters because those traversals
-can interleave unrelated commits or hide intermediate commits. Quitting the opened review returns to the retained history selection and viewport. The Commit menu's
+can interleave unrelated commits or hide intermediate commits.
+
+With a provider that accepts revset expressions (Jujutsu), `L` or **View → Edit revset…** opens an editor for the
+complete active revset: `F2` or `Enter` applies it, `F3` restores the launch policy, `Esc` cancels, and
+`Tab`/`Shift+Tab`, `Up`/`Down` or `Ctrl-N`/`Ctrl-P` highlight a revset applied earlier in the session, which `Enter` then
+inserts without applying it. While a custom revset is active history draws no graph links and refuses range selection. Quitting the opened review returns to the retained history selection and viewport. The Commit menu's
 **Compare with first parent** and **Compare with parent…** actions compare the selected commit against
 an ordered provider-owned parent; they do not navigate the history selection to that parent.
 
@@ -98,6 +103,7 @@ History-specific commands:
 | `hunk.history.search`               | Search history               | `/`                          |
 | `hunk.history.nextMatch`            | Select the next match        | `n`                          |
 | `hunk.history.previousMatch`        | Select the previous match    | `N`                          |
+| `hunk.history.editRevset`           | Edit the history revset      | `L`                          |
 | `hunk.history.toggleGraph`          | Toggle graph presentation    | _(none)_                     |
 | `hunk.history.toggleUnicode`        | Toggle Unicode graph lines   | _(none)_                     |
 | `hunk.history.toggleAuthor`         | Toggle author metadata       | _(none)_                     |

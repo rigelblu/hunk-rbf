@@ -1,3 +1,4 @@
+import type { HistoryQueryReplacement } from "../../core/history/queryReplacement";
 import type { HistoryCommandInput } from "../../core/run/commandInputs";
 import type { PersistedViewPreferences, UserKeyBinding } from "../../core/run/config";
 import type { InteractiveSessionInitialization } from "../../core/session/initialization";
@@ -46,6 +47,8 @@ export interface HistoryRuntime {
   ): Promise<ExtensionVcsHistoryRangeReviewAction>;
   historyWatchPlan?: ExtensionVcsWatchPlan;
   historyWatchSignature?: (signal?: AbortSignal) => string | Promise<string>;
+  /** Present only when the provider accepts expression input. */
+  queryReplacement?: HistoryQueryReplacement;
   /** Replace the current provider cursor for an explicit interactive refresh. */
   reopenSource(signal?: AbortSignal): Promise<VcsHistorySource>;
   /** Commit a successfully primed replacement cursor and close the prior cursor. */

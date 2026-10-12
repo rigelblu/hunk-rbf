@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { createJjVcsAdapter } from "./index";
 import {
   buildJjHistoryArgs,
+  buildJjHistoryExpression,
+  filterJjExpressionError,
   getJjHistoryWatchSignature,
   buildJjHistoryRevset,
   jjHistoryUsesBoundaryTopology,
@@ -729,4 +731,438 @@ describe("HK-93 focused JJ history", () => {
       );
     },
   );
+});
+
+/** Open a source, drain it, and keep the facts the expression contract promises. */
+async function readHk191TestHistory(repo: string, input: Parameters<typeof openJjHistory>[0]) {
+  const source = await openJjHistory(input, { cwd: repo });
+  const commits: Awaited<ReturnType<typeof source.read>>["commits"] = [];
+  try {
+    for (;;) {
+      const page = await source.read({ limit: 3 });
+      commits.push(...page.commits);
+      if (page.done) break;
+    }
+    return { commits, scope: source.scope, expression: source.expression };
+  } finally {
+    await source.close();
+  }
+}
+
+/** Evaluate a revset natively and list its commit ids in JJ's order. */
+function nativeHk191Ids(repo: string, revset: string) {
+  return jj(repo, "log", "--no-graph", "-r", revset, "-T", 'commit_id ++ "\n"')
+    .trim()
+    .split("\n")
+    .filter(Boolean);
+}
+
+describe("HK-19.1 JJ expression history", () => {
+  test("states the default, fallback, first-parent, revision, all and filtered launches", () => {
+    expect(
+      buildJjHistoryExpression({}, { kind: "bounded", boundaryRevisionId: "a".repeat(40) }),
+    ).toBe("(((trunk()..visible_heads()) | trunk()) ~ root())");
+    expect(
+      buildJjHistoryExpression({ firstParent: true }, { kind: "bounded", boundaryRevisionId: "a" }),
+    ).toBe("(((first_ancestors(visible_heads()) ~ ancestors(trunk())) | trunk()) ~ root())");
+    expect(buildJjHistoryExpression({}, { kind: "fallback", reason: "unavailable" })).toBe(
+      "(ancestors(visible_heads()) ~ root())",
+    );
+    expect(
+      buildJjHistoryExpression({ firstParent: true }, { kind: "fallback", reason: "ambiguous" }),
+    ).toBe("(first_ancestors(visible_heads()) ~ root())");
+    expect(buildJjHistoryExpression({ revision: "main..@" })).toBe(
+      "(ancestors((main..@)) ~ root())",
+    );
+    expect(buildJjHistoryExpression({ all: true, firstParent: true })).toBe(
+      "(first_ancestors(visible_heads()) ~ root())",
+    );
+    expect(
+      buildJjHistoryExpression({
+        revision: "@",
+        author: 'Ada "A"',
+        grep: "fix",
+        since: "2026-01-01",
+        until: "2026-02-01",
+        pathspecs: ["src", "docs/a.md"],
+        maxCount: 5,
+      }),
+    ).toBe(
+      '(ancestors((@)) ~ root()) & author(substring:"Ada \\"A\\"") & description(substring:"fix") & author_date(after:"2026-01-01") & author_date(before:"2026-02-01") & files("src" | "docs/a.md")',
+    );
+  });
+
+  test("omits the expression for a launch it cannot state exactly", () => {
+    // Each CLI pathspec is a fileset expression, which `files("...")` does not repeat.
+    for (const pathspecs of [
+      ["glob:*.ts"],
+      ["a b"],
+      ['x"y'],
+      ["--not-an-option"],
+      [""],
+      ["a", "-b"],
+    ]) {
+      expect(buildJjHistoryExpression({ pathspecs })).toBeUndefined();
+    }
+    expect(buildJjHistoryExpression({ revision: "--at-operation=@" })).toBeUndefined();
+    expect(buildJjHistoryExpression({ revision: "a\nb" })).toBeUndefined();
+    expect(buildJjHistoryExpression({ grep: "x".repeat(65_536) })).toBeUndefined();
+  });
+
+  test("applies expression input as the whole revset with the row limit separate", () => {
+    const args = buildJjHistoryArgs({ kind: "expression", expression: "trunk()..@", maxCount: 7 });
+    expect(args).toEqual([
+      "--ignore-working-copy",
+      "--no-pager",
+      "--color",
+      "never",
+      "log",
+      "--no-graph",
+      "--revisions",
+      "trunk()..@",
+      "--template",
+      expect.any(String),
+      "--limit",
+      "7",
+    ]);
+    expect(buildJjHistoryRevset({ kind: "expression", expression: "root()" })).toBe("root()");
+    expect(buildJjHistoryArgs({ kind: "expression", expression: "-x" })).toContain(
+      "--revisions=-x",
+    );
+    expect(jjHistoryUsesBoundaryTopology({ kind: "expression", expression: "@" })).toBe(true);
+  });
+
+  test("filters the error text of expression input down to position, detail and hint lines", () => {
+    expect(
+      filterJjExpressionError(
+        [
+          "Error: Failed to parse revset: Syntax error",
+          "Caused by:  --> 1:8",
+          "  |",
+          "1 | author(",
+          "  |        ^---",
+          "  |",
+          "  = expected <strict_identifier> or <expression>",
+          "Hint: See https://docs.jj-vcs.dev/latest/revsets/ or use `jj help -k revsets` for revsets syntax and how to quote symbols.",
+          "",
+        ].join("\n"),
+      ),
+    ).toBe(
+      [
+        "Syntax error",
+        "Caused by:  --> 1:8",
+        "  = expected <strict_identifier> or <expression>",
+        "Hint: See https://docs.jj-vcs.dev/latest/revsets/ or use `jj help -k revsets` for revsets syntax and how to quote symbols.",
+      ].join("\n"),
+    );
+    expect(
+      filterJjExpressionError(
+        [
+          "Error: Failed to parse revset: In alias `wip(x)`",
+          "Caused by:",
+          "1:  --> 1:1",
+          "  |",
+          "1 | wip(@)",
+          "  | ^----^",
+          "  |",
+          "  = In alias `wip(x)`",
+          "2:  --> 1:5",
+          "  |",
+          "1 | x & nosuch()",
+          "  |     ^-----^",
+          "  |",
+          "  = Function `nosuch` doesn't exist",
+        ].join("\n"),
+      ),
+    ).toBe(
+      [
+        "In alias `wip(x)`",
+        "Caused by:",
+        "1:  --> 1:1",
+        "  = In alias `wip(x)`",
+        "2:  --> 1:5",
+        "  = Function `nosuch` doesn't exist",
+      ].join("\n"),
+    );
+    expect(filterJjExpressionError("Error: Revision `nosuchbookmark` doesn't exist\n")).toBe(
+      "Revision `nosuchbookmark` doesn't exist",
+    );
+    // Only a leading `Error: ` goes; a warning before it keeps everything behind it.
+    expect(
+      filterJjExpressionError(
+        "Warning: Something odd\nError: Failed to parse revset: Syntax error\nCaused by:  --> 1:1\n  |\n1 | x\n",
+      ),
+    ).toBe(
+      "Warning: Something odd\nError: Failed to parse revset: Syntax error\nCaused by:  --> 1:1",
+    );
+    expect(filterJjExpressionError("Something else entirely")).toBe("Something else entirely");
+  });
+
+  jjTest(
+    "reports a legacy launch's expression, and it selects the same ordered commits",
+    async () => {
+      const f = createHk93TestRepo();
+      const launches: Array<Parameters<typeof openJjHistory>[0]> = [
+        {},
+        { firstParent: true },
+        { all: true },
+        { all: true, firstParent: true },
+        { revision: "main..@" },
+        { revision: "sibling", firstParent: true },
+        { author: "Ada" },
+        { author: "nobody" },
+        { grep: "sib" },
+        { since: "2000-01-01", until: "2100-01-01" },
+        { pathspecs: ["main.txt", "feature.txt"] },
+        { revision: "@", pathspecs: ["olda.txt"] },
+        { grep: "e", pathspecs: ["other.txt", "merge.txt"] },
+      ];
+      for (const alias of ["main", "none()", "main | other"]) {
+        jj(f.repo, "config", "set", "--repo", 'revset-aliases."trunk()"', alias);
+        for (const input of launches) {
+          const result = await readHk191TestHistory(f.repo, input);
+          expect(result.expression).toBeString();
+          expect(nativeHk191Ids(f.repo, result.expression!)).toEqual(
+            result.commits.map((commit) => commit.revisionId),
+          );
+        }
+      }
+      jj(f.repo, "config", "set", "--repo", 'revset-aliases."trunk()"', "main");
+      expect((await readHk191TestHistory(f.repo, {})).expression).toBe(
+        "(((trunk()..visible_heads()) | trunk()) ~ root())",
+      );
+      jj(f.repo, "config", "set", "--repo", 'revset-aliases."trunk()"', "none()");
+      expect((await readHk191TestHistory(f.repo, {})).expression).toBe(
+        "(ancestors(visible_heads()) ~ root())",
+      );
+      // The zero-limit shortcut and a row limit still report the same complete text.
+      expect((await readHk191TestHistory(f.repo, { maxCount: 0 })).expression).toBe(
+        "(ancestors(visible_heads()) ~ root())",
+      );
+      expect((await readHk191TestHistory(f.repo, { maxCount: 2 })).expression).toBe(
+        "(ancestors(visible_heads()) ~ root())",
+      );
+    },
+    20_000,
+  );
+
+  jjTest("omits the expression of a launch it cannot state, and still opens it", async () => {
+    const f = createHk93TestRepo();
+    const result = await readHk191TestHistory(f.repo, { pathspecs: ["glob:*.txt"] });
+    expect(result.expression).toBeUndefined();
+    expect(result.commits.length).toBeGreaterThan(0);
+  });
+
+  jjTest(
+    "evaluates expression input literally, with no scope, filters or cutoff parents",
+    async () => {
+      const f = createHk93TestRepo();
+      const parents = await readHk191TestHistory(f.repo, { kind: "expression", expression: "@-" });
+      expect(parents.commits.map((commit) => commit.revisionId)).toEqual(
+        nativeHk191Ids(f.repo, "@-"),
+      );
+      expect(parents.commits.map((commit) => commit.subject)).toEqual(["sibling", "feature"]);
+      expect(parents.expression).toBe("@-");
+      expect(parents.scope).toBeUndefined();
+      for (const commit of parents.commits) {
+        expect(commit.graphCutoffParentRevisionIds).toBeUndefined();
+        expect(commit.graphParentRevisionIds).toEqual([]);
+      }
+      // Real parent identities survive, even for the oldest commit of an excluded range.
+      expect(parents.commits[0]!.parentRevisionIds).toEqual([f.olda]);
+
+      const withRoot = await readHk191TestHistory(f.repo, {
+        kind: "expression",
+        expression: "root() | olda",
+      });
+      expect(withRoot.commits.map((commit) => commit.subject)).toEqual([
+        "olda",
+        "(no description set)",
+      ]);
+      expect(withRoot.commits[0]!.parentRevisionIds).toEqual([]);
+
+      const limited = await readHk191TestHistory(f.repo, {
+        kind: "expression",
+        expression: "ancestors(merge)",
+        maxCount: 2,
+      });
+      expect(limited.commits).toHaveLength(2);
+      expect(limited.expression).toBe("ancestors(merge)");
+    },
+  );
+
+  jjTest("accepts none() and rejects a bad expression even with a zero row limit", async () => {
+    const f = createHk93TestRepo();
+    for (const maxCount of [undefined, 0]) {
+      const none = await readHk191TestHistory(f.repo, {
+        kind: "expression",
+        expression: "none()",
+        ...(maxCount === undefined ? {} : { maxCount }),
+      });
+      expect(none.commits).toEqual([]);
+      expect(none.expression).toBe("none()");
+    }
+    const expected =
+      "Function `missing_function` doesn't exist\nCaused by:  --> 1:1\n  = Function `missing_function` doesn't exist";
+    await expect(
+      openJjHistory(
+        { kind: "expression", expression: "missing_function()", maxCount: 0 },
+        { cwd: f.repo },
+      ),
+    ).rejects.toThrow(expected);
+    // Without a zero limit the same failure surfaces on the first read.
+    const source = await openJjHistory(
+      { kind: "expression", expression: "missing_function()" },
+      { cwd: f.repo },
+    );
+    const failure = await source.read({ limit: 5 }).catch((error: unknown) => error);
+    expect((failure as Error).message).toBe(expected);
+    await source.close();
+    await expect(
+      getJjHistoryWatchSignature(
+        { kind: "expression", expression: "missing_function()" },
+        { cwd: f.repo },
+      ),
+    ).rejects.toThrow(expected);
+  });
+
+  unixTest("keeps a legacy launch's error text and filters only expression input's", async () => {
+    const temp = mkdtempSync(join(tmpdir(), "hunk-jj-errors-"));
+    tempDirs.push(temp);
+    const executable = join(temp, "failing-jj");
+    // Everything except the history query succeeds; that query prints JJ's real stderr shape.
+    writeFileSync(
+      executable,
+      `#!/bin/sh
+case "$*" in
+  *" root")
+    echo "${temp}"
+    exit 0
+    ;;
+  *" op log "*)
+    echo "${"0".repeat(128)}"
+    exit 0
+    ;;
+  *"present(trunk())"*)
+    exit 0
+    ;;
+esac
+cat >&2 <<'STDERR'
+Error: Failed to parse revset: Function \`missing_function\` doesn't exist
+Caused by:  --> 1:1
+  |
+1 | missing_function()
+  | ^----------------^
+  |
+  = Function \`missing_function\` doesn't exist
+STDERR
+exit 1
+`,
+    );
+    chmodSync(executable, 0o755);
+    const options = { cwd: temp, jjExecutable: executable };
+    const legacyFirstLine =
+      "Error: Failed to parse revset: Function `missing_function` doesn't exist";
+    const filtered =
+      "Function `missing_function` doesn't exist\nCaused by:  --> 1:1\n  = Function `missing_function` doesn't exist";
+
+    // Legacy launch: the first stderr line at the cursor, the whole trimmed stderr at the signature.
+    const legacy = await openJjHistory({ revision: "x" }, options);
+    expect(((await legacy.read({ limit: 5 }).catch((e: unknown) => e)) as Error).message).toBe(
+      legacyFirstLine,
+    );
+    await legacy.close();
+    const legacySignature = await getJjHistoryWatchSignature({ revision: "x" }, options).catch(
+      (e: unknown) => e,
+    );
+    expect((legacySignature as Error).message).toStartWith(`${legacyFirstLine}\nCaused by:`);
+    expect((legacySignature as Error).message).toContain("1 | missing_function()");
+
+    // Expression input: the filtered text at the cursor, the zero-limit check and the signature.
+    const custom = await openJjHistory({ kind: "expression", expression: "x" }, options);
+    expect(((await custom.read({ limit: 5 }).catch((e: unknown) => e)) as Error).message).toBe(
+      filtered,
+    );
+    await custom.close();
+    await expect(
+      openJjHistory({ kind: "expression", expression: "x", maxCount: 0 }, options),
+    ).rejects.toThrow(filtered);
+    await expect(
+      getJjHistoryWatchSignature({ kind: "expression", expression: "x" }, options),
+    ).rejects.toThrow(filtered);
+
+    // The legacy zero-limit shortcut still skips the query entirely.
+    const shortcut = await openJjHistory({ revision: "x", maxCount: 0 }, options);
+    expect(await shortcut.read({ limit: 5 })).toEqual({ commits: [], done: true });
+  });
+
+  jjTest("fingerprints expression input without a scope prefix", async () => {
+    const f = createHk93TestRepo();
+    const custom = await getJjHistoryWatchSignature(
+      { kind: "expression", expression: "@-" },
+      { cwd: f.repo },
+    );
+    const launch = await getJjHistoryWatchSignature({}, { cwd: f.repo });
+    expect(custom).not.toBe(launch);
+    expect(launch.startsWith("{")).toBe(true);
+    expect(custom.startsWith("{")).toBe(false);
+    expect(custom).toContain("sibling");
+    expect(custom).toContain("feature");
+    expect(custom).not.toContain("merge");
+  });
+
+  unixTest("drops a leading Error: from every failure of expression input only", async () => {
+    const temp = mkdtempSync(join(tmpdir(), "hunk-jj-setup-errors-"));
+    tempDirs.push(temp);
+    const makeExecutable = (name: string, failing: "root" | "op") => {
+      const executable = join(temp, name);
+      const rootBody =
+        failing === "root"
+          ? `echo 'Error: There is no jj repo in "."' >&2\n    exit 1`
+          : `echo "${temp}"\n    exit 0`;
+      const opBody =
+        failing === "op"
+          ? `echo 'Error: The repo is corrupt' >&2\n    exit 1`
+          : `echo "${"0".repeat(128)}"\n    exit 0`;
+      writeFileSync(
+        executable,
+        `#!/bin/sh
+case "$*" in
+  *" root")
+    ${rootBody}
+    ;;
+  *" op log "*)
+    ${opBody}
+    ;;
+esac
+exit 0
+`,
+      );
+      chmodSync(executable, 0o755);
+      return { cwd: temp, jjExecutable: executable };
+    };
+
+    const noRepo = makeExecutable("no-repo-jj", "root");
+    await expect(openJjHistory({ kind: "expression", expression: "@" }, noRepo)).rejects.toThrow(
+      new RegExp('^There is no jj repo in "\\."$'),
+    );
+    await expect(openJjHistory({ revision: "@" }, noRepo)).rejects.toThrow(
+      'Error: There is no jj repo in "."',
+    );
+
+    const corrupt = makeExecutable("corrupt-jj", "op");
+    for (const open of [
+      (input: Parameters<typeof openJjHistory>[0]) => openJjHistory(input, corrupt),
+      (input: Parameters<typeof openJjHistory>[0]) => getJjHistoryWatchSignature(input, corrupt),
+    ]) {
+      await expect(open({ kind: "expression", expression: "@" })).rejects.toThrow(
+        new RegExp("^The repo is corrupt$"),
+      );
+      await expect(open({ revision: "@" })).rejects.toThrow("Error: The repo is corrupt");
+    }
+  });
+
+  test("registers the expression capability", () => {
+    expect(createJjVcsAdapter().history.acceptsExpression).toBe(true);
+  });
 });

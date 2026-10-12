@@ -27,6 +27,7 @@ import {
 import { fitText, measureTextWidth, wrapText } from "../lib/text";
 import { handleViewPreferenceQuitPromptKey } from "../lib/viewPreferenceQuitKeys";
 import type { ThemeController } from "../theme/controller";
+import type { PreviousInputs } from "../session/previousInputs";
 import { StatusLine } from "../statusLine/StatusLine";
 import type { StatusItem } from "../statusLine/types";
 import { useStatusLine } from "../statusLine/useStatusLine";
@@ -115,6 +116,8 @@ export function LogApp({
   themeController: ThemeController;
   useColor: boolean;
   quitScheduler?: ViewPreferenceQuitScheduler;
+  /** Session-lifetime list of applied revsets the editor offers again. */
+  previousInputs?: PreviousInputs;
 }) {
   const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
   const terminal = useTerminalDimensions();

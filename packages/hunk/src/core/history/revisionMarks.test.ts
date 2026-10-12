@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { planHistoryPage } from "./lanePlanner";
-import type { HistoryCommandInput } from "../run/commandInputs";
+import type { HistoryCommandInput, HistoryExpressionInput } from "../run/commandInputs";
 import {
   reconcileRevisionMarks,
   revisionMark,
@@ -207,5 +207,57 @@ describe("revision mark reconciliation against where each mark was last seen", (
       { kind: "unresolved", mark: gone, reason: "incomplete" },
       { kind: "unresolved", mark: split, reason: "incomplete" },
     ]);
+  });
+});
+
+describe("revision marks under an applied expression", () => {
+  const expression = (text: string, maxCount?: number): HistoryExpressionInput => ({
+    kind: "expression",
+    expression: text,
+    ...(maxCount === undefined ? {} : { maxCount }),
+  });
+
+  test("denies the logical fallback for expression input, whatever its limit", () => {
+    expect(revisionMarkLogicalFallbackEligible(expression("all()"))).toBeFalse();
+    expect(revisionMarkLogicalFallbackEligible(expression("all()", 100))).toBeFalse();
+  });
+
+  test("keys expression input on its text and limit, apart from the launch input", () => {
+    expect(revisionMarkTraversalKey(expression("@-"))).toBe(
+      revisionMarkTraversalKey(expression("@-")),
+    );
+    expect(revisionMarkTraversalKey(expression("@-"))).not.toBe(
+      revisionMarkTraversalKey(expression("@")),
+    );
+    expect(revisionMarkTraversalKey(expression("@-", 5))).not.toBe(
+      revisionMarkTraversalKey(expression("@-")),
+    );
+    expect(revisionMarkTraversalKey(expression("@-"))).not.toBe(
+      revisionMarkTraversalKey(createTestHistoryInput()),
+    );
+  });
+
+  test("leaves a mark incomplete, never re-targeted, when a symbolic expression resolves elsewhere", () => {
+    const input = expression("@");
+    const seenUnder = revisionMarkSeenUnder(revisionMarkTraversalKey(input), undefined);
+    const evidence = { seenUnder, complete: revisionMarkLogicalFallbackEligible(input) };
+    // `@` named the first revision, then a rewrite made it name the second, same logical change.
+    const marked = revisionMark(createTestMarkCommit("first", "change"), seenUnder);
+    const moved = createTestMarkRows(createTestMarkCommit("second", "change"));
+
+    const first = reconcileRevisionMarks([marked], moved, evidence);
+    expect(first).toEqual([{ kind: "unresolved", mark: marked, reason: "incomplete" }]);
+    // Reading the same expression again and again proves nothing either.
+    expect(
+      reconcileRevisionMarks(
+        first.map((entry) => entry.mark),
+        moved,
+        evidence,
+      ),
+    ).toEqual(first);
+    // Its exact revision coming back is the only way a mark resolves.
+    expect(
+      reconcileRevisionMarks([marked], createTestMarkRows(createTestMarkCommit("first")), evidence),
+    ).toMatchObject([{ kind: "resolved", revisionId: "first" }]);
   });
 });

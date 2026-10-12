@@ -10,9 +10,19 @@ import {
   type RevisionMarkResolution,
   type RevisionMarkStatus,
 } from "../../core/history/revisionMarks";
+import type { HistoryQueryTarget } from "../../core/history/queryReplacement";
+import type { HistoryAcceptedInput } from "../../core/run/commandInputs";
 import { sanitizeTerminalLine } from "../../lib/terminalText";
 import type { HistoryRuntime } from "../history/types";
 import { commitEntryHeight, LOG_ENTRY_HEIGHT, planLogViewportGeometry } from "./geometry";
+import {
+  chooseHistoryQueryFocus,
+  historyQueryFailureReason,
+  historyQueryPageLimit,
+  HISTORY_QUERY_BLANK_MESSAGE,
+  HISTORY_QUERY_NEWEST_NOTICE,
+  withoutGraphLinks,
+} from "./queryReplacement";
 
 import type { LogPresentation } from "./presentation";
 export type { LogPresentation } from "./presentation";
@@ -28,6 +38,39 @@ export function historyFiltersCanHideIntermediateCommits(input: HistoryRuntime["
     Boolean(input.pathspecs?.length),
   );
 }
+
+/**
+ * Return whether the query in force can hide or interleave commits between adjacent rows. An
+ * applied expression always can, whatever the provider reports, so the guard reads the accepted
+ * input and not the launch input.
+ */
+export function historyInputCanHideIntermediateCommits(input: HistoryAcceptedInput) {
+  return input.kind === "expression" || historyFiltersCanHideIntermediateCommits(input);
+}
+
+/** What the revset editor needs to know about the query in force. */
+export interface LogQueryState {
+  /** The provider accepts expression input, so the editor may open. */
+  editable: boolean;
+  /** `launch` runs the launch input; `custom` runs an applied expression. */
+  mode: "launch" | "custom";
+  /** The accepted query's exact text when its source reported one; absent when it could not. */
+  expression?: string;
+  /** The launch row limit, shown beside the query and kept out of its text. */
+  limit?: number;
+  /** Counts accepted replacements, so a watcher or view can restart on a new query. */
+  generation: number;
+}
+
+/** How one Apply or Reset ended; only `applied` changed anything. */
+export type LogQueryResult =
+  | { status: "applied"; mode: "launch" | "custom"; expression?: string }
+  | { status: "failed"; reason: string }
+  | { status: "aborted" }
+  | { status: "obsolete" };
+
+/** One Apply or Reset: the typed draft, or a return to the launch input. */
+export type LogQueryRequest = { kind: "apply"; expression: string } | { kind: "reset" };
 
 export interface LogSnapshot {
   marks: readonly RevisionMarkResolution[];
@@ -46,6 +89,8 @@ export interface LogSnapshot {
   notice: string;
   presentation: LogPresentation;
   scope?: HistoryRuntime["source"]["scope"];
+  /** Always set by the controller; optional so hand-built snapshots stay valid. */
+  query?: LogQueryState;
 }
 
 /** Find a row by immutable revision id, then by one unambiguous provider logical id. */
@@ -100,6 +145,10 @@ export class LogController {
   private operationGeneration = 0;
   /** Traversal input the rows on screen were read under; a new mark records it with the scope. */
   private acceptedTraversalKey: string;
+  /** The query the rows on screen came from: the launch input until an expression is applied. */
+  private acceptedInput: HistoryAcceptedInput;
+  private queryToken = 0;
+  private queryCandidate: HistoryRefreshCandidate | null = null;
   private viewportBodyHeight = 1;
   private viewportWidth = 80;
   private viewportAnchorOffset: number | null = null;
@@ -110,6 +159,7 @@ export class LogController {
   constructor(private readonly runtime: HistoryRuntime) {
     this.source = runtime.source;
     this.acceptedTraversalKey = revisionMarkTraversalKey(runtime.input);
+    this.acceptedInput = runtime.input;
     const startupNotices = runtime.notices.map(sanitizeTerminalLine).filter(Boolean);
     this.startupNotices = new Set(startupNotices);
     this.snapshot = {
@@ -125,6 +175,15 @@ export class LogController {
       historyDone: false,
       loading: false,
       notice: startupNotices.join(" • "),
+      query: {
+        editable: Boolean(runtime.queryReplacement),
+        mode: "launch",
+        ...(runtime.source.expression !== undefined
+          ? { expression: runtime.source.expression }
+          : {}),
+        ...(runtime.input.maxCount !== undefined ? { limit: runtime.input.maxCount } : {}),
+        generation: 0,
+      },
       presentation: {
         graph: false,
         unicode: !runtime.input.ascii && process.env.TERM !== "dumb",
@@ -172,7 +231,7 @@ export class LogController {
         if (generation !== this.generation || this.closed) return false;
         if (!page.done && page.commits.length === 0)
           throw new Error("VCS history returned an empty page before EOF.");
-        const planned = planHistoryPage(page.commits, this.checkpoint);
+        const planned = planHistoryPage(this.graphCommits(page.commits), this.checkpoint);
         this.checkpoint = planned.checkpoint;
         const rows = [...this.snapshot.rows, ...planned.rows];
         this.publish({
@@ -277,8 +336,7 @@ export class LogController {
   /** Select a target, optionally extending a contiguous range from the current focus. */
   select(index: number, viewportBodyHeight: number, { extend = false }: { extend?: boolean } = {}) {
     this.clearNotice();
-    this.viewportAnchorOffset = null;
-    if (extend && historyFiltersCanHideIntermediateCommits(this.runtime.input)) {
+    if (extend && historyInputCanHideIntermediateCommits(this.acceptedInput)) {
       this.setNotice(
         "Multi-commit selection is unavailable when history traversal can hide or interleave commits.",
       );
@@ -343,7 +401,7 @@ export class LogController {
   /** Start a persistent contiguous selection at the focused commit. */
   beginVisualSelection() {
     this.clearNotice();
-    if (historyFiltersCanHideIntermediateCommits(this.runtime.input)) {
+    if (historyInputCanHideIntermediateCommits(this.acceptedInput)) {
       this.setNotice(
         "Multi-commit selection is unavailable when history traversal can hide or interleave commits.",
       );
@@ -664,7 +722,7 @@ export class LogController {
       return false;
     }
     const previousMarkStatus = this.snapshot.markStatus;
-    const traversalKey = revisionMarkTraversalKey(this.runtime.input);
+    const traversalKey = revisionMarkTraversalKey(this.acceptedInput);
     this.publish({ markStatus: "checking" });
     const candidate: HistoryRefreshCandidate = { abort: new AbortController(), accepted: false };
     this.refreshCandidate = candidate;
@@ -688,7 +746,7 @@ export class LogController {
           if (!canApply()) return false;
           if (!page.done && page.commits.length === 0)
             throw new Error("VCS history returned an empty page before EOF.");
-          const planned = planHistoryPage(page.commits, checkpoint);
+          const planned = planHistoryPage(this.graphCommits(page.commits), checkpoint);
           rows = [...rows, ...planned.rows];
           checkpoint = planned.checkpoint;
           historyDone = page.done;
@@ -714,7 +772,7 @@ export class LogController {
         // left behind by a moved bound or a changed traversal stays unchecked on later refreshes.
         const marks = reconcileRevisionMarks(markIntents, rows, {
           seenUnder: revisionMarkSeenUnder(traversalKey, replacement.scope),
-          complete: historyDone && revisionMarkLogicalFallbackEligible(this.runtime.input),
+          complete: historyDone && revisionMarkLogicalFallbackEligible(this.acceptedInput),
         });
         const selectedIndex = findHistoryRowIndex(rows, selectedIdentity);
         const anchorIndex = findHistoryRowIndex(rows, anchorIdentity);
@@ -767,7 +825,7 @@ export class LogController {
           this.navigationPromise
         )
           continue;
-        if (traversalKey !== revisionMarkTraversalKey(this.runtime.input))
+        if (traversalKey !== revisionMarkTraversalKey(this.acceptedInput))
           throw new Error("History traversal changed during refresh.");
         const accepted = this.runtime.acceptSource?.(replacement);
         candidate.accepted = true;
@@ -840,6 +898,185 @@ export class LogController {
     }
   }
 
+  /* ------------------------------------------------------------------------ */
+  /* Query replacement                                                          */
+  /* ------------------------------------------------------------------------ */
+
+  /**
+   * Plan graph links for commits read under the accepted query. A custom expression can leave out
+   * any commit, so it draws no link whatever graph parents the provider sent.
+   */
+  private graphCommits(commits: Parameters<typeof withoutGraphLinks>[0]) {
+    return this.acceptedInput.kind === "expression" ? withoutGraphLinks(commits) : [...commits];
+  }
+
+  /**
+   * Run an Apply or a Reset: read one page of the replacement query, then swap rows, source,
+   * accepted input and watch together, or change nothing.
+   *
+   * The editor keeps its draft, so a failure, an abort and a newer request all leave the accepted
+   * source, rows, marks and focus exactly as they were. A newer request or quit wins: an older
+   * candidate closes its own cursor and reports `obsolete`. Focus survives only on the exact
+   * revision that held it; marks go through the same reconciliation as refresh.
+   */
+  async replaceQuery(request: LogQueryRequest, signal?: AbortSignal): Promise<LogQueryResult> {
+    const replacement = this.runtime.queryReplacement;
+    if (this.closed) return { status: "obsolete" };
+    if (!replacement)
+      return { status: "failed", reason: "This VCS provider does not support custom revsets." };
+    let target: HistoryQueryTarget;
+    if (request.kind === "reset") {
+      target = { kind: "launch" };
+    } else {
+      const expression = request.expression.trim();
+      if (!expression) return { status: "failed", reason: HISTORY_QUERY_BLANK_MESSAGE };
+      const maxCount = this.runtime.input.maxCount;
+      target = { kind: "expression", expression, ...(maxCount !== undefined ? { maxCount } : {}) };
+    }
+    const nextInput: HistoryAcceptedInput = target.kind === "launch" ? this.runtime.input : target;
+    if (signal?.aborted) return { status: "aborted" };
+
+    const token = ++this.queryToken;
+    this.queryCandidate?.abort.abort();
+    const candidate: HistoryRefreshCandidate = { abort: new AbortController(), accepted: false };
+    this.queryCandidate = candidate;
+    const relayAbort = () => candidate.abort.abort(signal?.reason);
+    signal?.addEventListener("abort", relayAbort, { once: true });
+    const current = () =>
+      !this.closed && token === this.queryToken && !candidate.abort.signal.aborted;
+    const unfinished = (): LogQueryResult =>
+      signal?.aborted && token === this.queryToken && !this.closed
+        ? { status: "aborted" }
+        : { status: "obsolete" };
+    // Set the moment the view is published, so a later throw cannot report an applied view failed.
+    let applied: LogQueryResult | undefined;
+    try {
+      const opened = await replacement.open(target, candidate.abort.signal);
+      candidate.source = opened;
+      if (!current()) return unfinished();
+      const page = await opened.read({
+        limit: historyQueryPageLimit(this.runtime.input.maxCount),
+        signal: candidate.abort.signal,
+      });
+      if (!current()) return unfinished();
+      if (!page.done && page.commits.length === 0)
+        throw new Error("VCS history returned an empty page before EOF.");
+
+      // Everything below is synchronous: the focus and marks it reads are the ones on screen now.
+      const planned = planHistoryPage(
+        nextInput.kind === "expression" ? withoutGraphLinks(page.commits) : page.commits,
+      );
+      const rows = planned.rows;
+      const before = this.snapshot;
+      const previous = before.rows[before.selected]?.commit;
+      const focus = chooseHistoryQueryFocus(rows, previous?.revisionId);
+      const traversalKey = revisionMarkTraversalKey(nextInput);
+      const marks = reconcileRevisionMarks(
+        before.marks.map((entry) => entry.mark),
+        rows,
+        {
+          seenUnder: revisionMarkSeenUnder(traversalKey, opened.scope),
+          complete: page.done && revisionMarkLogicalFallbackEligible(nextInput),
+        },
+      );
+      const bodyHeight = this.viewportBodyHeight;
+      const groupByDay = !before.presentation.graph;
+      const beforeGeometry = planLogViewportGeometry({
+        rows: before.rows,
+        selected: before.selected,
+        requestedTop: before.top,
+        bodyHeight,
+        groupByDay,
+      });
+      const geometry = planLogViewportGeometry({
+        rows,
+        selected: focus.selected,
+        requestedTop:
+          focus.outcome === "kept"
+            ? Math.max(0, focus.selected - (before.selected - before.top))
+            : 0,
+        bodyHeight,
+        groupByDay,
+        ...(focus.outcome === "kept"
+          ? { requestedSelectedRowOffset: beforeGeometry.selectedRowOffset }
+          : {}),
+      });
+      const focusedRow = rows[focus.selected];
+      const entryScroll =
+        focus.outcome === "kept" && focusedRow
+          ? Math.min(
+              before.entryScroll,
+              Math.max(0, commitEntryHeight(focusedRow, groupByDay) - bodyHeight),
+            )
+          : 0;
+
+      const accepted = replacement.accept(target, opened);
+      candidate.accepted = true;
+      const mode = target.kind === "launch" ? "launch" : "custom";
+      applied = {
+        status: "applied",
+        mode,
+        ...(opened.expression !== undefined ? { expression: opened.expression } : {}),
+      };
+      this.generation += 1;
+      this.selectionGeneration += 1;
+      this.markGeneration += 1;
+      this.navigationTarget = null;
+      this.setNavigationPromise(null);
+      const previousAbort = this.abort;
+      this.source = opened;
+      this.acceptedInput = nextInput;
+      this.acceptedTraversalKey = traversalKey;
+      this.abort = candidate.abort;
+      this.checkpoint = planned.checkpoint;
+      this.loadingPromise = null;
+      previousAbort.abort();
+      this.publish({
+        rows,
+        marks,
+        markStatus: "ready",
+        selected: focus.selected,
+        selectionAnchor: null,
+        visualSelectionActive: false,
+        top: geometry.top,
+        entryScroll,
+        historyDone: page.done,
+        scope: opened.scope,
+        loading: false,
+        notice: rows.length === 0 && page.done ? "No commits found." : "",
+        query: {
+          editable: true,
+          mode,
+          ...(opened.expression !== undefined ? { expression: opened.expression } : {}),
+          ...(this.runtime.input.maxCount !== undefined
+            ? { limit: this.runtime.input.maxCount }
+            : {}),
+          generation: (before.query?.generation ?? 0) + 1,
+        },
+      });
+      if (focus.outcome === "newest") this.setNotice(HISTORY_QUERY_NEWEST_NOTICE);
+      void accepted.catch((error) => {
+        if (!this.closed && this.source === opened)
+          this.setNotice(error instanceof Error ? error.message : String(error));
+      });
+      return applied;
+    } catch (error) {
+      // Past the commit point the view is applied, whatever a later step threw.
+      if (applied) return applied;
+      return current()
+        ? { status: "failed", reason: historyQueryFailureReason(error) }
+        : unfinished();
+    } finally {
+      signal?.removeEventListener("abort", relayAbort);
+      try {
+        await this.discardCandidate(candidate);
+      } catch {
+        // The accepted view is unchanged; a cursor that fails to close has nothing left to report.
+      }
+      if (this.queryCandidate === candidate) this.queryCandidate = null;
+    }
+  }
+
   /** Return the focused row and normalized inclusive selection endpoints. */
   getSelection() {
     const focus = this.snapshot.rows[this.snapshot.selected];
@@ -884,6 +1121,7 @@ export class LogController {
     if (this.noticeTimer) clearTimeout(this.noticeTimer);
     this.noticeTimer = null;
     await Promise.all([
+      this.queryCandidate ? this.discardCandidate(this.queryCandidate) : Promise.resolve(),
       this.refreshCandidate ? this.discardCandidate(this.refreshCandidate) : Promise.resolve(),
       this.runtime.close(),
     ]);

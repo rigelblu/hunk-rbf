@@ -13,8 +13,8 @@ function bundledMetadata(id: string) {
 }
 
 describe("runExtensionFactory", () => {
-  test("advertises optional history scope through extension API v31", () => {
-    expect(HUNK_EXTENSION_API_VERSION).toBe(31);
+  test("advertises history expression input through the current extension API", () => {
+    expect(HUNK_EXTENSION_API_VERSION).toBe(32);
   });
 
   test("applies a synchronous factory before returning, with nothing to await", () => {
@@ -1631,62 +1631,545 @@ test("HK-93 history metadata rejects false cuts, duplicates, reordering and ordi
   }
 });
 
-test("workspace metadata is snapshotted once, retained on refs and rejected on other kinds", async () => {
-  let reads = 0;
-  const commit = {
-    revisionId: "a".repeat(40),
-    displayId: "aaaaaaaa",
-    parentRevisionIds: [],
-    subject: "Workspace",
-    authorName: "Ada",
-    authoredAt: "2026-01-01T00:00:00Z",
-    decorations: [
-      {
-        kind: "ref",
-        label: "@peer",
-        get workspaceName() {
+/** Build an adapter whose history callbacks count calls and record the inputs they receive. */
+function createHk191TestAdapter(
+  options: { acceptsExpression?: unknown; source?: Record<string, unknown> } = {},
+) {
+  const calls = {
+    open: [] as unknown[],
+    watchSignature: [] as unknown[],
+    watchPlan: [] as unknown[],
+  };
+  const history: Record<string, unknown> = {
+    open: (input: unknown) => {
+      calls.open.push(input);
+      // A well-behaved provider echoes the exact expression it was given. Descriptors keep the
+      // overrides' accessors lazy, so a throwing getter throws where the host reads it.
+      return Object.defineProperties(
+        {
+          read: async () => ({ commits: [], done: true }),
+          close() {},
+          expression: (input as { expression?: string }).expression,
+        },
+        Object.getOwnPropertyDescriptors(options.source ?? {}),
+      );
+    },
+    planReview: (commit: { revisionId: string }) => ({
+      kind: "revision-show",
+      revisionId: commit.revisionId,
+    }),
+    watchSignature: (input: unknown) => {
+      calls.watchSignature.push(input);
+      return "signature";
+    },
+    watchPlan: (input: unknown) => {
+      calls.watchPlan.push(input);
+      return { coverage: "poll-only", targets: [] };
+    },
+  };
+  if (options.acceptsExpression !== undefined)
+    history.acceptsExpression = options.acceptsExpression;
+  const adapter = toInternalVcsAdapter({
+    id: "hk191-test",
+    name: "Test",
+    detect: () => null,
+    history: history as never,
+  });
+  return { adapter, history: adapter.history!, calls, raw: history };
+}
+
+const hk191Context = { cwd: "." };
+
+/** Run one input through all three wrappers and report how many callbacks it reached. */
+async function runHk191Wrappers(
+  created: ReturnType<typeof createHk191TestAdapter>,
+  input: unknown,
+) {
+  const outcomes: Array<"ok" | "rejected"> = [];
+  const { history } = created;
+  for (const run of [
+    () => history.open(input as never, hk191Context),
+    async () => history.watchSignature!(input as never, hk191Context),
+    async () => history.watchPlan!(input as never, hk191Context),
+  ]) {
+    outcomes.push(
+      await run().then(
+        () => "ok" as const,
+        () => "rejected" as const,
+      ),
+    );
+  }
+  return outcomes;
+}
+
+function hk191CallCounts(calls: ReturnType<typeof createHk191TestAdapter>["calls"]) {
+  return [calls.open, calls.watchSignature, calls.watchPlan].map((entries) => entries.length);
+}
+
+const hk191Commit = {
+  revisionId: "a",
+  displayId: "a",
+  parentRevisionIds: ["p"],
+  subject: "Subject",
+  authorName: "Ada",
+  authoredAt: "2026-10-10T00:00:00Z",
+  decorations: [],
+};
+
+describe("HK-19.1 expression history input", () => {
+  test("rejects a flag that is not a boolean, or whose getter throws, at registration", () => {
+    for (const acceptsExpression of ["yes", 1, null, {}]) {
+      expect(() => createHk191TestAdapter({ acceptsExpression })).toThrow(
+        "acceptsExpression must be a boolean",
+      );
+    }
+    expect(() =>
+      toInternalVcsAdapter({
+        id: "getter",
+        name: "Getter",
+        detect: () => null,
+        history: {
+          open: () => ({ read: async () => ({ commits: [], done: true }), close() {} }),
+          planReview: () => ({ kind: "revision-show", revisionId: "a" }),
+          get acceptsExpression(): boolean {
+            throw new Error("flag getter failed");
+          },
+        },
+      }),
+    ).toThrow("flag getter failed");
+  });
+
+  test("reads the flag once: flipping it later still gates open, watchSignature and watchPlan", async () => {
+    for (const registered of [true, false]) {
+      const created = createHk191TestAdapter({ acceptsExpression: registered });
+      created.raw.acceptsExpression = !registered;
+      const outcomes = await runHk191Wrappers(created, { kind: "expression", expression: "@" });
+      expect(outcomes).toEqual(
+        registered ? ["ok", "ok", "ok"] : ["rejected", "rejected", "rejected"],
+      );
+      expect(hk191CallCounts(created.calls)).toEqual(registered ? [1, 1, 1] : [0, 0, 0]);
+      expect(created.history.acceptsExpression).toBe(registered ? true : undefined);
+    }
+  });
+
+  test("passes expression input to a flagged provider as a snapshot in all three wrappers", async () => {
+    const created = createHk191TestAdapter({ acceptsExpression: true });
+    const input = { kind: "expression", expression: "trunk()..@", maxCount: 5 } as const;
+    expect(await runHk191Wrappers(created, input)).toEqual(["ok", "ok", "ok"]);
+    for (const received of [
+      created.calls.open,
+      created.calls.watchSignature,
+      created.calls.watchPlan,
+    ]) {
+      expect(received).toEqual([input]);
+      expect(received[0]).not.toBe(input);
+    }
+  });
+
+  test("does not expose the flag on a provider that omitted it or set it false", () => {
+    expect(createHk191TestAdapter().history.acceptsExpression).toBeUndefined();
+    expect(createHk191TestAdapter({ acceptsExpression: false }).history.acceptsExpression).toBe(
+      undefined,
+    );
+  });
+
+  test("refuses expression input for a provider without the flag in all three wrappers", async () => {
+    for (const acceptsExpression of [undefined, false]) {
+      const created = createHk191TestAdapter({ acceptsExpression });
+      const outcomes = await runHk191Wrappers(created, { kind: "expression", expression: "@" });
+      expect(outcomes).toEqual(["rejected", "rejected", "rejected"]);
+      expect(hk191CallCounts(created.calls)).toEqual([0, 0, 0]);
+      await expect(
+        created.history.open({ kind: "expression", expression: "@" }, hk191Context),
+      ).rejects.toThrow("does not accept expression history input");
+    }
+  });
+
+  test("rejects an untagged, wrongly tagged, falsy-tagged or mixed input before dispatch", async () => {
+    const created = createHk191TestAdapter({ acceptsExpression: true });
+    const bad: unknown[] = [
+      { expression: "@" },
+      { kind: "other", expression: "@" },
+      { kind: "history" },
+      ...[null, "", 0, false].map((kind) => ({ kind, expression: "@" })),
+      // The kind rule alone, with no expression field to give the input away.
+      ...[null, "", 0, false, "other", "history"].map((kind) => ({ kind, revision: "main" })),
+      ...(
+        ["revision", "all", "firstParent", "author", "grep", "since", "until", "pathspecs"] as const
+      ).map((key) => ({
+        kind: "expression",
+        expression: "@",
+        [key]: key === "all" || key === "firstParent" ? true : key === "pathspecs" ? ["a"] : "x",
+      })),
+    ];
+    for (const input of bad) {
+      expect(await runHk191Wrappers(created, input)).toEqual(["rejected", "rejected", "rejected"]);
+    }
+    expect(hk191CallCounts(created.calls)).toEqual([0, 0, 0]);
+  });
+
+  test("rejects a missing, non-string, blank, over-long or control-carrying expression", async () => {
+    const created = createHk191TestAdapter({ acceptsExpression: true });
+    const bad: unknown[] = [
+      undefined,
+      42,
+      "",
+      "   ",
+      "x".repeat(65_537),
+      " ".repeat(65_537),
+      "a\nb",
+      "a\rb",
+      "a\u0000b",
+      "a\u001b[31mb",
+      "a\tb",
+      "a\u0001b",
+      "a\u001fb",
+      "a\u007fb",
+      "a\u0080b",
+      "a\u0085b",
+      "a\u009fb",
+      "a\u2028b",
+      "a\u2029b",
+      "\u2028@",
+      "@\t",
+    ];
+    for (const expression of bad) {
+      expect(await runHk191Wrappers(created, { kind: "expression", expression })).toEqual([
+        "rejected",
+        "rejected",
+        "rejected",
+      ]);
+    }
+    expect(hk191CallCounts(created.calls)).toEqual([0, 0, 0]);
+    await expect(
+      created.history.open({ kind: "expression", expression: " ".repeat(65_537) }, hk191Context),
+    ).rejects.toThrow("at most 65536 UTF-16 units");
+    await created.history.open(
+      { kind: "expression", expression: "x".repeat(65_536) },
+      hk191Context,
+    );
+    await created.history.open({ kind: "expression", expression: " 'a\\nb' & @ " }, hk191Context);
+    expect(created.calls.open).toHaveLength(2);
+  });
+
+  test("rejects a maxCount on expression input that is not a non-negative safe integer", async () => {
+    const created = createHk191TestAdapter({ acceptsExpression: true });
+    for (const maxCount of ["5", -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53, null]) {
+      expect(
+        await runHk191Wrappers(created, { kind: "expression", expression: "@", maxCount }),
+      ).toEqual(["rejected", "rejected", "rejected"]);
+    }
+    expect(hk191CallCounts(created.calls)).toEqual([0, 0, 0]);
+    for (const maxCount of [0, 1, 256]) {
+      await created.history.open({ kind: "expression", expression: "@", maxCount }, hk191Context);
+    }
+    expect(created.calls.open).toEqual(
+      [0, 1, 256].map((maxCount) => ({ kind: "expression", expression: "@", maxCount })),
+    );
+
+    // Legacy maxCount keeps today's handling: it reaches the provider unchanged.
+    const legacy = createHk191TestAdapter({ acceptsExpression: true });
+    for (const maxCount of [-1, "5"]) {
+      await legacy.history.open({ maxCount } as never, hk191Context);
+    }
+    expect(legacy.calls.open).toEqual([{ maxCount: -1 }, { maxCount: "5" }]);
+  });
+
+  test("forwards the trimmed expression and compares the echo against it", async () => {
+    const created = createHk191TestAdapter({ acceptsExpression: true });
+    const input = { kind: "expression", expression: "  @  " };
+    expect(await runHk191Wrappers(created, input)).toEqual(["ok", "ok", "ok"]);
+    for (const received of [
+      created.calls.open,
+      created.calls.watchSignature,
+      created.calls.watchPlan,
+    ]) {
+      expect(received).toEqual([{ kind: "expression", expression: "@" }]);
+    }
+    const source = await created.history.open(input as never, hk191Context);
+    expect(source.expression).toBe("@");
+
+    const padded = createHk191TestAdapter({
+      acceptsExpression: true,
+      source: { expression: "  @  " },
+    });
+    await expect(padded.history.open(input as never, hk191Context)).rejects.toThrow(
+      "must echo the exact expression",
+    );
+  });
+
+  test("rebuilds legacy input with every defined field and a copied pathspecs array", async () => {
+    for (const acceptsExpression of [undefined, true]) {
+      const created = createHk191TestAdapter({ acceptsExpression });
+      const pathspecs = ["src"];
+      const full = {
+        revision: "main",
+        all: true,
+        firstParent: true,
+        maxCount: 3,
+        author: "ada",
+        grep: "fix",
+        since: "1 week ago",
+        until: "yesterday",
+        pathspecs,
+      };
+      await created.history.open(full, hk191Context);
+      await created.history.open({}, hk191Context);
+      await created.history.open({ kind: undefined, author: undefined, maxCount: 0 }, hk191Context);
+      created.history.watchPlan!(full, hk191Context);
+      await created.history.watchSignature!(full, hk191Context);
+      expect(created.calls.open[0]).toEqual(full);
+      expect((created.calls.open[0] as { pathspecs: string[] }).pathspecs).not.toBe(pathspecs);
+      expect(created.calls.open[1]).toEqual({});
+      expect(created.calls.open[2]).toEqual({ maxCount: 0 });
+      // A key whose value is undefined is absent, and so are kind and expression.
+      expect(Object.keys(created.calls.open[2] as object)).toEqual(["maxCount"]);
+      expect(Object.keys(created.calls.open[1] as object)).toEqual([]);
+      expect(Object.keys(created.calls.open[0] as object).sort()).toEqual(Object.keys(full).sort());
+      for (const received of [created.calls.watchPlan[0], created.calls.watchSignature[0]]) {
+        expect(received).toEqual(full);
+        expect(received).not.toBe(full);
+        expect((received as { pathspecs: string[] }).pathspecs).not.toBe(pathspecs);
+      }
+    }
+  });
+
+  test("reads a caller's input once: a kind that turns into expression after the first read never dispatches as one", async () => {
+    const created = createHk191TestAdapter();
+    const makeInput = () => {
+      let reads = 0;
+      return {
+        get kind() {
           reads += 1;
-          return reads === 1 ? "peer" : "changed";
+          return reads === 1 ? undefined : "expression";
+        },
+        expression: undefined,
+        revision: "main",
+        reads: () => reads,
+      };
+    };
+    const inputs = [makeInput(), makeInput(), makeInput()];
+    await created.history.open(inputs[0] as never, hk191Context);
+    await created.history.watchSignature!(inputs[1] as never, hk191Context);
+    created.history.watchPlan!(inputs[2] as never, hk191Context);
+    expect(inputs.map((input) => input.reads())).toEqual([1, 1, 1]);
+    for (const received of [
+      created.calls.open,
+      created.calls.watchSignature,
+      created.calls.watchPlan,
+    ]) {
+      expect(received).toEqual([{ revision: "main" }]);
+    }
+  });
+
+  test("closes and rejects an expression source whose echo is missing or differs", async () => {
+    for (const echo of [undefined, "@ ", " @", "@-", 42]) {
+      let closed = 0;
+      const { history } = createHk191TestAdapter({
+        acceptsExpression: true,
+        source: {
+          expression: echo,
+          close() {
+            closed++;
+          },
+        },
+      });
+      await expect(
+        history.open({ kind: "expression", expression: "@" }, hk191Context),
+      ).rejects.toThrow("must echo the exact expression");
+      expect(closed).toBe(1);
+    }
+    let closed = 0;
+    const { history } = createHk191TestAdapter({
+      acceptsExpression: true,
+      source: {
+        get expression(): string {
+          throw new Error("echo getter failed");
+        },
+        close() {
+          closed++;
         },
       },
-    ],
-  };
-  const open = (decorations: unknown) => {
-    const adapter = toInternalVcsAdapter({
-      id: "workspace-test",
-      name: "Workspace test",
-      detect: () => null,
-      history: {
-        open: () => ({
-          read: async () => ({ commits: [{ ...commit, decorations }], done: true }) as never,
-          close() {},
+    });
+    await expect(
+      history.open({ kind: "expression", expression: "@" }, hk191Context),
+    ).rejects.toThrow("must echo the exact expression");
+    expect(closed).toBe(1);
+  });
+
+  test("exposes the echoed expression of an expression source", async () => {
+    const { history } = createHk191TestAdapter({
+      acceptsExpression: true,
+      source: { expression: "trunk()..@" },
+    });
+    const source = await history.open(
+      { kind: "expression", expression: "trunk()..@" },
+      hk191Context,
+    );
+    expect(source.expression).toBe("trunk()..@");
+  });
+
+  test("ignores scope and cutoff parents on an expression source but keeps them on a legacy one", async () => {
+    const cutoffCommit = {
+      ...hk191Commit,
+      graphParentRevisionIds: [],
+      graphCutoffParentRevisionIds: ["p"],
+    };
+    const scoped = (scope: unknown) => ({
+      scope,
+      read: async () => ({ commits: [cutoffCommit], done: true }),
+    });
+
+    for (const scope of [
+      { kind: "bounded", boundaryRevisionId: "boundary" },
+      { kind: "wrong" },
+      null,
+    ]) {
+      const { history } = createHk191TestAdapter({
+        acceptsExpression: true,
+        source: scoped(scope),
+      });
+      const source = await history.open({ kind: "expression", expression: "@" }, hk191Context);
+      expect(source.scope).toBeUndefined();
+      expect("scope" in source).toBe(false);
+      const page = await source.read({ limit: 5 });
+      expect(page.commits).toHaveLength(1);
+      expect("graphCutoffParentRevisionIds" in page.commits[0]!).toBe(false);
+    }
+
+    let scopeReads = 0;
+    const { history: throwing } = createHk191TestAdapter({
+      acceptsExpression: true,
+      source: {
+        get scope(): unknown {
+          scopeReads++;
+          throw new Error("scope getter failed");
+        },
+        read: async () => ({
+          commits: [{ ...cutoffCommit, graphCutoffParentRevisionIds: "not-an-array" }],
+          done: true,
         }),
-        planReview: (selected) => ({ kind: "revision-show", revisionId: selected.revisionId }),
       },
     });
-    return adapter.history!.open({}, { cwd: process.cwd() });
-  };
-  const source = await open(commit.decorations);
-  try {
-    const page = await source.read({ limit: 1 });
-    expect(page.commits[0]!.decorations).toEqual([
-      { kind: "ref", label: "@peer", workspaceName: "peer" },
-    ]);
-    expect(reads).toBe(1);
-  } finally {
-    await source.close();
-  }
-  for (const decorations of [
-    [{ kind: "tag", label: "release", workspaceName: "peer" }],
-    [{ kind: "head", label: "@", workspaceName: "peer" }],
-    [{ kind: "ref", label: "@peer", workspaceName: false }],
-    [{ kind: "ref", label: "@peer", workspaceName: "" }],
-  ]) {
-    const invalid = await open(decorations);
-    try {
-      await expect(invalid.read({ limit: 1 })).rejects.toThrow(/workspace/);
-    } finally {
-      await invalid.close();
+    const ignoring = await throwing.open({ kind: "expression", expression: "@" }, hk191Context);
+    expect((await ignoring.read({ limit: 5 })).commits).toHaveLength(1);
+    expect(scopeReads).toBe(0);
+
+    // A cutoff accessor that throws is never invoked for an expression source.
+    let cutoffReads = 0;
+    const accessorCommit = {
+      ...hk191Commit,
+      get graphCutoffParentRevisionIds(): string[] {
+        cutoffReads++;
+        throw new Error("cutoff getter failed");
+      },
+    };
+    const { history: guarded } = createHk191TestAdapter({
+      acceptsExpression: true,
+      source: { read: async () => ({ commits: [accessorCommit], done: true }) },
+    });
+    const guardedSource = await guarded.open({ kind: "expression", expression: "@" }, hk191Context);
+    expect((await guardedSource.read({ limit: 5 })).commits).toHaveLength(1);
+    expect(cutoffReads).toBe(0);
+
+    const legacy = createHk191TestAdapter({
+      acceptsExpression: true,
+      source: scoped({ kind: "bounded", boundaryRevisionId: "boundary" }),
+    });
+    const legacySource = await legacy.history.open({}, hk191Context);
+    expect(legacySource.scope).toEqual({ kind: "bounded", boundaryRevisionId: "boundary" });
+    expect(
+      (await legacySource.read({ limit: 5 })).commits[0]?.graphCutoffParentRevisionIds,
+    ).toEqual(["p"]);
+  });
+
+  test("keeps a non-blank legacy expression as given and drops a blank or invalid one without closing the source", async () => {
+    const keep = createHk191TestAdapter({ source: { expression: "all()" } });
+    expect((await keep.history.open({}, hk191Context)).expression).toBe("all()");
+    const padded = createHk191TestAdapter({ source: { expression: "  all()  " } });
+    expect((await padded.history.open({}, hk191Context)).expression).toBe("  all()  ");
+
+    const droppedValues: unknown[] = [
+      42,
+      null,
+      "",
+      "   ",
+      "x".repeat(65_537),
+      "a\nb",
+      "a\u0000b",
+      "a\u001b[0m",
+    ];
+    for (const expression of droppedValues) {
+      let closed = 0;
+      const { history } = createHk191TestAdapter({
+        source: {
+          expression,
+          read: async () => ({ commits: [hk191Commit], done: true }),
+          close() {
+            closed++;
+          },
+        },
+      });
+      const source = await history.open({}, hk191Context);
+      expect(source.expression).toBeUndefined();
+      expect("expression" in source).toBe(false);
+      expect((await source.read({ limit: 1 })).commits.map((entry) => entry.revisionId)).toEqual([
+        "a",
+      ]);
+      expect(closed).toBe(1);
     }
-  }
+
+    let closed = 0;
+    const { history } = createHk191TestAdapter({
+      source: {
+        get expression(): string {
+          throw new Error("expression getter failed");
+        },
+        read: async () => ({ commits: [hk191Commit], done: true }),
+        close() {
+          closed++;
+        },
+      },
+    });
+    const source = await history.open({}, hk191Context);
+    expect(source.expression).toBeUndefined();
+    expect((await source.read({ limit: 1 })).commits).toHaveLength(1);
+    expect(closed).toBe(1);
+  });
+
+  test("opens a legacy source that omits the expression as before", async () => {
+    const { history } = createHk191TestAdapter();
+    const source = await history.open({ revision: "main" }, hk191Context);
+    expect(source.expression).toBeUndefined();
+  });
+
+  test("needs only the flag: no completion capability is read at registration or dispatch", async () => {
+    let queryEditorReads = 0;
+    const history = {
+      acceptsExpression: true,
+      open: (input: { expression?: string }) => ({
+        expression: input.expression,
+        read: async () => ({ commits: [], done: true }),
+        close() {},
+      }),
+      planReview: () => ({ kind: "revision-show", revisionId: "a" }),
+      watchSignature: () => "signature",
+      watchPlan: () => ({ coverage: "poll-only", targets: [] }),
+      get queryEditor() {
+        queryEditorReads++;
+        return {};
+      },
+    };
+    const adapter = toInternalVcsAdapter({
+      id: "flag-only",
+      name: "Flag only",
+      detect: () => null,
+      history: history as never,
+    });
+    const input = { kind: "expression", expression: "@" } as const;
+    expect((await adapter.history!.open(input, hk191Context)).expression).toBe("@");
+    await adapter.history!.watchSignature!(input, hk191Context);
+    adapter.history!.watchPlan!(input, hk191Context);
+    expect(queryEditorReads).toBe(0);
+  });
 });
