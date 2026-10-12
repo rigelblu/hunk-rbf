@@ -12,6 +12,8 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 
 ## 🟠⋯ Fixed for End Users
 
+- 2026-10-12 - fix (ux) | refresh history automatically without a delay or an error notice when Hunk runs in a secondary JJ workspace (#hk-85)
+
 # 🔵⋯ v0.12.0 (2026-10-14)
 
 Local HK-92 release records; installation and publication remain pending.
