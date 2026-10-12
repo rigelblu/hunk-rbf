@@ -328,9 +328,10 @@ export function HunkSessionHost({
         extensionsEnabled: historyRoute.runtime.input.extensionsEnabled,
         extensionPaths: historyRoute.runtime.input.extensionPaths,
         extensionSession: historyRoute.runtime.extensionSession.current,
-        // A review keeps only a theme this session chose: a pick, or `hunk log --theme`. Any other
-        // theme resolves from config like a fresh launch, so appearance-following themes keep
-        // following; the mode is always set so startup never probes the terminal this renderer owns.
+        // The request names only a theme this session chose: a pick, or `hunk log --theme`. The
+        // review itself opens in the session's committed theme, applied below, so a `[show]` theme
+        // from config does not reach it; the mode is always set so startup never probes the
+        // terminal this renderer owns.
         themeId: themeController.sessionThemeId ?? historyRoute.runtime.cliThemeOverride,
         themeMode: themeController.themeMode ?? "dark",
       };
