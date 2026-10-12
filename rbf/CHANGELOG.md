@@ -18,6 +18,7 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 
 - 2026-10-11 - fix (ux) | retain history cursor ownership and the highlighted terminal row while refresh stages replacement pages (#hk-28 dependency for hk-27)
 - 2026-10-11 - fix (ux) | use the configured root theme in history even when revision reviews have a different `[show]` theme (#hk-95)
+- 2026-10-12 - fix (ux) | refresh history automatically without a delay or an error notice when Hunk runs in a secondary JJ workspace (#hk-85)
 
 # 🔵⋯ v0.11.0 (2026-10-13)
 
