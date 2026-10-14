@@ -10,7 +10,7 @@ Fork-specific product guidance for Hunk. The upstream project README remains at 
 
 ```text
 $ hunk --version
-hunk 0.23.0 (Hunk RBF 0.11.0)
+hunk 0.23.0 (Hunk RBF 0.12.0)
 ```
 
 The first number is the upstream Hunk release this fork is built against. The parenthetical is the fork's own release. They advance independently, so neither is "ahead" of the other — quote the whole line in a bug report and it says exactly which build you have.
@@ -148,6 +148,8 @@ The isolated HK-91 candidate shows `(empty)` before a JJ revision's description 
 Git reporting remains unknown in this slice. Hunk RBF product work covers JJ and Git; Sapling is out of scope. This candidate is separate from the installed release.
 
 # 🔵⋯ Identify workspace heads in JJ history
+
+HK-92 is recorded in local Hunk RBF 0.12.0. The accepted candidate is built and verified; installation and public delivery remain pending.
 
 Run `hunk log --vcs jj --all` to see where each workspace's recorded head sits in history. Repositories with multiple workspaces show names such as `@default` and `@feature` on their revisions. A repository with one workspace shows only the current-revision marker `@`.
 
