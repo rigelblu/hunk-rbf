@@ -8,6 +8,16 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 
 ## 🟠⋯ Added for End Users
 
+## 🟠⋯ Added for Technical Users
+
+## 🟠⋯ Fixed for End Users
+
+# 🔵⋯ v0.11.0 (2026-10-13)
+
+Local HK-93 release records; installation, remote integration and publication remain pending.
+
+## 🟠⋯ Added for End Users
+
 - 2026-10-10 - feat (ux) | focus JJ history on mainline and every visible working branch, with local `~` markers for hidden older ancestry and persistent explanations when mainline is unavailable or ambiguous (#hk-93)
 
 ## 🟠⋯ Added for Technical Users
