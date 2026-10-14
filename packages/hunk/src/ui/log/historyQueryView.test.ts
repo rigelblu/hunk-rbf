@@ -163,4 +163,10 @@ describe("planHistoryQueryView", () => {
       ).top,
     ).toEqual([]);
   });
+
+  test("uses CUSTOM_RESTRICTION_NATIVE in native graph mode", () => {
+    const view = planHistoryQueryView(custom, { width: 80, height: 32 }, "native");
+    expect(view.bottom).toEqual(["Custom revset: range review unavailable."]);
+    expect(view.replacesScopeLine).toBeTrue();
+  });
 });

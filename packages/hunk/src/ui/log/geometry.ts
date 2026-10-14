@@ -69,7 +69,12 @@ export function planLogViewportGeometry({
   width?: number;
   presentation?: LogPresentation;
 }): LogViewportGeometry {
-  if (rows.length === 0 || bodyHeight < LOG_ENTRY_HEIGHT) {
+  if (
+    rows.length === 0 ||
+    bodyHeight <= 0 ||
+    (bodyHeight < LOG_ENTRY_HEIGHT &&
+      !rows[Math.max(0, Math.min(rows.length - 1, selected))]?.commit.nativeGraph)
+  ) {
     return { top: 0, entries: [], usedHeight: 0, selectedRowOffset: null, backfilled: false };
   }
 

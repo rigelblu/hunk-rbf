@@ -2313,3 +2313,390 @@ describe("HK-19.1 expression history input", () => {
     expect(queryEditorReads).toBe(0);
   });
 });
+
+describe("HK-98 native history graph", () => {
+  const baseCommit = {
+    revisionId: "1".repeat(40),
+    displayId: "11111111",
+    parentRevisionIds: [],
+    decorations: [],
+    subject: "Test subject",
+    authorName: "Author",
+    authoredAt: "2026-01-01T00:00:00Z",
+  };
+
+  test("validates nativeGraph fragment shape, boundaries, and character budgets", async () => {
+    let commitToReturn: any = {
+      ...baseCommit,
+      nativeGraph: {
+        body: ["@  ", "│  ", "│  "],
+        after: ["~  "],
+      },
+    };
+
+    const history = {
+      open: () => ({
+        graphStyle: "native" as const,
+        read: async () => ({ commits: [commitToReturn], done: true }),
+        close() {},
+      }),
+      planReview: () => ({ kind: "revision-show" as const, revisionId: baseCommit.revisionId }),
+    };
+    const adapter = toInternalVcsAdapter({
+      id: "native-graph-vcs",
+      name: "Native Graph VCS",
+      detect: () => null,
+      history: history as never,
+    });
+
+    const source = await adapter.history!.open({}, hk191Context);
+    const page = await source.read({ limit: 10 });
+    expect(page.commits[0]!.nativeGraph).toEqual({
+      body: ["@  ", "│  ", "│  "],
+      after: ["~  "],
+    });
+
+    // Body length must be exactly 3
+    commitToReturn = {
+      ...baseCommit,
+      nativeGraph: { body: ["@  ", "│  "], after: [] },
+    };
+    const source2 = await adapter.history!.open({}, hk191Context);
+    await expect(source2.read({ limit: 10 })).rejects.toThrow(
+      "nativeGraph body must be an array of three lines",
+    );
+
+    // After row limit (max 128)
+    commitToReturn = {
+      ...baseCommit,
+      nativeGraph: { body: ["@  ", "│  ", "│  "], after: Array.from({ length: 129 }, () => "│  ") },
+    };
+    const source3 = await adapter.history!.open({}, hk191Context);
+    await expect(source3.read({ limit: 10 })).rejects.toThrow("more values than allowed");
+
+    // Line code units limit (max 4096)
+    commitToReturn = {
+      ...baseCommit,
+      nativeGraph: { body: ["a".repeat(4097), "│  ", "│  "], after: [] },
+    };
+    const source4 = await adapter.history!.open({}, hk191Context);
+    await expect(source4.read({ limit: 10 })).rejects.toThrow("exceeds line limit");
+
+    // Unsafe control characters
+    commitToReturn = {
+      ...baseCommit,
+      nativeGraph: { body: ["@ \x07", "│  ", "│  "], after: [] },
+    };
+    const source5 = await adapter.history!.open({}, hk191Context);
+    await expect(source5.read({ limit: 10 })).rejects.toThrow("contains unsafe control characters");
+  });
+
+  test("enforces nativeGraph presence on native source and absence on default source", async () => {
+    let style: "native" | "default" = "native";
+    let commitWithGraph: any = {
+      ...baseCommit,
+      nativeGraph: { body: ["@  ", "│  ", "│  "], after: [] },
+    };
+
+    const history = {
+      open: () => ({
+        get graphStyle() {
+          return style;
+        },
+        read: async () => ({ commits: [commitWithGraph], done: true }),
+        close() {},
+      }),
+      planReview: () => ({ kind: "revision-show" as const, revisionId: baseCommit.revisionId }),
+    };
+    const adapter = toInternalVcsAdapter({
+      id: "graph-vcs",
+      name: "Graph VCS",
+      detect: () => null,
+      history: history as never,
+    });
+
+    // Native source with missing nativeGraph rejects
+    commitWithGraph = { ...baseCommit };
+    style = "native";
+    const sourceNative = await adapter.history!.open({}, hk191Context);
+    await expect(sourceNative.read({ limit: 10 })).rejects.toThrow("without nativeGraph fragment");
+
+    // Default source with nativeGraph rejects
+    commitWithGraph = {
+      ...baseCommit,
+      nativeGraph: { body: ["@  ", "│  ", "│  "], after: [] },
+    };
+    style = "default";
+    const sourceDefault = await adapter.history!.open({}, hk191Context);
+    await expect(sourceDefault.read({ limit: 10 })).rejects.toThrow(
+      "with unexpected nativeGraph fragment",
+    );
+  });
+
+  test("validates openGraph reopener and closes mismatched candidate once", async () => {
+    let candidateClosed = 0;
+    let candidateToReturn: any = {
+      graphStyle: "native",
+      graphSnapshotId: "snap-123",
+      read: async () => ({ commits: [], done: true }),
+      close: async () => {
+        candidateClosed++;
+      },
+    };
+
+    const sourceObject = {
+      graphStyle: "default" as const,
+      graphSnapshotId: "snap-123",
+      openGraph: async (_requestedStyle: string) => {
+        return candidateToReturn;
+      },
+      read: async () => ({ commits: [], done: true }),
+      close() {},
+    };
+
+    const adapter = toInternalVcsAdapter({
+      id: "reopener-vcs",
+      name: "Reopener VCS",
+      detect: () => null,
+      history: {
+        open: () => sourceObject,
+        planReview: () => ({ kind: "revision-show" as const, revisionId: "a" }),
+      } as never,
+    });
+
+    const source = await adapter.history!.open({}, hk191Context);
+    expect(source.graphStyle).toBe("default");
+    expect(source.graphSnapshotId).toBe("snap-123");
+    expect(typeof source.openGraph).toBe("function");
+
+    // Success case
+    const nativeSource = await source.openGraph!("native", {});
+    expect(nativeSource.graphStyle).toBe("native");
+    expect(nativeSource.graphSnapshotId).toBe("snap-123");
+
+    // Mismatched snapshotId rejects and closes candidate once
+    candidateClosed = 0;
+    candidateToReturn = {
+      ...candidateToReturn,
+      graphSnapshotId: "snap-different",
+    };
+    await expect(source.openGraph!("native", {})).rejects.toThrow("graphSnapshotId did not match");
+    expect(candidateClosed).toBe(1);
+
+    // Mismatched graphStyle rejects and closes candidate once
+    candidateClosed = 0;
+    candidateToReturn = {
+      ...candidateToReturn,
+      graphSnapshotId: "snap-123",
+      graphStyle: "default",
+    };
+    await expect(source.openGraph!("native", {})).rejects.toThrow(
+      "graphStyle did not match requested style",
+    );
+    expect(candidateClosed).toBe(1);
+  });
+});
+
+describe("native graph boundary regressions", () => {
+  /** Normalize real extension sources before testing capability lifetime or attestation. */
+  function createTestGraphAdapter(source: unknown) {
+    return toInternalVcsAdapter({
+      id: "native-boundary",
+      name: "Native boundary",
+      detect: () => null,
+      history: {
+        open: () => source,
+        planReview: () => ({ kind: "revision-show", revisionId: "c1" }),
+      } as never,
+    }).history!;
+  }
+  test("EOF releases resources once but preserves reopening until explicit disposal", async () => {
+    let closes = 0;
+    let opens = 0;
+    const raw = {
+      graphStyle: "default",
+      graphSnapshotId: "snapshot",
+      read: async () => ({ commits: [], done: true }),
+      close: () => {
+        closes++;
+      },
+      openGraph: async () => {
+        opens++;
+        return {
+          graphStyle: "native",
+          graphSnapshotId: "snapshot",
+          read: async () => ({ commits: [], done: true }),
+          close() {},
+        };
+      },
+    };
+    const source = await createTestGraphAdapter(raw).open({}, hk191Context);
+    await source.read({ limit: 1 });
+    const native = await source.openGraph!("native");
+    await native.close();
+    expect(opens).toBe(1);
+    expect(closes).toBe(1);
+    await source.close();
+    expect(closes).toBe(1);
+    await expect(source.openGraph!("native")).rejects.toThrow("closed");
+  });
+  test("normalizes attested getters once before matching the immutable snapshot", async () => {
+    for (const field of ["graphStyle", "graphSnapshotId", "expression", "scope"] as const) {
+      let reads = 0;
+      const values = {
+        graphStyle: "native",
+        graphSnapshotId: "snapshot",
+        expression: "@",
+        scope: { kind: "bounded" as const, boundaryRevisionId: "base" },
+      };
+      const candidate = { ...values, read: async () => ({ commits: [], done: true }), close() {} };
+      Object.defineProperty(candidate, field, {
+        get() {
+          reads++;
+          return reads === 1
+            ? values[field]
+            : field === "scope"
+              ? { kind: "fallback", reason: "missing" }
+              : "changed";
+        },
+      });
+      const raw = {
+        ...values,
+        graphStyle: "default",
+        read: async () => ({ commits: [], done: true }),
+        close() {},
+        openGraph: async () => candidate,
+      };
+      const source = await createTestGraphAdapter(raw).open({}, hk191Context);
+      const next = await source.openGraph!("native");
+      expect(reads).toBe(1);
+      expect(next[field]).toEqual(values[field]);
+      await next.close();
+      await source.close();
+    }
+  });
+  test("rejects every independent replacement mismatch and closes it once", async () => {
+    for (const mismatch of [
+      { graphStyle: "default" },
+      { graphSnapshotId: "wrong" },
+      { graphSnapshotId: undefined },
+      { expression: "wrong" },
+      { scope: { kind: "fallback", reason: "missing" } },
+    ]) {
+      let closes = 0;
+      const candidate = {
+        graphStyle: "native",
+        graphSnapshotId: "snapshot",
+        expression: "@",
+        scope: { kind: "bounded", boundaryRevisionId: "base" },
+        ...mismatch,
+        read: async () => ({ commits: [], done: true }),
+        close() {
+          closes++;
+        },
+      };
+      const source = await createTestGraphAdapter({
+        graphStyle: "default",
+        graphSnapshotId: "snapshot",
+        expression: "@",
+        scope: { kind: "bounded", boundaryRevisionId: "base" },
+        read: async () => ({ commits: [], done: true }),
+        close() {},
+        openGraph: async () => candidate,
+      }).open({}, hk191Context);
+      await expect(source.openGraph!("native")).rejects.toThrow();
+      expect(closes).toBe(1);
+      await source.close();
+    }
+  });
+  test("rejects physical line breaks/tabs/C1/Unicode separators in every graph position", async () => {
+    for (const control of ["\n", "\r", "\t", "\u0085", "\u2028", "\u2029", "\x1b"])
+      for (const position of ["body", "after"]) {
+        const graph = { body: ["@", "|", "|"] as [string, string, string], after: [] as string[] };
+        if (position === "body") graph.body[1] = control;
+        else graph.after = [control];
+        const source = await createTestGraphAdapter({
+          graphStyle: "native",
+          read: async () => ({
+            commits: [
+              {
+                revisionId: "c1",
+                displayId: "c1",
+                parentRevisionIds: [],
+                subject: "subject",
+                authorName: "Ada",
+                authoredAt: "2026-01-01T00:00:00Z",
+                decorations: [],
+                nativeGraph: graph,
+              },
+            ],
+            done: true,
+          }),
+          close() {},
+        }).open({}, hk191Context);
+        await expect(source.read({ limit: 1 })).rejects.toThrow("unsafe control");
+        await source.close();
+      }
+  });
+});
+
+test("native source explicit close joins pending EOF cleanup and raw close runs once", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  let closes = 0;
+  const history = toInternalVcsAdapter({
+    id: "joining-close",
+    name: "Joining close",
+    detect: () => null,
+    history: {
+      open: () => ({
+        graphStyle: "default",
+        graphSnapshotId: "snapshot",
+        read: async () => ({ commits: [], done: true }),
+        close: async () => {
+          closes++;
+          await gate;
+        },
+      }),
+      planReview: () => ({ kind: "revision-show", revisionId: "c1" }),
+    } as never,
+  }).history!;
+  const source = await history.open({}, hk191Context);
+  const reading = source.read({ limit: 1 });
+  await Bun.sleep(0);
+  let finished = false;
+  const closing = source.close().then(() => {
+    finished = true;
+  });
+  await Bun.sleep(0);
+  expect(closes).toBe(1);
+  expect(finished).toBeFalse();
+  release();
+  await Promise.all([reading, closing]);
+  expect(finished).toBeTrue();
+  expect(closes).toBe(1);
+});
+
+test("malformed graph attestation accessors still close the captured source once", async () => {
+  let closes = 0;
+  const raw = {
+    read: async () => ({ commits: [], done: true }),
+    close: () => {
+      closes++;
+    },
+    get graphSnapshotId() {
+      throw Error("invalid accessor");
+    },
+  };
+  const history = toInternalVcsAdapter({
+    id: "bad-accessor",
+    name: "Bad accessor",
+    detect: () => null,
+    history: {
+      open: () => raw,
+      planReview: () => ({ kind: "revision-show", revisionId: "c1" }),
+    } as never,
+  }).history!;
+  await expect(history.open({}, hk191Context)).rejects.toThrow("invalid accessor");
+  expect(closes).toBe(1);
+});

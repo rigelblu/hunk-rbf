@@ -13,6 +13,8 @@ import {
   loadJjReviewCommits,
   openJjHistory,
   parseJjHistory,
+  prepareJjHistory,
+  getJjConfigFingerprint,
   planJjHistoryRangeReview,
 } from "./history";
 
@@ -45,7 +47,7 @@ function jj(repo: string, ...args: string[]) {
       'user.email="ada@example.com"',
       ...args,
     ],
-    { cwd: repo, stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+    { cwd: repo, env: { ...process.env }, stdin: "ignore", stdout: "pipe", stderr: "pipe" },
   );
   if (result.exitCode !== 0) throw new Error(result.stderr.toString());
   return result.stdout.toString();
@@ -481,6 +483,10 @@ case "$*" in
     ;;
   *" op log "*)
     echo "${"0".repeat(128)}"
+    exit 0
+    ;;
+  *" config list"*)
+    echo "fixture=true"
     exit 0
     ;;
   *"present(trunk())"*)
@@ -1099,6 +1105,10 @@ case "$*" in
     echo "${"0".repeat(128)}"
     exit 0
     ;;
+  *" config list"*)
+    echo "fixture=true"
+    exit 0
+    ;;
   *"present(trunk())"*)
     exit 0
     ;;
@@ -1222,3 +1232,305 @@ exit 0
     expect(createJjVcsAdapter().history.acceptsExpression).toBe(true);
   });
 });
+
+describe("HK-98 native history presentation", () => {
+  jjTest("streams native graph rows with 3 body prefixes and after rows", async () => {
+    const repo = createJjOnlyTestRepo();
+    writeFileSync(join(repo, "file1.txt"), "first\n");
+    jj(repo, "commit", "-m", "First commit\n\nDetailed body line 1\nDetailed body line 2");
+    writeFileSync(join(repo, "file2.txt"), "second\n");
+    jj(repo, "describe", "-m", "Working copy commit");
+
+    const source = await openJjHistory({ all: true }, { cwd: repo, graphStyle: "native" });
+    try {
+      expect(source.graphStyle).toBe("native");
+      expect(typeof source.graphSnapshotId).toBe("string");
+      expect(source.graphSnapshotId!.length).toBeGreaterThan(0);
+
+      const page = await source.read({ limit: 10 });
+      expect(page.commits.length).toBeGreaterThanOrEqual(2);
+
+      const wcCommit = page.commits[0]!;
+      expect(wcCommit.subject).toBe("Working copy commit");
+      expect(wcCommit.nativeGraph).toBeDefined();
+      expect(wcCommit.nativeGraph!.body).toHaveLength(3);
+      expect(wcCommit.nativeGraph!.body[0]).toContain("@");
+      expect(Array.isArray(wcCommit.nativeGraph!.after)).toBe(true);
+
+      const parentCommit = page.commits[1]!;
+      expect(parentCommit.subject).toBe("First commit");
+      expect(parentCommit.body).toBe("Detailed body line 1\nDetailed body line 2");
+      expect(parentCommit.nativeGraph).toBeDefined();
+      expect(parentCommit.nativeGraph!.body).toHaveLength(3);
+      expect(Array.isArray(parentCommit.nativeGraph!.after)).toBe(true);
+    } finally {
+      await source.close();
+    }
+  });
+
+  jjTest(
+    "transitions between default and native with identical snapshot id and scope",
+    async () => {
+      const repo = createJjOnlyTestRepo();
+      writeFileSync(join(repo, "file.txt"), "content\n");
+      jj(repo, "commit", "-m", "Test commit");
+
+      const defaultSource = await openJjHistory(
+        { all: true },
+        { cwd: repo, graphStyle: "default" },
+      );
+      try {
+        expect(defaultSource.graphStyle).toBe("default");
+        const defaultSnap = defaultSource.graphSnapshotId;
+        expect(defaultSnap).toBeDefined();
+
+        const defaultPage = await defaultSource.read({ limit: 5 });
+        expect(defaultPage.commits[0]!.nativeGraph).toBeUndefined();
+
+        const nativeSource = await defaultSource.openGraph!("native");
+        try {
+          expect(nativeSource.graphStyle).toBe("native");
+          expect(nativeSource.graphSnapshotId).toBe(defaultSnap);
+
+          const nativePage = await nativeSource.read({ limit: 5 });
+          expect(nativePage.commits[0]!.nativeGraph).toBeDefined();
+          expect(nativePage.commits[0]!.revisionId).toBe(defaultPage.commits[0]!.revisionId);
+
+          const roundTripSource = await nativeSource.openGraph!("default");
+          try {
+            expect(roundTripSource.graphStyle).toBe("default");
+            expect(roundTripSource.graphSnapshotId).toBe(defaultSnap);
+          } finally {
+            await roundTripSource.close();
+          }
+        } finally {
+          await nativeSource.close();
+        }
+      } finally {
+        await defaultSource.close();
+      }
+    },
+  );
+
+  jjTest("detects config drift and rejects switching graph", async () => {
+    const repo = createJjOnlyTestRepo();
+    writeFileSync(join(repo, "file.txt"), "hello\n");
+    jj(repo, "commit", "-m", "Initial");
+
+    const source = await openJjHistory({ all: true }, { cwd: repo, graphStyle: "default" });
+    try {
+      // Mutate configuration
+      jj(repo, "config", "set", "--repo", "ui.graph.style", "ascii");
+
+      await expect(source.openGraph!("native")).rejects.toThrow(
+        "JJ configuration changed. Refresh history before switching graph.",
+      );
+    } finally {
+      await source.close();
+    }
+  });
+});
+
+describe("native graph real JJ correspondence", () => {
+  jjTest(
+    "matches configured four-style graph lines and IDs across octopus, elision and one-entry pages",
+    async () => {
+      const repo = createJjOnlyTestRepo();
+      writeFileSync(join(repo, "base.txt"), "base\n");
+      jj(repo, "commit", "-m", "Base");
+      jj(repo, "bookmark", "create", "main", "-r", "@-");
+      for (const name of ["left", "right", "third"]) {
+        jj(repo, "new", "main", "-m", name);
+        writeFileSync(join(repo, `${name}.txt`), name);
+        jj(repo, "bookmark", "create", name, "-r", "@");
+      }
+      jj(repo, "new", "left", "right", "third", "-m", "Octopus merge");
+      jj(repo, "config", "set", "--repo", 'revset-aliases."trunk()"', "main");
+      for (const style of ["curved", "square", "ascii", "ascii-large"]) {
+        jj(repo, "config", "set", "--repo", "ui.graph.style", style);
+        for (const expression of ["all()", "@ | main"]) {
+          const input = { kind: "expression", expression } as const;
+          const prepared = await prepareJjHistory(input, { cwd: repo });
+          const reference = jj(repo, ...buildJjHistoryArgs(input, prepared, "native"));
+          const expected: { id: string; body: string[]; after: string[] }[] = [];
+          const lines = reference.split("\n");
+          if (lines.at(-1) === "") lines.pop();
+          for (const line of lines) {
+            const marker = /\x02HUNK:B([123])\x1e/.exec(line);
+            if (marker) {
+              const index = marker.index;
+              if (marker[1] === "1")
+                expected.push({
+                  id: line.slice(index + marker[0].length).split("\0")[0]!,
+                  body: [],
+                  after: [],
+                });
+              expected.at(-1)!.body.push(line.slice(0, index));
+            } else expected.at(-1)!.after.push(line);
+          }
+          const source = await openJjHistory(input, { cwd: repo }, prepared, "native");
+          const actual: typeof expected = [];
+          try {
+            while (true) {
+              const page = await source.read({ limit: 1 });
+              actual.push(
+                ...page.commits.map((c) => ({
+                  id: c.revisionId,
+                  body: c.nativeGraph!.body,
+                  after: c.nativeGraph!.after,
+                })),
+              );
+              if (page.done) break;
+            }
+          } finally {
+            await source.close();
+          }
+          expect(actual).toEqual(expected);
+          expect(new Set(actual.map((c) => c.id)).size).toBe(actual.length);
+        }
+      }
+    },
+    30_000,
+  );
+
+  jjTest("accepts 5000-character metadata and refuses drift after candidate open", async () => {
+    const repo = createJjOnlyTestRepo();
+    jj(repo, "describe", "-m", "x".repeat(5000));
+    const source = await openJjHistory({ all: true }, { cwd: repo });
+    try {
+      const native = await source.openGraph!("native");
+      try {
+        expect((await native.read({ limit: 1 })).commits[0]!.subject.length).toBe(5000);
+      } finally {
+        await native.close();
+      }
+      const staged = await source.openGraph!("native");
+      jj(repo, "config", "set", "--repo", "ui.graph.style", "ascii");
+      try {
+        await expect(staged.read({ limit: 1 })).rejects.toThrow("JJ configuration changed");
+      } finally {
+        await staged.close();
+      }
+    } finally {
+      await source.close();
+    }
+  });
+});
+
+unixTest("native production cursor drains byte pressure below a 256-record request", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "hunk-native-pressure-"));
+  tempDirs.push(cwd);
+  const executable = join(cwd, "fake-jj");
+  writeFileSync(
+    executable,
+    `#!${process.execPath}
+const args=process.argv.slice(2);
+if(args.includes("root")){console.log(process.cwd());process.exit(0);}
+if(args.includes("config")){console.log("fixture=true");process.exit(0);}
+for(let i=1;i<=50;i++){
+ const record=[i.toString(16).padStart(40,"0"),"abcd1234","logical","",JSON.stringify("Ada"),JSON.stringify("ada@example.invalid"),"2026-01-01T00:00:00Z",JSON.stringify("subject"),"0","","","","","false","","false"].join("\\0");
+ process.stdout.write("@  \\x02HUNK:B1\\x1e"+record+"\\x1eHUNK:E1\\x03\\n|  \\x02HUNK:B2\\x1e\\x1eHUNK:E2\\x03\\n|  \\x02HUNK:B3\\x1e\\x1eHUNK:E3\\x03\\n");
+ for(let n=0;n<30;n++)process.stdout.write("|".repeat(4096)+"\\n");
+}
+`,
+  );
+  chmodSync(executable, 0o755);
+  const options = { cwd, jjExecutable: executable };
+  const prepared = {
+    operationId: "f".repeat(128),
+    configFingerprint: await getJjConfigFingerprint(options),
+    graphSnapshotId: "snapshot",
+    template: "unused",
+    nativeTemplate: "unused",
+    fieldsPerCommit: 16,
+  };
+  const source = await openJjHistory({ all: true }, options, prepared, "native");
+  const commits = [];
+  try {
+    while (true) {
+      const page = await source.read({ limit: 256, signal: AbortSignal.timeout(3000) });
+      expect(page.commits.length).toBeGreaterThan(0);
+      commits.push(...page.commits);
+      if (page.done) break;
+    }
+    expect(commits).toHaveLength(50);
+    expect(new Set(commits.map((c) => c.revisionId)).size).toBe(50);
+  } finally {
+    await source.close();
+  }
+});
+
+unixTest("configuration fingerprint errors fail closed without raw diagnostics", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "hunk-native-config-error-"));
+  tempDirs.push(cwd);
+  const executable = join(cwd, "fake-jj");
+  writeFileSync(
+    executable,
+    `#!${process.execPath}\nconsole.error("private configuration secret");process.exit(1);\n`,
+  );
+  chmodSync(executable, 0o755);
+  await expect(getJjConfigFingerprint({ cwd, jjExecutable: executable })).rejects.toThrow(
+    "Could not attest JJ configuration",
+  );
+  try {
+    await getJjConfigFingerprint({ cwd, jjExecutable: executable });
+  } catch (error) {
+    expect(String(error)).not.toContain("private configuration secret");
+  }
+});
+
+jjTest(
+  "configured wide nodes remain JJ-authored and graph/no-graph limits keep their own ordering",
+  async () => {
+    const f = createHk93TestRepo();
+    jj(f.repo, "config", "set", "--repo", "templates.log_node", JSON.stringify('"界"'));
+    const input = { all: true };
+    const prepared = await prepareJjHistory(input, { cwd: f.repo });
+    const orders: string[][] = [];
+    const reference = jj(f.repo, ...buildJjHistoryArgs(input, prepared, "native"));
+    expect(reference).toContain("界");
+    const expectedPrefixes = reference
+      .split("\n")
+      .filter((line) => line.includes("\x02HUNK:B1\x1e"))
+      .map((line) => line.slice(0, line.indexOf("\x02HUNK:B1\x1e")));
+    for (const style of ["default", "native"] as const) {
+      const source = await openJjHistory(input, { cwd: f.repo }, prepared, style);
+      try {
+        const page = await source.read({ limit: 256 });
+        orders.push(page.commits.map((c) => c.revisionId));
+        if (style === "native") {
+          expect(page.commits.map((c) => c.nativeGraph!.body[0])).toEqual(expectedPrefixes);
+          expect(
+            page.commits
+              .filter((c) => !/^0+$/.test(c.revisionId))
+              .map((c) => ({ subject: c.subject, prefix: c.nativeGraph!.body[0] })),
+          ).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({ prefix: expect.stringContaining("界") }),
+            ]),
+          );
+        }
+      } finally {
+        await source.close();
+      }
+    }
+    expect(new Set(orders[0])).toEqual(new Set(orders[1]));
+    expect(orders[0]).not.toEqual(orders[1]);
+    for (const style of ["default", "native"] as const) {
+      const source = await openJjHistory(
+        { ...input, maxCount: 3 },
+        { cwd: f.repo },
+        prepared,
+        style,
+      );
+      try {
+        expect((await source.read({ limit: 256 })).commits.map((c) => c.revisionId)).toEqual(
+          orders[style === "default" ? 0 : 1]!.slice(0, 3),
+        );
+      } finally {
+        await source.close();
+      }
+    }
+  },
+  15000,
+);

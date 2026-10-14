@@ -717,6 +717,42 @@ reports it as unsupported. Jujutsu supplies commit/change identities, bookmarks,
 and native merge-review semantics without routing through a colocated Git repository. Third-party
 adapters use exactly the same contract.
 
+### Provider-native history graph
+
+Extensions may optionally supply provider-native graph layouts and commit ordering alongside Hunk's revision entries. The generic contract defines:
+
+```ts
+export type ExtensionVcsHistoryGraphStyle = "default" | "native";
+
+export interface ExtensionVcsHistoryGraphFragment {
+  /** Exactly three lines corresponding to Hunk's three commit detail rows. */
+  body: [string, string, string];
+  /** Zero or more trailing graph-only rows rendered immediately after this revision. */
+  after: string[];
+}
+```
+
+On `ExtensionVcsHistoryCommit`, `nativeGraph?: ExtensionVcsHistoryGraphFragment` carries display-only graph prefixes for the commit's three body rows and any trailing graph rows. When `source.graphStyle === "native"`, every returned commit must provide `nativeGraph`.
+
+On `ExtensionVcsHistorySource`, optional members advertise graph reopening capability:
+
+- `graphStyle?: ExtensionVcsHistoryGraphStyle`: the active style produced by this source (`default` or `native`).
+- `graphSnapshotId?: string`: an immutable, opaque token (up to 256 UTF-16 units) binding the underlying repository operation, expression, scope, limits, and configuration state.
+- `openGraph?(style: ExtensionVcsHistoryGraphStyle, options?: { signal?: AbortSignal }): ExtensionVcsHistorySource | Promise<ExtensionVcsHistorySource>`: returns a fresh, independent history source for the requested graph style under the exact same repository snapshot and query context.
+
+The replacement source must attest the matching `graphSnapshotId`, matching `expression`, matching `scope`, and `graphStyle` equal to the requested style. Hunk snapshots the replacement once before comparing its normalized attestation. If the candidate source fails validation or aborts, Hunk closes it once and retains the currently accepted source. EOF releases cursor resources while retaining the same-context reopening capability; explicit close disposes that capability and joins any cleanup already in progress.
+
+Hunk validates every extension's native graph fragments against these budgets:
+
+- Individual graph line length: at most 4,096 UTF-16 units.
+- Trailing `after` rows: at most 128 rows per entry.
+- Total graph text: at most 256 KiB, counted as two bytes per UTF-16 code unit across body and after rows.
+- Graph fragments must contain only printable characters and valid spaces (no raw terminal escape sequences or control characters).
+
+The bundled JJ cursor additionally limits encoded machine records to 1 MiB, pending transport data to 2 MiB, and its ready queue to 512 commits or 8 MiB of retained entry data. The pending budget counts raw undecoded bytes plus two bytes per retained decoded UTF-16 unit; transferred data is counted once.
+
+The final API version allocation for this public capability is integration-owned; external extensions must not adopt this candidate contract before an authorized integration.
+
 Every operation `load` and `watchSignature` receives optional `context.signal`.
 Use asynchronous subprocess APIs, pass cancellation through, and terminate plus
 reap provider processes when it aborts; a synchronous spawn blocks Hunk's renderer

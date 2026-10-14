@@ -51,6 +51,13 @@ describe("buildDocExamples", () => {
     expect(example.text).toContain('import type { HunkExtensionAPI } from "hunkdiff/extension";');
   });
 
+  test("treats top-level type declarations as a module", () => {
+    const example = buildOne('export type GraphStyle = "default" | "native";');
+
+    expect(example.wrapper).toBe("module");
+    expect(example.text).not.toContain("export function __example()");
+  });
+
   test("wraps a bare API call in a factory body", () => {
     const example = buildOne('hunk.registerFileLanguage(".zig", "zig");');
 

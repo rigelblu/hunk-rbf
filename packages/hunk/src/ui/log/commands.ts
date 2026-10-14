@@ -54,6 +54,17 @@ export function isHistoryCommandEnabled(id: HistoryCommandId, snapshot: LogSnaps
       !snapshot.pendingMarkEdits &&
       !snapshot.marks.some((mark) => mark.kind === "unresolved")
     );
+  if (id === "hunk.history.toggleGraph")
+    return !snapshot.stagingGraph && !snapshot.sourceTransitionPending;
+  if (id === "hunk.history.toggleNativeGraph")
+    return (
+      !snapshot.stagingGraph &&
+      !snapshot.sourceTransitionPending &&
+      snapshot.supportsNativeGraph !== false
+    );
+  if (id === "hunk.history.squash" || id === "hunk.history.rebase")
+    return !snapshot.stagingGraph && !snapshot.sourceTransitionPending;
+  if (id === "hunk.history.toggleUnicode") return snapshot.graphStyle !== "native";
   if (id === "hunk.history.editRevset") return snapshot.query?.editable === true;
   if (id === "hunk.history.clearSelection")
     return snapshot.selectionAnchor !== null || snapshot.visualSelectionActive;
@@ -96,6 +107,8 @@ export function historyOperationCommandAllowed(
       "hunk.history.toggleRevisionSelection",
       "hunk.history.clearRevisionSelection",
       "hunk.history.editRevset",
+      "hunk.history.toggleGraph",
+      "hunk.history.toggleNativeGraph",
       "hunk.history.openSelection",
       "hunk.history.openFirstParent",
       "hunk.history.openParent",
@@ -142,7 +155,9 @@ export function buildHistoryCommands({
               )
               ? "Unselect revision"
               : "Select revision"
-            : entry.title,
+            : entry.id === "hunk.history.toggleUnicode" && getSnapshot().graphStyle === "native"
+              ? "Unicode lines (JJ config)"
+              : entry.title,
       keys,
       keyLabels: keys.map(formatKeyChord),
       defaultKeys: entry.defaultKeys,

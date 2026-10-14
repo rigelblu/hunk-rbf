@@ -7,6 +7,7 @@ import {
   formatHistoryDecorations,
   foreground,
   getHistoryCommitIdBounds,
+  historyScopeText,
   projectHistoryRecord,
   projectHistoryRow,
   renderHistoryContinuation,
@@ -398,4 +399,27 @@ test("HK-93 preserves the node when a cutoff shares a merge lane beside an alrea
   expect(renderHistoryGraph(planned.rows[1]!, false)).toBe("┴─●");
   expect(renderHistoryCutoffs(planned.rows[1]!, true)).toEqual(["| ~"]);
   expect(planned.checkpoint.lanes).toEqual([]);
+});
+
+test("historyScopeText handles bounded and fallback scopes for default and native styles", () => {
+  expect(historyScopeText(undefined, false)).toBe("");
+  expect(historyScopeText({ kind: "unbounded" } as any, false)).toBe("");
+  expect(historyScopeText({ kind: "bounded", boundaryRevisionId: "b1" }, false, "default")).toBe(
+    "",
+  );
+  expect(historyScopeText({ kind: "bounded", boundaryRevisionId: "b1" }, true, "default")).toBe(
+    "~ older history hidden",
+  );
+  expect(historyScopeText({ kind: "bounded", boundaryRevisionId: "b1" }, false, "native")).toBe(
+    "Older mainline history hidden.",
+  );
+  expect(historyScopeText({ kind: "bounded", boundaryRevisionId: "b1" }, true, "native")).toBe(
+    "Older mainline history hidden.",
+  );
+  expect(historyScopeText({ kind: "fallback", reason: "ambiguous" }, false, "native")).toBe(
+    "Mainline ambiguous; showing visible history.",
+  );
+  expect(historyScopeText({ kind: "fallback", reason: "unavailable" }, false, "default")).toBe(
+    "Mainline unavailable; showing visible history.",
+  );
 });

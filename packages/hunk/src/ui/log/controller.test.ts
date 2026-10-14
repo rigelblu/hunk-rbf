@@ -5,6 +5,7 @@ import type { HistoryRuntime } from "../history/types";
 import { LogController } from "./controller";
 import type { HistoryCommit } from "../../core/history/types";
 import { RevisionSourceSelection } from "./revisionSourceSelection";
+import { isHistoryCommandEnabled } from "./commands";
 import { planLogViewportGeometry } from "./geometry";
 
 type TestHistoryEntry =
@@ -2662,4 +2663,794 @@ test("actual removed pre-refresh identities cannot survive as logical replacemen
   } finally {
     await controller.close();
   }
+});
+
+describe("LogController native graph switching", () => {
+  test("shows notice on a provider that does not support openGraph", async () => {
+    const { runtime } = createTestRuntime(["c1", "c2"]);
+    const controller = new LogController(runtime);
+    await controller.loadMore();
+    expect(controller.getSnapshot().supportsNativeGraph).toBeFalse();
+    controller.toggleNativeGraph();
+    expect(controller.getSnapshot().notice).toBe(
+      "Graph view (jj style) is available only for JJ history.",
+    );
+    await controller.close();
+  });
+
+  test("stages and adopts native graph style", async () => {
+    const { runtime } = createTestRuntime(["c1", "c2"]);
+    (runtime.source as any).graphStyle = "default";
+    (runtime.source as any).graphSnapshotId = "snap-1";
+    (runtime.source as any).openGraph = async (style: string) => {
+      expect(style).toBe("native");
+      return {
+        graphStyle: "native",
+        graphSnapshotId: "snap-1",
+        async read() {
+          return {
+            commits: [
+              {
+                revisionId: "c1",
+                displayId: "c1",
+                parentRevisionIds: [],
+                subject: "c1",
+                authorName: "Ada",
+                authoredAt: "2026-01-01T00:00:00Z",
+                decorations: [],
+                nativeGraph: { body: ["@  ", "│  ", "│  "], after: [] },
+              },
+              {
+                revisionId: "c2",
+                displayId: "c2",
+                parentRevisionIds: [],
+                subject: "c2",
+                authorName: "Ada",
+                authoredAt: "2026-01-01T00:00:00Z",
+                decorations: [],
+                nativeGraph: { body: ["○  ", "│  ", "│  "], after: [] },
+              },
+            ],
+            done: true,
+          };
+        },
+        async close() {},
+      };
+    };
+
+    const controller = new LogController(runtime);
+    controller.togglePresentation("graph");
+    await controller.loadMore();
+    expect(controller.getSnapshot().supportsNativeGraph).toBeTrue();
+    expect(controller.getSnapshot().graphStyle).toBe("default");
+
+    controller.toggleNativeGraph();
+    expect(controller.getSnapshot().stagingGraph).toBeTrue();
+    expect(controller.getSnapshot().notice).toBe("Switching graph… Esc cancel");
+
+    // Wait for staging to complete
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(controller.getSnapshot().stagingGraph).toBeFalse();
+    expect(controller.getSnapshot().graphStyle).toBe("native");
+    expect(controller.getSnapshot().graphPreference).toBe("native");
+    expect(controller.getSnapshot().rows[0]!.commit.nativeGraph).toBeDefined();
+
+    await controller.close();
+  });
+
+  test("canceling staging with cancelStagingGraph restores state", async () => {
+    const { runtime } = createTestRuntime(["c1", "c2"]);
+    let releaseCandidate!: () => void;
+    const gate = new Promise<void>((resolve) => (releaseCandidate = resolve));
+    (runtime.source as any).graphStyle = "default";
+    (runtime.source as any).graphSnapshotId = "snap-1";
+    (runtime.source as any).openGraph = async () => {
+      await gate;
+      return {
+        graphStyle: "native",
+        graphSnapshotId: "snap-1",
+        async read() {
+          return { commits: [], done: true };
+        },
+        async close() {},
+      };
+    };
+
+    const controller = new LogController(runtime);
+    controller.togglePresentation("graph");
+    await controller.loadMore();
+
+    controller.toggleNativeGraph();
+    expect(controller.getSnapshot().stagingGraph).toBeTrue();
+    expect(controller.getSnapshot().notice).toBe("Switching graph… Esc cancel");
+
+    controller.cancelStagingGraph();
+    expect(controller.getSnapshot().stagingGraph).toBeFalse();
+    expect(controller.getSnapshot().graphStyle).toBe("default");
+    expect(controller.getSnapshot().graphPreference).toBe("default");
+
+    releaseCandidate();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(controller.getSnapshot().graphStyle).toBe("default");
+
+    await controller.close();
+  });
+
+  test("refuses graph switch when selection is outside limit", async () => {
+    const { runtime } = createTestRuntime(["c1", "c2", "c3"]);
+    (runtime.source as any).graphStyle = "default";
+    (runtime.source as any).graphSnapshotId = "snap-1";
+    (runtime.source as any).openGraph = async () => ({
+      graphStyle: "native",
+      graphSnapshotId: "snap-1",
+      async read() {
+        return {
+          commits: [
+            {
+              revisionId: "c1",
+              displayId: "c1",
+              parentRevisionIds: [],
+              subject: "c1",
+              authorName: "Ada",
+              authoredAt: "2026-01-01T00:00:00Z",
+              decorations: [],
+              nativeGraph: { body: ["@  ", "│  ", "│  "], after: [] },
+            },
+          ],
+          done: true,
+        };
+      },
+      async close() {},
+    });
+
+    const controller = new LogController(runtime);
+    controller.togglePresentation("graph");
+    await controller.loadMore();
+    await controller.select(2, 20);
+    expect(controller.getSnapshot().selected).toBe(2);
+
+    controller.toggleNativeGraph();
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(controller.getSnapshot().stagingGraph).toBeFalse();
+    expect(controller.getSnapshot().graphStyle).toBe("default");
+    expect(controller.getSnapshot().notice).toBe(
+      "Cannot switch graph: selection is outside the history limit. Reopen with a higher --max-count.",
+    );
+
+    await controller.close();
+  });
+
+  test("refuses graph switch when marked revision is outside limit", async () => {
+    const { runtime } = createTestRuntime(["c1", "c2", "c3"]);
+    (runtime.source as any).graphStyle = "default";
+    (runtime.source as any).graphSnapshotId = "snap-1";
+    (runtime.source as any).openGraph = async () => ({
+      graphStyle: "native",
+      graphSnapshotId: "snap-1",
+      async read() {
+        return {
+          commits: [
+            {
+              revisionId: "c1",
+              displayId: "c1",
+              parentRevisionIds: [],
+              subject: "c1",
+              authorName: "Ada",
+              authoredAt: "2026-01-01T00:00:00Z",
+              decorations: [],
+              nativeGraph: { body: ["@  ", "│  ", "│  "], after: [] },
+            },
+          ],
+          done: true,
+        };
+      },
+      async close() {},
+    });
+
+    const controller = new LogController(runtime);
+    controller.togglePresentation("graph");
+    await controller.loadMore();
+    await controller.loadMore();
+    controller.toggleMark(2);
+    expect(controller.getSnapshot().marks).toHaveLength(1);
+
+    controller.toggleNativeGraph();
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(controller.getSnapshot().stagingGraph).toBeFalse();
+    expect(controller.getSnapshot().graphStyle).toBe("default");
+    expect(controller.getSnapshot().notice).toBe(
+      "Cannot switch graph: marked revisions are outside the history limit. Clear the marks or reopen with a higher --max-count.",
+    );
+
+    await controller.close();
+  });
+
+  test("refuses graph switch when range membership would change", async () => {
+    const { runtime } = createTestRuntime(["c1", "c2", "c3"]);
+    (runtime.source as any).graphStyle = "default";
+    (runtime.source as any).graphSnapshotId = "snap-1";
+    (runtime.source as any).openGraph = async () => ({
+      graphStyle: "native",
+      graphSnapshotId: "snap-1",
+      async read() {
+        return {
+          commits: [
+            {
+              revisionId: "c1",
+              displayId: "c1",
+              parentRevisionIds: [],
+              subject: "c1",
+              authorName: "Ada",
+              authoredAt: "2026-01-01T00:00:00Z",
+              decorations: [],
+              nativeGraph: { body: ["@  ", "│  ", "│  "], after: [] },
+            },
+            {
+              revisionId: "different",
+              displayId: "diff",
+              parentRevisionIds: [],
+              subject: "different",
+              authorName: "Ada",
+              authoredAt: "2026-01-01T00:00:00Z",
+              decorations: [],
+              nativeGraph: { body: ["○  ", "│  ", "│  "], after: [] },
+            },
+            {
+              revisionId: "c3",
+              displayId: "c3",
+              parentRevisionIds: [],
+              subject: "c3",
+              authorName: "Ada",
+              authoredAt: "2026-01-01T00:00:00Z",
+              decorations: [],
+              nativeGraph: { body: ["○  ", "│  ", "│  "], after: [] },
+            },
+          ],
+          done: true,
+        };
+      },
+      async close() {},
+    });
+
+    const controller = new LogController(runtime);
+    controller.togglePresentation("graph");
+    await controller.loadMore();
+    await controller.select(2, 20, { extend: true });
+    expect(controller.getSnapshot().selectionAnchor).toBe(0);
+    expect(controller.getSnapshot().selected).toBe(2);
+
+    controller.toggleNativeGraph();
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(controller.getSnapshot().stagingGraph).toBeFalse();
+    expect(controller.getSnapshot().graphStyle).toBe("default");
+    expect(controller.getSnapshot().notice).toBe(
+      "Cannot switch graph: selected range would change. Clear the range and retry.",
+    );
+
+    await controller.close();
+  });
+
+  test("refuses graph switch and reports notice when config drift is detected", async () => {
+    const { runtime } = createTestRuntime(["c1", "c2"]);
+    (runtime.source as any).graphStyle = "default";
+    (runtime.source as any).graphSnapshotId = "snap-1";
+    (runtime.source as any).openGraph = async () => {
+      throw new Error("JJ configuration changed between history reads.");
+    };
+
+    const controller = new LogController(runtime);
+    controller.togglePresentation("graph");
+    await controller.loadMore();
+
+    controller.toggleNativeGraph();
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(controller.getSnapshot().stagingGraph).toBeFalse();
+    expect(controller.getSnapshot().notice).toBe(
+      "JJ configuration changed. Refresh history before switching graph.",
+    );
+
+    await controller.close();
+  });
+
+  test("late paging failure in native graph mode retains loaded revisions and formats notice", async () => {
+    let pageCount = 0;
+    const { runtime } = createTestRuntime([]);
+    runtime.source = {
+      graphStyle: "native",
+      graphSnapshotId: "snap-1",
+      async read() {
+        pageCount += 1;
+        if (pageCount === 1) {
+          return {
+            commits: [
+              {
+                revisionId: "c1",
+                displayId: "c1",
+                parentRevisionIds: [],
+                subject: "c1",
+                authorName: "Ada",
+                authoredAt: "2026-01-01T00:00:00Z",
+                decorations: [],
+                nativeGraph: { body: ["@  ", "│  ", "│  "], after: [] },
+              },
+            ],
+            done: false,
+          };
+        }
+        throw new Error("Disk read failure.");
+      },
+      async close() {},
+    };
+
+    const controller = new LogController(runtime);
+    await controller.loadMore();
+    expect(controller.getSnapshot().rows).toHaveLength(1);
+    expect(controller.getSnapshot().historyDone).toBeFalse();
+
+    const loaded = await controller.loadMore();
+    expect(loaded).toBeFalse();
+    expect(controller.getSnapshot().rows).toHaveLength(1);
+    expect(controller.getSnapshot().historyDone).toBeTrue();
+    expect(controller.getSnapshot().notice).toBe(
+      "Could not load more history: Disk read failure. Loaded revisions kept.",
+    );
+
+    await controller.close();
+  });
+});
+
+/** Build reopenable graph sources with the same cursor-ownership behavior as bootstrap. */
+function createTestGraphRuntime(ids: string[] = ["c1", "c2", "c3"]) {
+  const { runtime } = createTestRuntime(ids);
+  const sources: (HistoryRuntime["source"] & { closes: number })[] = [];
+  const makeSource = (style: "default" | "native", entries = ids) => {
+    let done = false;
+    const source: HistoryRuntime["source"] & { closes: number } = {
+      graphStyle: style,
+      graphSnapshotId: "accepted-context",
+      closes: 0,
+      openGraph: async (next) => makeSource(next),
+      async read() {
+        if (done) return { commits: [], done: true };
+        done = true;
+        return {
+          commits: entries.map((id) => ({
+            revisionId: id,
+            displayId: id,
+            parentRevisionIds: [],
+            subject: id,
+            authorName: "Ada",
+            authoredAt: "2026-01-01T00:00:00Z",
+            decorations: [],
+            ...(style === "native"
+              ? {
+                  nativeGraph: {
+                    body: ["@  ", "│  ", "│  "] as [string, string, string],
+                    after: ["╰─"],
+                  },
+                }
+              : {}),
+          })),
+          done: true,
+        };
+      },
+      async close() {
+        source.closes++;
+      },
+    };
+    sources.push(source);
+    return source;
+  };
+  runtime.source = makeSource("default");
+  runtime.acceptSource = async (next) => {
+    const previous = runtime.source;
+    runtime.source = next;
+    await previous.close();
+  };
+  runtime.close = async () => {
+    await runtime.source.close();
+  };
+  runtime.reopenSource = async () => makeSource("default");
+  return { runtime, sources, makeSource };
+}
+
+/** Wait for a graph command's pending transaction to reach its acceptance or refusal. */
+async function settleTestGraph(controller: LogController) {
+  for (let attempt = 0; controller.getSnapshot().stagingGraph && attempt < 1000; attempt++)
+    await Bun.sleep(1);
+  expect(controller.getSnapshot().stagingGraph).toBeFalse();
+}
+
+describe("native graph accepted transactions", () => {
+  test("covers grouped/Hunk/native transitions, retained preference and cursor ownership", async () => {
+    const { runtime, sources } = createTestGraphRuntime();
+    const c = new LogController(runtime);
+    await c.loadMore();
+    c.toggleNativeGraph();
+    expect(c.getSnapshot()).toMatchObject({
+      graphStyle: "default",
+      graphPreference: "default",
+      presentation: { graph: false },
+    });
+    await settleTestGraph(c);
+    expect(c.getSnapshot()).toMatchObject({
+      graphStyle: "native",
+      graphPreference: "native",
+      presentation: { graph: true },
+    });
+    c.togglePresentation("graph");
+    expect(c.getSnapshot().presentation.graph).toBeTrue();
+    await settleTestGraph(c);
+    expect(c.getSnapshot()).toMatchObject({
+      graphStyle: "default",
+      graphPreference: "native",
+      presentation: { graph: false },
+    });
+    c.togglePresentation("graph");
+    await settleTestGraph(c);
+    expect(c.getSnapshot()).toMatchObject({
+      graphStyle: "native",
+      graphPreference: "native",
+      presentation: { graph: true },
+    });
+    c.toggleNativeGraph();
+    await settleTestGraph(c);
+    expect(c.getSnapshot()).toMatchObject({
+      graphStyle: "default",
+      graphPreference: "default",
+      presentation: { graph: true },
+    });
+    await c.close();
+    expect(sources.map((s) => s.closes)).toEqual(sources.map(() => 1));
+  });
+
+  test("failure/cancel keeps accepted rows, preference and checkboxes; candidate closes once", async () => {
+    const { runtime, makeSource } = createTestGraphRuntime();
+    const c = new LogController(runtime);
+    await c.loadMore();
+    const accepted = c.getSnapshot();
+    runtime.source.openGraph = async () => {
+      throw Error("malformed record");
+    };
+    expect(await c.stageGraph("native")).toBeFalse();
+    expect(c.getSnapshot()).toMatchObject({
+      rows: accepted.rows,
+      graphStyle: "default",
+      graphPreference: "default",
+      presentation: accepted.presentation,
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const candidate = makeSource("native");
+    runtime.source.openGraph = async () => {
+      await gate;
+      return candidate;
+    };
+    const pending = c.stageGraph("native");
+    c.cancelStagingGraph();
+    release();
+    expect(await pending).toBeFalse();
+    expect(candidate.closes).toBe(1);
+    expect(c.getSnapshot().presentation).toEqual(accepted.presentation);
+    await c.close();
+  });
+
+  test("latest selected ID, marks and physical offset are sampled after a delayed read", async () => {
+    const { runtime, makeSource } = createTestGraphRuntime();
+    const c = new LogController(runtime);
+    c.togglePresentation("graph");
+    await c.loadMore();
+    const candidate = makeSource("native");
+    const read = candidate.read.bind(candidate);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    candidate.read = async (options) => {
+      await gate;
+      return read(options);
+    };
+    runtime.source.openGraph = async () => candidate;
+    const pending = c.stageGraph("native");
+    await c.select(2, 10);
+    c.toggleMark(1);
+    const latest = c.getSnapshot();
+    release();
+    expect(await pending).toBeTrue();
+    expect(c.getSelectedRow()?.commit.revisionId).toBe("c3");
+    expect(c.getSnapshot().marks).toBe(latest.marks);
+    await c.close();
+  });
+
+  test("accepted query and refresh obsolete a delayed old graph candidate", async () => {
+    for (const replace of ["query", "refresh"] as const) {
+      const { runtime, makeSource } = createTestGraphRuntime(["c1"]);
+      const c = new LogController(runtime);
+      await c.loadMore();
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      const old = makeSource("native", ["c1", "old-only"]);
+      runtime.source.openGraph = async () => {
+        await gate;
+        return old;
+      };
+      const pending = c.stageGraph("native");
+      const fresh = makeSource("default", ["c1", "new-only"]);
+      if (replace === "query") {
+        runtime.queryReplacement = {
+          open: async () => fresh,
+          accept: async (_target, next) => {
+            runtime.source = next;
+          },
+        };
+        expect((await c.replaceQuery({ kind: "apply", expression: "new-query" })).status).toBe(
+          "applied",
+        );
+      } else {
+        runtime.reopenSource = async () => fresh;
+        expect(await c.refresh()).toBeTrue();
+      }
+      release();
+      expect(await pending).toBeFalse();
+      expect(c.getSnapshot().rows.map((r) => r.commit.revisionId)).toEqual(["c1", "new-only"]);
+      expect(old.closes).toBe(1);
+      await c.close();
+    }
+  });
+
+  test("retains unresolved mark resolution instead of re-running refresh inference", async () => {
+    const { runtime, makeSource } = createTestGraphRuntime(["c1", "c2"]);
+    runtime.input.maxCount = 2;
+    const c = new LogController(runtime);
+    await c.loadMore();
+    c.toggleMark(1);
+    const refreshed = makeSource("default", ["c1", "c3"]);
+    runtime.reopenSource = async () => refreshed;
+    await c.refresh();
+    const marks = c.getSnapshot().marks;
+    expect(marks[0]?.kind).toBe("unresolved");
+    refreshed.openGraph = async () => makeSource("native", ["c1", "c2"]);
+    expect(await c.stageGraph("native")).toBeTrue();
+    expect(c.getSnapshot().marks).toBe(marks);
+    await c.close();
+  });
+
+  test("validates an empty candidate page and retains valid empty state on failure", async () => {
+    const { runtime, makeSource } = createTestGraphRuntime([]);
+    const c = new LogController(runtime);
+    await c.loadMore();
+    const candidate = makeSource("native", []);
+    let reads = 0;
+    candidate.read = async () => {
+      reads++;
+      throw Error("invalid stream");
+    };
+    runtime.source.openGraph = async () => candidate;
+    expect(await c.stageGraph("native")).toBeFalse();
+    expect(reads).toBe(1);
+    expect(c.getSnapshot()).toMatchObject({ historyDone: true, graphStyle: "default", rows: [] });
+    runtime.source.openGraph = async () => makeSource("native", []);
+    expect(await c.stageGraph("native")).toBeTrue();
+    expect(c.getSnapshot()).toMatchObject({ historyDone: true, graphStyle: "native", rows: [] });
+    await c.close();
+  });
+
+  test("native conversion failures close intermediate refresh/query sources", async () => {
+    const { runtime, makeSource } = createTestGraphRuntime();
+    const c = new LogController(runtime);
+    await c.loadMore();
+    await c.stageGraph("native");
+    const intermediate = () => {
+      const s = makeSource("default");
+      s.openGraph = async () => {
+        throw Error("configuration changed");
+      };
+      return s;
+    };
+    const refresh = intermediate();
+    runtime.reopenSource = async () => refresh;
+    expect(await c.refresh()).toBeFalse();
+    expect(refresh.closes).toBe(1);
+    const query = intermediate();
+    runtime.queryReplacement = { open: async () => query, accept: async () => {} };
+    expect((await c.replaceQuery({ kind: "apply", expression: "next" })).status).toBe("failed");
+    expect(query.closes).toBe(1);
+    expect(c.getSnapshot().graphStyle).toBe("native");
+    await c.close();
+  });
+
+  test("cleanup failure reports a notice but keeps the accepted native source", async () => {
+    const { runtime } = createTestGraphRuntime();
+    const c = new LogController(runtime);
+    await c.loadMore();
+    runtime.source.close = async () => {
+      throw Error("old cleanup failed");
+    };
+    expect(await c.stageGraph("native")).toBeTrue();
+    await Bun.sleep(0);
+    expect(c.getSnapshot().graphStyle).toBe("native");
+    expect(c.getSnapshot().notice).toBe("old cleanup failed");
+    await c.close();
+  });
+
+  test("native entries scroll through 1–2-row clipped viewports without changing revision targets", async () => {
+    for (const height of [1, 2]) {
+      const { runtime } = createTestGraphRuntime(["c1"]);
+      const c = new LogController(runtime);
+      await c.loadMore();
+      await c.stageGraph("native");
+      expect(
+        planLogViewportGeometry({
+          rows: c.getSnapshot().rows,
+          selected: 0,
+          requestedTop: 0,
+          bodyHeight: height,
+          groupByDay: false,
+        }).entries,
+      ).toHaveLength(1);
+      expect(c.scrollEntry(1, height)).toBeTrue();
+      expect(c.getSelectedRow()?.commit.revisionId).toBe("c1");
+      expect(c.getSnapshot().entryScroll).toBe(1);
+      await c.close();
+    }
+  });
+});
+
+describe("graph cleanup survives transaction completion", () => {
+  test("quit joins a cancelled candidate close and repeated quit joins the same promise", async () => {
+    const { runtime, makeSource } = createTestGraphRuntime(["c1"]);
+    const controller = new LogController(runtime);
+    await controller.loadMore();
+    const candidate = makeSource("native");
+    let releaseRead!: () => void;
+    const readGate = new Promise<void>((resolve) => (releaseRead = resolve));
+    const read = candidate.read.bind(candidate);
+    candidate.read = async (options) => {
+      await readGate;
+      return read(options);
+    };
+    let releaseClose!: () => void;
+    const closeGate = new Promise<void>((resolve) => (releaseClose = resolve));
+    let cleanupFinished = false;
+    candidate.close = async () => {
+      candidate.closes++;
+      await closeGate;
+      cleanupFinished = true;
+    };
+    runtime.source.openGraph = async () => candidate;
+    const staging = controller.stageGraph("native");
+    await Bun.sleep(0);
+    controller.cancelStagingGraph();
+    let quitFinished = false;
+    const quitting = controller.close().then(() => {
+      quitFinished = true;
+    });
+    const repeated = controller.close();
+    await Bun.sleep(0);
+    expect(quitFinished).toBeFalse();
+    expect(candidate.closes).toBe(1);
+    releaseClose();
+    await Promise.all([quitting, repeated]);
+    expect(cleanupFinished).toBeTrue();
+    releaseRead();
+    expect(await staging).toBeFalse();
+    expect(candidate.closes).toBe(1);
+  });
+
+  test("quit joins old-source cleanup after native adoption without rolling back", async () => {
+    const { runtime } = createTestGraphRuntime(["c1"]);
+    const controller = new LogController(runtime);
+    await controller.loadMore();
+    const old = runtime.source;
+    let releaseClose!: () => void;
+    const closeGate = new Promise<void>((resolve) => (releaseClose = resolve));
+    let cleanupFinished = false;
+    old.close = async () => {
+      await closeGate;
+      cleanupFinished = true;
+    };
+    expect(await controller.stageGraph("native")).toBeTrue();
+    expect(controller.getSnapshot().graphStyle).toBe("native");
+    let quitFinished = false;
+    const quitting = controller.close().then(() => {
+      quitFinished = true;
+    });
+    await Bun.sleep(0);
+    expect(quitFinished).toBeFalse();
+    releaseClose();
+    await quitting;
+    expect(cleanupFinished).toBeTrue();
+    expect(controller.getSnapshot().graphStyle).toBe("native");
+  });
+
+  test("generic graph failure uses the approved current-view-kept copy", async () => {
+    const { runtime } = createTestGraphRuntime(["c1"]);
+    const controller = new LogController(runtime);
+    await controller.loadMore();
+    runtime.source.openGraph = async () => {
+      throw Error("Reader failed.");
+    };
+    expect(await controller.stageGraph("native")).toBeFalse();
+    expect(controller.getSnapshot().notice).toBe(
+      "Could not switch graph: Reader failed. Current view kept.",
+    );
+    await controller.close();
+  });
+});
+
+test("graph controls are disabled throughout a pending refresh or query replacement", async () => {
+  for (const replacing of ["refresh", "query"] as const) {
+    const { runtime, makeSource } = createTestGraphRuntime(["c1"]);
+    const controller = new LogController(runtime);
+    await controller.loadMore();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const open = async () => {
+      await gate;
+      return makeSource("default");
+    };
+    runtime.reopenSource = open;
+    runtime.queryReplacement = {
+      open,
+      accept: async (_target, source) => runtime.acceptSource!(source),
+    };
+    const pending =
+      replacing === "refresh"
+        ? controller.refresh()
+        : controller.replaceQuery({ kind: "apply", expression: "@" });
+    expect(controller.getSnapshot().sourceTransitionPending).toBeTrue();
+    expect(
+      isHistoryCommandEnabled("hunk.history.toggleNativeGraph", controller.getSnapshot()),
+    ).toBeFalse();
+    expect(
+      isHistoryCommandEnabled("hunk.history.toggleGraph", controller.getSnapshot()),
+    ).toBeFalse();
+    release();
+    await pending;
+    expect(controller.getSnapshot().sourceTransitionPending).toBeFalse();
+    expect(
+      isHistoryCommandEnabled("hunk.history.toggleNativeGraph", controller.getSnapshot()),
+    ).toBeTrue();
+    expect(
+      isHistoryCommandEnabled("hunk.history.toggleGraph", controller.getSnapshot()),
+    ).toBeTrue();
+    await controller.close();
+  }
+});
+
+test("aborted query cleanup cannot leave an enabled graph command inert", async () => {
+  const { runtime, makeSource } = createTestGraphRuntime(["c1"]);
+  const controller = new LogController(runtime);
+  await controller.loadMore();
+  const candidate = makeSource("default");
+  candidate.read = async ({ signal }) =>
+    new Promise((_resolve, reject) => {
+      signal!.addEventListener("abort", () => reject(Error("aborted")), { once: true });
+    });
+  let releaseClose!: () => void;
+  const closeGate = new Promise<void>((resolve) => (releaseClose = resolve));
+  candidate.close = async () => {
+    candidate.closes++;
+    await closeGate;
+  };
+  runtime.queryReplacement = { open: async () => candidate, accept: async () => {} };
+  const abort = new AbortController();
+  const query = controller.replaceQuery({ kind: "apply", expression: "@" }, abort.signal);
+  await Bun.sleep(0);
+  abort.abort();
+  await Bun.sleep(0);
+  controller.toggleMark();
+  expect(controller.getSnapshot().sourceTransitionPending).toBeFalse();
+  expect(
+    isHistoryCommandEnabled("hunk.history.toggleNativeGraph", controller.getSnapshot()),
+  ).toBeTrue();
+  expect(await controller.stageGraph("native")).toBeTrue();
+  expect(controller.getSnapshot().graphStyle).toBe("native");
+  releaseClose();
+  expect(await query).toMatchObject({ status: "aborted" });
+  expect(candidate.closes).toBe(1);
+  await controller.close();
 });

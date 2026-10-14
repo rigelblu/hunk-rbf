@@ -228,3 +228,13 @@ Warnings, failures, unread outcomes and refresh trouble keep an attention result
 Rebase retains its separate source workflow: choose **Commit → Rebase revision…** (`R`), edit sources with Space/checkmarks, inspect with I/i, then Continue with one source. Choose Onto/After/Before, review the preview and explicitly Apply. Cancelling confirmation returns to the same destination/source visit. Its existing eligibility, confirmation and cleanup policies remain.
 
 Refresh preserves exact selection IDs first. A unique logical change can follow a rewrite only under complete, unlimited, unfiltered history with unchanged traversal scope. Missing or ambiguous intent remains unresolved. Selections are process-local. Automatic refresh waits during an operation. The shared provider runtime owns freshness, editor terminal handoff and actual readback. Unix supports interactive execution; Windows refuses it before execution. Providers without mutation capability report Squash/Rebase unavailable. No extension API or session protocol changes are introduced by these controls.
+
+# 🔵⋯ Recognize JJ's graph in history
+
+In interactive `hunk log --vcs jj`, press `Ctrl+G` or choose **View → Graph view (jj style)** to switch between Hunk's default history layout and JJ's native commit order and drawn graph lines.
+
+When active, Hunk presents JJ's exact graph prefixes, node glyphs, and connector lines alongside Hunk's three-line commit entries. JJ configuration controls native graph characters and node symbols. The View menu command **Unicode lines** is disabled while native graph is active (`Unicode lines (JJ config)`), and Hunk's prior Unicode preference is retained for default mode.
+
+Graph view (jj style) is session-local and applies to the active log view. If a custom revset is active, native graph continues to draw JJ's connectors, while range review remains unavailable (`Custom revset: range review unavailable.`). Bounded scope notes (`Older mainline history hidden.`) remain visible above the status line.
+
+Pressing `Ctrl+G` again returns to Hunk's default graph and order. Choosing Graph view (jj style) from grouped view enables Graph view. Turning Graph view off retains the preferred graph style while presenting commits in default order; turning it on restores that preference. Switching graph requires the currently selected revision, anchor, and marks to remain within the loaded history limit; if excluded, Hunk explains the refusal and keeps the accepted view. If JJ configuration changes while a session is running, Hunk requests a normal refresh (`r`) before switching graph styles.

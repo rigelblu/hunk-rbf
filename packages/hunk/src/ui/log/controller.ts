@@ -13,6 +13,7 @@ import {
 import type { HistoryQueryTarget } from "../../core/history/queryReplacement";
 import type { HistoryAcceptedInput } from "../../core/run/commandInputs";
 import { sanitizeTerminalLine } from "../../lib/terminalText";
+import type { ExtensionVcsHistoryGraphStyle } from "../../extension-api/types";
 import type { HistoryRuntime } from "../history/types";
 import { commitEntryHeight, LOG_ENTRY_HEIGHT, planLogViewportGeometry } from "./geometry";
 import {
@@ -93,6 +94,12 @@ export interface LogSnapshot {
   scope?: HistoryRuntime["source"]["scope"];
   /** Always set by the controller; optional so hand-built snapshots stay valid. */
   query?: LogQueryState;
+  graphPreference?: ExtensionVcsHistoryGraphStyle;
+  graphStyle?: ExtensionVcsHistoryGraphStyle;
+  supportsNativeGraph?: boolean;
+  stagingGraph?: boolean;
+  /** A graph, refresh or query replacement is preparing a new accepted source. */
+  sourceTransitionPending?: boolean;
 }
 
 /** Find a row by immutable revision id, then by one unambiguous provider logical id. */
@@ -121,11 +128,19 @@ function isHistoryIdentitySettled(
   return historyDone || rows.some((row) => row.commit.revisionId === identity.revisionId);
 }
 
+/** Distinguish an exact selection-preservation refusal from a provider failure. */
+class HistoryGraphSwitchRefusal extends Error {}
+
 interface HistoryRefreshCandidate {
   abort: AbortController;
   source?: HistoryRuntime["source"];
   accepted: boolean;
   closePromise?: Promise<void>;
+}
+
+/** Report candidates that can still replace the accepted source. */
+function isPendingHistoryCandidate(candidate: HistoryRefreshCandidate | null) {
+  return Boolean(candidate && !candidate.accepted && !candidate.abort.signal.aborted);
 }
 
 /** Retain interactive log state independently of renderer mount/unmount cycles. */
@@ -143,6 +158,8 @@ export class LogController {
   private navigationWaiters = new Set<() => void>();
   private selectionGeneration = 0;
   private closed = false;
+  private closePromise: Promise<void> | null = null;
+  private pendingCleanup = new Set<Promise<void>>();
   private markGeneration = 0;
   private markEditGeneration = 0;
   private markEditQueue: Promise<void> = Promise.resolve();
@@ -158,12 +175,18 @@ export class LogController {
   private viewportAnchorOffset: number | null = null;
   private noticeTimer: ReturnType<typeof setTimeout> | null = null;
   private startupNotices = new Set<string>();
+  private graphPreference: ExtensionVcsHistoryGraphStyle = "default";
+  private graphCandidate:
+    | (HistoryRefreshCandidate & { graph: boolean; preference: ExtensionVcsHistoryGraphStyle })
+    | null = null;
   private snapshot: LogSnapshot;
 
   constructor(private readonly runtime: HistoryRuntime) {
     this.source = runtime.source;
     this.acceptedTraversalKey = revisionMarkTraversalKey(runtime.input);
     this.acceptedInput = runtime.input;
+    const initialGraphStyle = runtime.source.graphStyle ?? "default";
+    this.graphPreference = initialGraphStyle;
     const startupNotices = runtime.notices.map(sanitizeTerminalLine).filter(Boolean);
     this.startupNotices = new Set(startupNotices);
     this.snapshot = {
@@ -188,6 +211,11 @@ export class LogController {
         ...(runtime.input.maxCount !== undefined ? { limit: runtime.input.maxCount } : {}),
         generation: 0,
       },
+      graphPreference: this.graphPreference,
+      graphStyle: initialGraphStyle,
+      supportsNativeGraph: Boolean(runtime.source.openGraph),
+      stagingGraph: false,
+      sourceTransitionPending: false,
       presentation: {
         graph: false,
         unicode: !runtime.input.ascii && process.env.TERM !== "dumb",
@@ -213,11 +241,25 @@ export class LogController {
     return () => this.listeners.delete(listener);
   };
 
-  private publish(patch: Partial<LogSnapshot>) {
+  private publish(patch: Partial<LogSnapshot>, transitionOnly = false) {
     if (this.closed) return;
-    this.snapshot = { ...this.snapshot, ...patch };
+    const sourceTransitionPending = [
+      this.graphCandidate,
+      this.refreshCandidate,
+      this.queryCandidate,
+    ].some(isPendingHistoryCandidate);
+    this.snapshot = { ...this.snapshot, ...patch, sourceTransitionPending };
     this.operationGeneration += 1;
-    for (const listener of this.listeners) listener();
+    for (const listener of this.listeners) {
+      if (!transitionOnly) listener();
+      else {
+        try {
+          listener();
+        } catch {
+          // A transition observer cannot cancel source preparation or override its accepted result.
+        }
+      }
+    }
   }
 
   /** Load one bounded page, preserving symbolic graph state across page boundaries. */
@@ -247,9 +289,14 @@ export class LogController {
         return true;
       } catch (error) {
         if (!signal.aborted && generation === this.generation && !this.closed) {
+          const rawMessage = error instanceof Error ? error.message : String(error);
+          const notice =
+            this.snapshot.graphStyle === "native"
+              ? `Could not load more history: ${rawMessage.replace(/[.!?]$/, "")}. Loaded revisions kept.`
+              : sanitizeTerminalLine(rawMessage);
           this.publish({
             historyDone: true,
-            notice: sanitizeTerminalLine(error instanceof Error ? error.message : String(error)),
+            notice: sanitizeTerminalLine(notice),
           });
           return false;
         }
@@ -648,8 +695,8 @@ export class LogController {
   /** Scroll an oversized entry through existing wheel/page controls without selecting its stubs. */
   scrollEntry(delta: number, viewportBodyHeight: number) {
     const row = this.snapshot.rows[this.snapshot.selected];
-    // A body shorter than one entry shows no entry to scroll inside, so paging keeps moving.
-    if (!row || viewportBodyHeight < LOG_ENTRY_HEIGHT) return false;
+    // Native connectors remain scrollable when the viewport clips the three detail rows.
+    if (!row || (viewportBodyHeight < LOG_ENTRY_HEIGHT && !row.commit.nativeGraph)) return false;
     const maximum = Math.max(
       0,
       commitEntryHeight(row, !this.snapshot.presentation.graph, this.entryDimensions()) -
@@ -811,12 +858,263 @@ export class LogController {
     }
   }
 
+  /** Toggle detail fields immediately, or stage graph visibility on the accepted source context. */
   togglePresentation(key: keyof LogPresentation) {
-    this.viewportAnchorOffset = this.planViewport().selectedRowOffset;
-    this.publish({
-      presentation: { ...this.snapshot.presentation, [key]: !this.snapshot.presentation[key] },
+    if (key !== "graph") {
+      this.viewportAnchorOffset = this.planViewport().selectedRowOffset;
+      this.publish({
+        presentation: { ...this.snapshot.presentation, [key]: !this.snapshot.presentation[key] },
+      });
+      this.clampViewport(this.viewportBodyHeight);
+      return;
+    }
+    const graph = !this.snapshot.presentation.graph;
+    const preference = this.graphPreference;
+    void this.stageGraph(graph ? preference : "default", { graph, preference });
+  }
+
+  /** Select the other graph preference and enable Graph view, including from grouped history. */
+  toggleNativeGraph() {
+    if (!this.snapshot.supportsNativeGraph) {
+      this.setNotice("Graph view (jj style) is available only for JJ history.");
+      return;
+    }
+    const preference = this.graphPreference === "native" ? "default" : "native";
+    void this.stageGraph(preference, { graph: true, preference });
+  }
+
+  /** Cancel a presentation candidate while leaving the accepted presentation untouched. */
+  cancelStagingGraph() {
+    const candidate = this.graphCandidate;
+    if (!candidate) return;
+    this.graphCandidate = null;
+    candidate.abort.abort();
+    void this.discardCandidate(candidate).catch(() => {});
+    this.publish({ stagingGraph: false, notice: "" });
+  }
+
+  /**
+   * Stage graph rows privately while navigation and marks continue on the accepted view.
+   * Query/refresh replacement owns new context; this transaction only changes presentation.
+   */
+  async stageGraph(
+    targetStyle: ExtensionVcsHistoryGraphStyle,
+    request = {
+      graph: this.snapshot.presentation.graph || targetStyle === "native",
+      preference: targetStyle,
+    },
+  ): Promise<boolean> {
+    if (this.closed) return false;
+    this.cancelStagingGraph();
+    if (targetStyle === this.snapshot.graphStyle) {
+      this.viewportAnchorOffset = this.planViewport().selectedRowOffset;
+      this.graphPreference = request.preference;
+      this.publish({
+        presentation: { ...this.snapshot.presentation, graph: request.graph },
+        graphPreference: request.preference,
+      });
+      this.clampViewport(this.viewportBodyHeight);
+      return true;
+    }
+    if ([this.queryCandidate, this.refreshCandidate].some(isPendingHistoryCandidate)) return false;
+    const source = this.source;
+    const openGraph = source.openGraph;
+    if (!openGraph) {
+      this.setNotice("Graph view (jj style) is available only for JJ history.");
+      return false;
+    }
+    const candidate = {
+      abort: new AbortController(),
+      accepted: false,
+      ...request,
+    } as HistoryRefreshCandidate & typeof request;
+    this.graphCandidate = candidate;
+    const generation = this.generation;
+    const queryToken = this.queryToken;
+    const canApply = () =>
+      !this.closed &&
+      this.graphCandidate === candidate &&
+      !candidate.abort.signal.aborted &&
+      generation === this.generation &&
+      queryToken === this.queryToken &&
+      this.source === source;
+    this.publish({ stagingGraph: true, notice: "Switching graph… Esc cancel" });
+    try {
+      candidate.source = await openGraph(targetStyle, { signal: candidate.abort.signal });
+      if (!canApply()) return false;
+      let rows: HistoryGraphRow[] = [];
+      let checkpoint = createHistoryLaneCheckpoint();
+      let done = false;
+      let needsPage = true;
+      while (canApply()) {
+        if (needsPage) {
+          const page = await candidate.source.read({ limit: 256, signal: candidate.abort.signal });
+          if (!canApply()) return false;
+          if (!page.done && page.commits.length === 0)
+            throw new Error("VCS history returned an empty page before EOF.");
+          const planned = planHistoryPage(this.graphCommits(page.commits), checkpoint);
+          rows = [...rows, ...planned.rows];
+          checkpoint = planned.checkpoint;
+          done = page.done;
+        }
+        await this.settleNavigation();
+        await this.settleRevisionSelection();
+        if (!canApply()) return false;
+        const current = this.snapshot;
+        // A selection queued after the drain still belongs to the accepted source's identities.
+        if (current.pendingMarkEdits) {
+          needsPage = false;
+          continue;
+        }
+        const selectedId = current.rows[current.selected]?.commit.revisionId;
+        const anchorId =
+          current.selectionAnchor === null
+            ? undefined
+            : current.rows[current.selectionAnchor]?.commit.revisionId;
+        const indexOf = (id: string | undefined) =>
+          id === undefined ? -1 : rows.findIndex((row) => row.commit.revisionId === id);
+        const selected = indexOf(selectedId);
+        const anchor = indexOf(anchorId);
+        const missingSelection =
+          (selectedId !== undefined && selected < 0) || (anchorId !== undefined && anchor < 0);
+        const missingMarks = current.marks.some(
+          (mark) => mark.kind === "resolved" && indexOf(mark.revisionId) < 0,
+        );
+        needsPage = !done && (missingSelection || missingMarks);
+        if (needsPage) continue;
+        if (missingSelection)
+          throw new HistoryGraphSwitchRefusal(
+            "selection is outside the history limit. Reopen with a higher --max-count.",
+          );
+        if (missingMarks)
+          throw new HistoryGraphSwitchRefusal(
+            "marked revisions are outside the history limit. Clear the marks or reopen with a higher --max-count.",
+          );
+        if (anchor >= 0 && selected >= 0 && anchor !== selected) {
+          const oldFrom = Math.min(current.selected, current.selectionAnchor!);
+          const oldTo = Math.max(current.selected, current.selectionAnchor!);
+          const oldIds = new Set(
+            current.rows.slice(oldFrom, oldTo + 1).map((row) => row.commit.revisionId),
+          );
+          const newRows = rows.slice(Math.min(selected, anchor), Math.max(selected, anchor) + 1);
+          if (
+            newRows.length !== oldIds.size ||
+            newRows.some((row) => !oldIds.has(row.commit.revisionId))
+          )
+            throw new HistoryGraphSwitchRefusal(
+              "selected range would change. Clear the range and retry.",
+            );
+        }
+        const bodyHeight = this.viewportBodyHeight;
+        const nextSelected = Math.max(0, selected);
+        const width = this.viewportWidth;
+        const { geometry, entryScroll, previousSelectedRowOffset } = this.planReplacementViewport(
+          current,
+          rows,
+          nextSelected,
+          bodyHeight,
+          selected >= 0,
+          request.graph,
+        );
+        if (!done && geometry.entries.length > 0 && geometry.backfilled) {
+          needsPage = true;
+          continue;
+        }
+        if (!canApply()) return false;
+        if (
+          current !== this.snapshot ||
+          bodyHeight !== this.viewportBodyHeight ||
+          width !== this.viewportWidth ||
+          this.navigationPromise
+        ) {
+          needsPage = false;
+          continue;
+        }
+        const cleanup = this.acceptCandidate(
+          candidate,
+          checkpoint,
+          () => this.runtime.acceptSource?.(candidate.source!) ?? Promise.resolve(source.close()),
+        );
+        this.viewportAnchorOffset = previousSelectedRowOffset;
+        this.graphPreference = request.preference;
+        this.graphCandidate = null;
+        this.publish({
+          rows,
+          marks: current.marks,
+          markStatus: current.markStatus,
+          selected: nextSelected,
+          selectionAnchor:
+            anchor >= 0 ? anchor : current.visualSelectionActive ? nextSelected : null,
+          visualSelectionActive: current.visualSelectionActive && rows.length > 0,
+          top: geometry.top,
+          entryScroll,
+          historyDone: done,
+          scope: candidate.source.scope,
+          graphPreference: request.preference,
+          graphStyle: targetStyle,
+          presentation: { ...current.presentation, graph: request.graph },
+          supportsNativeGraph: Boolean(candidate.source.openGraph),
+          stagingGraph: false,
+          loading: false,
+          notice: "",
+        });
+        this.reportCleanup(cleanup, candidate.source);
+        return true;
+      }
+      return false;
+    } catch (error) {
+      if (canApply()) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.setNotice(
+          message.includes("configuration")
+            ? "JJ configuration changed. Refresh history before switching graph."
+            : error instanceof HistoryGraphSwitchRefusal
+              ? `Cannot switch graph: ${message}`
+              : `Could not switch graph: ${message.replace(/[.!?]$/, "")}. Current view kept.`,
+        );
+      }
+      return false;
+    } finally {
+      await this.discardCandidate(candidate).catch(() => {});
+      if (this.graphCandidate === candidate) {
+        this.graphCandidate = null;
+        this.publish({ stagingGraph: false });
+      }
+    }
+  }
+
+  /** Transfer cursor ownership synchronously before publishing any accepted replacement. */
+  private acceptCandidate(
+    candidate: HistoryRefreshCandidate,
+    checkpoint: HistoryLaneCheckpoint,
+    accept: () => Promise<void>,
+  ) {
+    const cleanup = this.trackCleanup(accept());
+    candidate.accepted = true;
+    const previousAbort = this.abort;
+    this.generation += 1;
+    this.source = candidate.source!;
+    this.abort = candidate.abort;
+    this.checkpoint = checkpoint;
+    this.loadingPromise = null;
+    previousAbort.abort();
+    return cleanup;
+  }
+
+  /** Retain unfinished cleanup so shutdown joins resources whose transaction already ended. */
+  private trackCleanup(cleanup: Promise<void>) {
+    this.pendingCleanup.add(cleanup);
+    const forget = () => this.pendingCleanup.delete(cleanup);
+    void cleanup.then(forget, forget);
+    return cleanup;
+  }
+
+  /** Report cleanup failures without rolling back the cursor already accepted by its owner. */
+  private reportCleanup(cleanup: Promise<void>, source: HistoryRuntime["source"]) {
+    void cleanup.catch((error) => {
+      if (!this.closed && this.source === source)
+        this.setNotice(error instanceof Error ? error.message : String(error));
     });
-    this.clampViewport(this.viewportBodyHeight);
   }
 
   /** Refresh the provider cursor while reconciling selection by immutable or logical identity. */
@@ -853,7 +1151,9 @@ export class LogController {
     if (candidate.accepted) return Promise.resolve();
     candidate.abort.abort();
     if (candidate.source && !candidate.closePromise)
-      candidate.closePromise = Promise.resolve().then(() => candidate.source!.close());
+      candidate.closePromise = this.trackCleanup(
+        Promise.resolve().then(() => candidate.source!.close()),
+      );
     return candidate.closePromise ?? Promise.resolve();
   }
 
@@ -867,11 +1167,12 @@ export class LogController {
       if (this.snapshot.marks.length) this.publish({ markStatus: "refresh-failed" });
       return false;
     }
+    this.cancelStagingGraph();
     const previousMarkStatus = this.snapshot.markStatus;
     const traversalKey = revisionMarkTraversalKey(this.acceptedInput);
-    this.publish({ markStatus: "checking" });
     const candidate: HistoryRefreshCandidate = { abort: new AbortController(), accepted: false };
     this.refreshCandidate = candidate;
+    this.publish({ markStatus: "checking" });
     const generation = this.generation;
     const canApply = () =>
       !this.closed &&
@@ -882,7 +1183,21 @@ export class LogController {
     let checkpoint = createHistoryLaneCheckpoint();
     let historyDone = false;
     try {
-      const replacement = await this.runtime.reopenSource(candidate.abort.signal);
+      let replacement = await this.runtime.reopenSource(candidate.abort.signal);
+      candidate.source = replacement;
+      if (
+        this.snapshot.graphStyle === "native" &&
+        replacement.openGraph &&
+        replacement.graphStyle !== "native"
+      ) {
+        const nativeReplacement = await replacement.openGraph("native", {
+          signal: candidate.abort.signal,
+        });
+        const intermediate = replacement;
+        replacement = nativeReplacement;
+        candidate.source = replacement;
+        await intermediate.close().catch(() => {});
+      }
       candidate.source = replacement;
       if (!canApply()) return false;
       let needsPage = true;
@@ -959,16 +1274,13 @@ export class LogController {
           continue;
         if (traversalKey !== revisionMarkTraversalKey(this.acceptedInput))
           throw new Error("History traversal changed during refresh.");
-        const accepted = this.runtime.acceptSource?.(replacement);
-        candidate.accepted = true;
-        this.generation += 1;
-        const previousAbort = this.abort;
-        this.source = replacement;
+        const previousSource = this.source;
+        const accepted = this.acceptCandidate(
+          candidate,
+          checkpoint,
+          () => this.runtime.acceptSource?.(replacement) ?? Promise.resolve(previousSource.close()),
+        );
         this.acceptedTraversalKey = traversalKey;
-        this.abort = candidate.abort;
-        this.checkpoint = checkpoint;
-        this.loadingPromise = null;
-        previousAbort.abort();
         this.viewportAnchorOffset = previousSelectedRowOffset;
         this.publish({
           rows,
@@ -982,6 +1294,9 @@ export class LogController {
           entryScroll,
           historyDone,
           scope: replacement.scope,
+          graphPreference: this.graphPreference,
+          graphStyle: replacement.graphStyle ?? "default",
+          supportsNativeGraph: Boolean(replacement.openGraph),
           loading: false,
           notice: "",
         });
@@ -1011,7 +1326,10 @@ export class LogController {
       } catch (error) {
         if (!this.closed) this.setNotice(error instanceof Error ? error.message : String(error));
       }
-      if (this.refreshCandidate === candidate) this.refreshCandidate = null;
+      if (this.refreshCandidate === candidate) {
+        this.refreshCandidate = null;
+        this.publish({}, true);
+      }
       if (
         !this.closed &&
         !candidate.accepted &&
@@ -1039,6 +1357,7 @@ export class LogController {
     selected: number,
     bodyHeight: number,
     keepEntryScroll: boolean,
+    graph = current.presentation.graph,
   ) {
     const width = this.viewportWidth;
     const previousTop = findHistoryRowIndex(rows, current.rows[current.top]?.commit);
@@ -1058,12 +1377,12 @@ export class LogController {
     });
     const geometry = planLogViewportGeometry({
       width,
-      presentation: current.presentation,
+      presentation: { ...current.presentation, graph },
       rows,
       selected,
       requestedTop,
       bodyHeight,
-      groupByDay: !current.presentation.graph,
+      groupByDay: !graph,
       requestedSelectedRowOffset: currentGeometry.selectedRowOffset,
     });
     const entryScroll = Math.min(
@@ -1071,9 +1390,9 @@ export class LogController {
       rows[selected]
         ? Math.max(
             0,
-            commitEntryHeight(rows[selected]!, !current.presentation.graph, {
+            commitEntryHeight(rows[selected]!, !graph, {
               width,
-              presentation: current.presentation,
+              presentation: { ...current.presentation, graph },
             }) - bodyHeight,
           )
         : 0,
@@ -1115,6 +1434,7 @@ export class LogController {
     const nextInput: HistoryAcceptedInput = target.kind === "launch" ? this.runtime.input : target;
     if (signal?.aborted) return { status: "aborted" };
 
+    this.cancelStagingGraph();
     const token = ++this.queryToken;
     this.queryCandidate?.abort.abort();
     const candidate: HistoryRefreshCandidate = { abort: new AbortController(), accepted: false };
@@ -1130,7 +1450,22 @@ export class LogController {
     // Set the moment the view is published, so a later throw cannot report an applied view failed.
     let applied: LogQueryResult | undefined;
     try {
-      const opened = await replacement.open(target, candidate.abort.signal);
+      // Install cancellation before notifying observers; they can abort, quit or start a newer query.
+      this.publish({}, true);
+      if (!current()) return unfinished();
+      let opened = await replacement.open(target, candidate.abort.signal);
+      candidate.source = opened;
+      if (
+        this.snapshot.graphStyle === "native" &&
+        opened.openGraph &&
+        opened.graphStyle !== "native"
+      ) {
+        const nativeOpened = await opened.openGraph("native", { signal: candidate.abort.signal });
+        const intermediate = opened;
+        opened = nativeOpened;
+        candidate.source = opened;
+        await intermediate.close().catch(() => {});
+      }
       candidate.source = opened;
       if (!current()) return unfinished();
       const page = await opened.read({
@@ -1166,15 +1501,15 @@ export class LogController {
         focus.outcome === "kept",
       );
 
-      const accepted = replacement.accept(target, opened);
-      candidate.accepted = true;
+      const accepted = this.acceptCandidate(candidate, planned.checkpoint, () =>
+        replacement.accept(target, opened),
+      );
       const mode = target.kind === "launch" ? "launch" : "custom";
       applied = {
         status: "applied",
         mode,
         ...(opened.expression !== undefined ? { expression: opened.expression } : {}),
       };
-      this.generation += 1;
       this.selectionGeneration += 1;
       this.markGeneration += 1;
       this.navigationTarget = null;
@@ -1183,14 +1518,8 @@ export class LogController {
       // next refresh starts fresh instead of joining one that can no longer publish.
       this.refreshCandidate?.abort.abort();
       this.refreshPromise = null;
-      const previousAbort = this.abort;
-      this.source = opened;
       this.acceptedInput = nextInput;
       this.acceptedTraversalKey = traversalKey;
-      this.abort = candidate.abort;
-      this.checkpoint = planned.checkpoint;
-      this.loadingPromise = null;
-      previousAbort.abort();
       this.viewportAnchorOffset = previousSelectedRowOffset;
       this.publish({
         rows,
@@ -1203,6 +1532,9 @@ export class LogController {
         entryScroll,
         historyDone: page.done,
         scope: opened.scope,
+        graphPreference: this.graphPreference,
+        graphStyle: opened.graphStyle ?? "default",
+        supportsNativeGraph: Boolean(opened.openGraph),
         loading: false,
         // An empty result is a valid answer; the list says so and the status line stays quiet.
         notice: "",
@@ -1235,7 +1567,10 @@ export class LogController {
       } catch {
         // The accepted view is unchanged; a cursor that fails to close has nothing left to report.
       }
-      if (this.queryCandidate === candidate) this.queryCandidate = null;
+      if (this.queryCandidate === candidate) {
+        this.queryCandidate = null;
+        this.publish({}, true);
+      }
     }
   }
 
@@ -1272,20 +1607,33 @@ export class LogController {
     return this.getSelection()?.focus;
   }
 
-  async close() {
-    if (this.closed) return;
+  /** Close active cursors and join cleanup retained by completed or cancelled transactions. */
+  close() {
+    if (this.closePromise) return this.closePromise;
     this.closed = true;
     this.generation += 1;
     this.selectionGeneration += 1;
     this.navigationTarget = null;
     this.abort.abort();
+    this.graphCandidate?.abort.abort();
     this.setNavigationPromise(null);
     if (this.noticeTimer) clearTimeout(this.noticeTimer);
     this.noticeTimer = null;
-    await Promise.all([
+    const activeCleanup = [
       this.queryCandidate ? this.discardCandidate(this.queryCandidate) : Promise.resolve(),
       this.refreshCandidate ? this.discardCandidate(this.refreshCandidate) : Promise.resolve(),
+      this.graphCandidate ? this.discardCandidate(this.graphCandidate) : Promise.resolve(),
+      this.runtime.acceptSource ? Promise.resolve() : Promise.resolve(this.source.close()),
       this.runtime.close(),
-    ]);
+    ];
+    this.closePromise = Promise.allSettled([
+      ...activeCleanup,
+      // Accepted cleanup failures already have a notice; shutdown still waits for their resources.
+      ...[...this.pendingCleanup].map((cleanup) => cleanup.catch(() => {})),
+    ]).then((results) => {
+      const failure = results.find((result) => result.status === "rejected");
+      if (failure?.status === "rejected") throw failure.reason;
+    });
+    return this.closePromise;
   }
 }

@@ -14,6 +14,10 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 
 - 2026-10-14 - feat (ux) | select exact revisions with Space or checkmarks after choosing Rebase, inspect the highlighted diff with I, and preview one-source Rebase operations before Apply (#hk-27)
 
+## 🟠⋯ Improved for End Users
+
+- 2026-10-14 - improve (ux) | identify the JJ presentation choice in View as “Graph view (jj style)”; keep Ctrl+G and the remembered style preference (#hk-98)
+
 ## 🟠⋯ Added for Technical Users
 
 - 2026-10-14 - feat (technical) | let opted-in history providers prepare, confirm and report mutation results through extension API 33, with JJ Squash and Rebase using the shared runtime (#hk-27)
