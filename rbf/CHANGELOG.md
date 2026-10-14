@@ -12,6 +12,21 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 
 ## 🟠⋯ Fixed for End Users
 
+# 🔵⋯ v0.12.0 (2026-10-14)
+
+Local HK-92 release records; installation and publication remain pending.
+
+## 🟠⋯ Added for End Users
+
+- 2026-10-14 - feat (ux) | see recorded workspace heads in multi-workspace JJ history while retaining the separate current-revision marker (#hk-92)
+- 2026-10-14 - feat (ux) | hide or restore workspace names through View and save that preference without hiding bookmarks or the current marker (#hk-92)
+
+## 🟠⋯ Added for Technical Users
+
+- 2026-10-14 - feat (technical) | distinguish workspace membership from ordinary generic history refs using optional workspaceName metadata and configure visibility with history_workspace_names (#hk-92)
+
+## 🟠⋯ Fixed for End Users
+
 - 2026-10-14 - fix (ux) | scan more history with two base rows, fitting workspace names beside metadata and adding a row only for label spill or a graph join, while keeping bookmarks and my reading position (#hk-92)
 
 # 🔵⋯ v0.11.0 (2026-10-13)
