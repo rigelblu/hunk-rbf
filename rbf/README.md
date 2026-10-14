@@ -10,7 +10,7 @@ Fork-specific product guidance for Hunk. The upstream project README remains at 
 
 ```text
 $ hunk --version
-hunk 0.23.0 (Hunk RBF 0.10.2)
+hunk 0.23.0 (Hunk RBF 0.11.0)
 ```
 
 The first number is the upstream Hunk release this fork is built against. The parenthetical is the fork's own release. They advance independently, so neither is "ahead" of the other — quote the whole line in a bug report and it says exactly which build you have.
@@ -57,7 +57,7 @@ rows and their explanation.
 
 Use `hunk log --vcs jj --all` for full visible ancestry, or pass a revision/revset explicitly
 to inspect its ancestry. Those explicit requests keep their previous behavior. Git and
-Sapling history are unchanged. These changes are currently Unreleased.
+Sapling history are unchanged. HK-93 is recorded in the local Hunk RBF 0.11.0 release; installation and remote publication remain pending.
 
 # 🔵⋯ Start history auto-refresh from config
 
