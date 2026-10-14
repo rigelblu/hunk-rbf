@@ -21,6 +21,9 @@ export function applySessionViewPreferences<ExtensionState>(
         agentNotes: preferences.showAgentNotes,
         copyDecorations: preferences.copyDecorations,
         cursorLine: preferences.cursorLine,
+        ...(preferences.historyWorkspaceNames === undefined
+          ? {}
+          : { historyWorkspaceNames: preferences.historyWorkspaceNames }),
       },
     },
     initialMode: preferences.mode,

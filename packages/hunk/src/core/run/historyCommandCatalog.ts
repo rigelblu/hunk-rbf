@@ -108,6 +108,15 @@ const HISTORY_COMMANDS = [
     group: "view",
   },
   {
+    id: "hunk.history.toggleWorkspaceNames",
+    title: "Show workspace names",
+    category: "history",
+    defaultKeys: [],
+    locus: "client-local",
+    publicToExtensions: false,
+    group: "view",
+  },
+  {
     id: "hunk.history.toggleDecorations",
     title: "Show decorations",
     category: "history",

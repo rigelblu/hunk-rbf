@@ -70,6 +70,17 @@ Reload supported review inputs when their source changes.
 
 ---
 
+**`history_workspace_names`**
+
+Show recorded workspace names in interactive history. View → Show workspace names overrides it; saving view preferences retains the choice. Singleton repositories still omit names.
+
+- **Type:** boolean
+- **Accepted:** `true` or `false`
+- **Built-in default:** `true`
+- **Scope:** top-level user or repository config only
+
+---
+
 **`history_auto_refresh`**
 
 Start interactive `hunk log` with automatic history refresh enabled where the provider supports it. F10 can override it for the current session; review `watch` is separate.

@@ -329,8 +329,12 @@ export function App({
       showAgentNotes,
       copyDecorations,
       cursorLine,
+      ...(bootstrap.input.options.historyWorkspaceNames === undefined
+        ? {}
+        : { historyWorkspaceNames: bootstrap.input.options.historyWorkspaceNames }),
     }),
     [
+      bootstrap.input.options.historyWorkspaceNames,
       copyDecorations,
       cursorLine,
       layoutMode,

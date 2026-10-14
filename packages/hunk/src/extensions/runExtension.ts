@@ -320,7 +320,12 @@ function normalizeHistoryCommit(value: unknown): ExtensionVcsHistoryCommit {
     if (!isPlainObject(decoration)) {
       throw new Error("VCS history returned an invalid decoration.");
     }
-    const fields = snapshotProperties(decoration, ["kind", "label", "attachedLocalBranch"]);
+    const fields = snapshotProperties(decoration, [
+      "kind",
+      "label",
+      "attachedLocalBranch",
+      "workspaceName",
+    ]);
     if (typeof fields.kind !== "string" || !decorationKinds.has(fields.kind)) {
       throw new Error("VCS history returned an invalid decoration.");
     }
@@ -328,6 +333,9 @@ function normalizeHistoryCommit(value: unknown): ExtensionVcsHistoryCommit {
     const label = sanitizeTerminalLine(
       assertNonEmptyString(fields.label, "VCS history decoration labels must be non-empty."),
     ).replaceAll("\t", " ");
+    if (fields.workspaceName !== undefined && kind !== "ref") {
+      throw new Error("Only a VCS history ref decoration may name a workspace.");
+    }
     if (kind === "head") {
       const attachedLocalBranch =
         fields.attachedLocalBranch === undefined
@@ -342,6 +350,13 @@ function normalizeHistoryCommit(value: unknown): ExtensionVcsHistoryCommit {
     }
     if (fields.attachedLocalBranch !== undefined) {
       throw new Error("Only a VCS history HEAD decoration may name an attached local branch.");
+    }
+    if (kind === "ref" && fields.workspaceName !== undefined) {
+      const workspaceName = assertNonEmptyString(
+        fields.workspaceName,
+        "VCS history workspace name must be non-empty.",
+      );
+      return { kind, label, workspaceName };
     }
     return { kind, label };
   });

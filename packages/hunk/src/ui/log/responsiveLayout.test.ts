@@ -2,14 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { planHistoryPage } from "../../core/history/lanePlanner";
 import type { HistoryCommit } from "../../core/history/types";
 import { measureTextWidth } from "../lib/text";
-import type { LogPresentation } from "./controller";
+import type { LogPresentation } from "./presentation";
 import {
   formatHistoryDay,
   formatHistoryRelativeTime,
   historyDayKey,
   resolveHistoryAuthorLabel,
 } from "./formatting";
-import { projectResponsiveLogRow, resolveLogResponsiveLayout } from "./responsiveLayout";
+import { projectResponsiveLogRow, resolveLogViewportBodyHeight } from "./responsiveLayout";
 
 const commitDate = new Date(2026, 8, 5, 12).toISOString();
 const commit: HistoryCommit = {
@@ -38,7 +38,7 @@ const presentation: LogPresentation = {
 const now = new Date(2026, 8, 6, 12, 5).getTime();
 
 describe("responsive log layout", () => {
-  test("HK-92 uses the third text line for compact generic refs and marks wide omissions", () => {
+  test("fits safe generic refs inline or in one shared spill row", () => {
     const workspaceRow = {
       ...row,
       commit: {
@@ -54,53 +54,44 @@ describe("responsive log layout", () => {
       },
     };
     for (const width of [45, 70, 80, 95, 96, 110, 120]) {
-      const layout = resolveLogResponsiveLayout(width, 30);
       const projected = projectResponsiveLogRow({
         row: workspaceRow,
         presentation,
-        layout,
         width,
         now,
       });
-      expect(layout.rowHeight).toBe(3);
       expect(
         projected.graphWidth + projected.leftWidth + projected.columnGap + projected.rightWidth,
       ).toBeLessThanOrEqual(width - 4);
-      expect(projected.refLine).not.toMatch(/[\u001b\n]/);
-      if (width < 96) {
-        expect(projected.secondary).toBe("(@)");
-        expect(projected.refLine).toStartWith("@default, @日本語work");
-        expect(measureTextWidth(projected.refLine)).toBeLessThanOrEqual(projected.textWidth);
-      } else {
-        expect(projected.refLine).toBe("");
-        expect(projected.secondary).toStartWith("(@, @default");
-        expect(projected.secondary).toEndWith("…)");
-      }
+      expect(projected.refLine + projected.inlineRefLine).not.toMatch(/[\u001b\n]/);
+      expect(projected.secondary).toBe(width === 45 ? "(@…)" : "(@, main)");
+      expect(projected.refLine || projected.inlineRefLine).toStartWith("@default, @日本語work");
+      expect(measureTextWidth(projected.refLine || projected.inlineRefLine)).toBeLessThanOrEqual(
+        projected.textWidth,
+      );
       const hidden = projectResponsiveLogRow({
         row: workspaceRow,
         presentation: { ...presentation, decorations: false },
-        layout,
         width,
         now,
       });
-      expect(hidden.refLine).toBe("");
-      expect(hidden.secondary).toBe("");
+      expect(hidden.refLine + hidden.inlineRefLine + hidden.secondary).toBe("");
+      expect(hidden.textRowCount).toBe(2);
     }
     const generic = projectResponsiveLogRow({
       row: { ...row, commit: { ...commit, decorations: [{ kind: "ref", label: "custom-ref" }] } },
       presentation,
-      layout: resolveLogResponsiveLayout(70, 24),
       width: 70,
       now,
     });
-    expect(generic.refLine).toBe("custom-ref");
+    expect(generic.inlineRefLine).toBe("custom-ref");
     expect(generic.secondary).toBe("");
   });
 
-  test("keeps a three-line entry at every responsive density", () => {
-    expect(resolveLogResponsiveLayout(120, 30)).toMatchObject({ density: "wide", rowHeight: 3 });
-    expect(resolveLogResponsiveLayout(80, 24)).toMatchObject({ density: "medium", rowHeight: 3 });
-    expect(resolveLogResponsiveLayout(42, 18)).toMatchObject({ density: "narrow", rowHeight: 3 });
+  test("reserves history chrome without imposing an entry height", () => {
+    expect(resolveLogViewportBodyHeight(30)).toBe(27);
+    expect(resolveLogViewportBodyHeight(24)).toBe(21);
+    expect(resolveLogViewportBodyHeight(18)).toBe(15);
   });
 
   test("uses offline account handles and relative dates", () => {
@@ -131,7 +122,6 @@ describe("responsive log layout", () => {
     const wide = projectResponsiveLogRow({
       row,
       presentation,
-      layout: resolveLogResponsiveLayout(120, 30),
       width: 120,
       now,
     });
@@ -139,7 +129,7 @@ describe("responsive log layout", () => {
     expect(wide.author).toBe("adalovelace");
     expect(wide.relativeTime).toBe("1 day ago");
     expect(wide.metadata).toBe("adalovelace · 1 day ago");
-    expect(wide.secondary).toContain("HEAD -> main");
+    expect(wide.secondary).toContain("main");
     expect(wide.secondary).toContain("tag: v1.0.0");
     expect(wide.convergence).toBe(wide.continuation);
     expect(measureTextWidth(wide.displayId)).toBe(8);
@@ -155,7 +145,6 @@ describe("responsive log layout", () => {
         },
       },
       presentation,
-      layout: resolveLogResponsiveLayout(120, 30),
       width: 120,
       now,
     });
@@ -172,7 +161,6 @@ describe("responsive log layout", () => {
     const grouped = projectResponsiveLogRow({
       row,
       presentation: { ...presentation, graph: false },
-      layout: resolveLogResponsiveLayout(120, 30),
       width: 120,
       now,
     });
@@ -186,11 +174,10 @@ describe("responsive log layout", () => {
     const medium = projectResponsiveLogRow({
       row,
       presentation,
-      layout: resolveLogResponsiveLayout(80, 24),
       width: 80,
       now,
     });
-    expect(medium.secondary).toBe("(main)");
+    expect(medium.secondary).toBe("(main, tag: v1.0.0)");
     const unsafe = projectResponsiveLogRow({
       row: {
         ...row,
@@ -206,7 +193,6 @@ describe("responsive log layout", () => {
         },
       },
       presentation,
-      layout: resolveLogResponsiveLayout(80, 24),
       width: 80,
       now,
     });
@@ -215,7 +201,6 @@ describe("responsive log layout", () => {
       projectResponsiveLogRow({
         row,
         presentation: { ...presentation, decorations: false },
-        layout: resolveLogResponsiveLayout(80, 24),
         width: 80,
         now,
       }).secondary,
@@ -231,7 +216,6 @@ describe("responsive log layout", () => {
         convergences: [{ from: 1, to: 0 }],
       },
       presentation,
-      layout: resolveLogResponsiveLayout(80, 24),
       width: 80,
       now,
     });
@@ -242,7 +226,6 @@ describe("responsive log layout", () => {
     const narrow = projectResponsiveLogRow({
       row,
       presentation: { ...presentation, graph: false },
-      layout: resolveLogResponsiveLayout(20, 18),
       width: 20,
       now,
     });
@@ -267,7 +250,6 @@ describe("responsive log layout", () => {
     const projected = projectResponsiveLogRow({
       row: crowdedRow,
       presentation,
-      layout: resolveLogResponsiveLayout(42, 18),
       width: 42,
       now,
     });
@@ -298,7 +280,6 @@ describe("known-empty responsive titles", () => {
       const projected = projectResponsiveLogRow({
         row: emptyRow,
         presentation: { ...presentation, unicode: false, decorations: false },
-        layout: resolveLogResponsiveLayout(width, 24),
         width,
         now,
       });
@@ -325,7 +306,6 @@ describe("known-empty responsive titles", () => {
                 const projected = projectResponsiveLogRow({
                   row: inputRow,
                   presentation: { ...presentation, graph, unicode, decorations },
-                  layout: resolveLogResponsiveLayout(width, 24),
                   width,
                   now,
                 });
@@ -334,7 +314,7 @@ describe("known-empty responsive titles", () => {
                 expect(projected.title).not.toContain("\x1b");
                 expect(projected.title).not.toContain("\t");
                 expect(projected.displayId).toBe(commit.displayId);
-                expect(resolveLogResponsiveLayout(width, 24).rowHeight).toBe(3);
+                expect(projected.textRowCount).toBe(2);
               }
             }
           }
@@ -360,7 +340,6 @@ test("HK-93 cutoff topology reserves one nonselectable row per edge in every pre
       const projected = projectResponsiveLogRow({
         row: cut,
         width,
-        layout: resolveLogResponsiveLayout(width, 24),
         presentation: { ...presentation, graph },
         now,
       });
@@ -376,9 +355,63 @@ test("HK-93 cutoff topology reserves one nonselectable row per edge in every pre
     projectResponsiveLogRow({
       row: crowded,
       width: 40,
-      layout: resolveLogResponsiveLayout(40, 24),
       presentation,
       now,
     }).cutoffs,
   ).toEqual(["~", "~"]);
+});
+
+test("workspace visibility filters explicit membership, preserving generic refs and geometry", () => {
+  const mixed = {
+    ...row,
+    commit: {
+      ...commit,
+      decorations: [
+        { kind: "head" as const, label: "@" },
+        { kind: "ref" as const, label: "@default", workspaceName: "default" },
+        { kind: "ref" as const, label: "@ordinary" },
+        { kind: "local-branch" as const, label: "main" },
+        { kind: "tag" as const, label: "v1" },
+      ],
+    },
+  };
+  for (const width of [45, 70, 95, 96, 120]) {
+    const visible = projectResponsiveLogRow({ row: mixed, presentation, width, now });
+    const hidden = projectResponsiveLogRow({
+      row: mixed,
+      presentation: { ...presentation, workspaceNames: false },
+      width,
+      now,
+    });
+    const withoutWorkspace = projectResponsiveLogRow({
+      row: {
+        ...mixed,
+        commit: {
+          ...mixed.commit,
+          decorations: mixed.commit.decorations.filter(
+            (entry) => entry.kind !== "ref" || !entry.workspaceName,
+          ),
+        },
+      },
+      presentation,
+      width,
+      now,
+    });
+    expect(hidden).toEqual(withoutWorkspace);
+    expect(hidden.graph).toBe(visible.graph);
+    expect(hidden.continuation).toBe(visible.continuation);
+    expect(hidden.convergence).toBe(visible.convergence);
+    expect(hidden.textRowCount).toBe(hidden.refLine ? 3 : 2);
+    expect(hidden.refLine + hidden.secondary).not.toContain("@default");
+    expect(hidden.refLine + hidden.inlineRefLine).toBe("@ordinary");
+    expect(hidden.secondary).toBe(width === 45 ? "(@…)" : "(@, main, tag: v1)");
+    const masterOff = projectResponsiveLogRow({
+      row: mixed,
+      presentation: { ...presentation, workspaceNames: true, decorations: false },
+      width,
+      now,
+    });
+    expect(masterOff.secondary).toBe("");
+    expect(masterOff.refLine).toBe("");
+  }
 });

@@ -98,6 +98,8 @@ export interface PersistedViewPreferences {
   showAgentNotes: boolean;
   copyDecorations: boolean;
   cursorLine: CursorLine;
+  /** History-only preference retained while the session routes through a review. */
+  historyWorkspaceNames?: boolean;
 }
 
 export const BUILT_IN_THEME_IDS = BUNDLED_SHIKI_THEME_IDS;
@@ -130,6 +132,9 @@ export function persistedViewPreferencesFromOptions(
     showAgentNotes: options.agentNotes ?? DEFAULT_VIEW_PREFERENCES.showAgentNotes,
     copyDecorations: options.copyDecorations ?? DEFAULT_VIEW_PREFERENCES.copyDecorations,
     cursorLine: options.cursorLine ?? DEFAULT_VIEW_PREFERENCES.cursorLine,
+    ...(options.historyWorkspaceNames === undefined
+      ? {}
+      : { historyWorkspaceNames: options.historyWorkspaceNames }),
   };
 }
 
@@ -147,6 +152,10 @@ const PERSISTED_VIEW_PREFERENCE_KEYS: Array<{
   { configKey: "agent_notes", value: (preferences) => preferences.showAgentNotes },
   { configKey: "copy_decorations", value: (preferences) => preferences.copyDecorations },
   { configKey: "cursor_line", value: (preferences) => preferences.cursorLine },
+  {
+    configKey: "history_workspace_names",
+    value: (preferences) => preferences.historyWorkspaceNames,
+  },
 ];
 
 export interface ConfigResolutionOptions {
@@ -391,6 +400,16 @@ export const CONFIG_REFERENCE_OPTIONS: readonly ConfigReferenceOption[] = [
     accepted: "`true` or `false`",
     runtimeDefault: false,
     description: "Reload supported review inputs when their source changes.",
+  },
+  {
+    key: "history_workspace_names",
+    property: "historyWorkspaceNames",
+    type: "boolean",
+    accepted: "`true` or `false`",
+    runtimeDefault: true,
+    description:
+      "Show recorded workspace names in interactive history. View → Show workspace names overrides it; saving view preferences retains the choice. Singleton repositories still omit names.",
+    topLevelOnly: true,
   },
   {
     key: "history_auto_refresh",
@@ -1132,6 +1151,7 @@ function mergeOptions(
     pager: overrides.pager ?? base.pager,
     watch: overrides.watch ?? base.watch,
     historyAutoRefresh: overrides.historyAutoRefresh ?? base.historyAutoRefresh,
+    historyWorkspaceNames: overrides.historyWorkspaceNames ?? base.historyWorkspaceNames,
     experimental: overrides.experimental ?? base.experimental,
     fast: overrides.fast ?? base.fast,
     excludeUntracked: overrides.excludeUntracked ?? base.excludeUntracked,

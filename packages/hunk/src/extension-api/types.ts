@@ -790,8 +790,14 @@ export type ExtensionVcsHistoryDecoration =
       attachedLocalBranch?: string;
     }
   | {
-      kind: "local-branch" | "remote-branch" | "tag" | "ref";
+      kind: "local-branch" | "remote-branch" | "tag";
       label: string;
+    }
+  | {
+      kind: "ref";
+      label: string;
+      /** Recorded workspace name, when this ref identifies a workspace head. */
+      workspaceName?: string;
     };
 
 /** One immutable commit summary returned by a VCS history provider. */

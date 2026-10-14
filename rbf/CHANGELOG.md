@@ -12,6 +12,8 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 
 ## 🟠⋯ Fixed for End Users
 
+- 2026-10-14 - fix (ux) | scan more history with two base rows, fitting workspace names beside metadata and adding a row only for label spill or a graph join, while keeping bookmarks and my reading position (#hk-92)
+
 # 🔵⋯ v0.11.0 (2026-10-13)
 
 Local HK-93 release records; installation, remote integration and publication remain pending.

@@ -156,9 +156,9 @@ describe("Jujutsu history production", () => {
     fields[14] = ['"zeta"', '"default"', '"zeta"', '"alpha"'].join("\x1f");
     expect(parseJjHistory(fields.join("\0"))[0]!.decorations).toEqual([
       { kind: "head", label: "@" },
-      { kind: "ref", label: "@alpha" },
-      { kind: "ref", label: "@default" },
-      { kind: "ref", label: "@zeta" },
+      { kind: "ref", label: "@alpha", workspaceName: "alpha" },
+      { kind: "ref", label: "@default", workspaceName: "default" },
+      { kind: "ref", label: "@zeta", workspaceName: "zeta" },
     ]);
     expect(() => parseJjHistory(fields.slice(0, 14).join("\0"))).toThrow(
       "truncated history record",
@@ -206,9 +206,9 @@ describe("Jujutsu history production", () => {
       const before = await load();
       expect(before.find((commit) => commit.revisionId === currentId)!.decorations).toEqual([
         { kind: "head", label: "@" },
-        { kind: "ref", label: "@alpha" },
-        { kind: "ref", label: "@default" },
-        { kind: "ref", label: "@zeta" },
+        { kind: "ref", label: "@alpha", workspaceName: "alpha" },
+        { kind: "ref", label: "@default", workspaceName: "default" },
+        { kind: "ref", label: "@zeta", workspaceName: "zeta" },
         { kind: "local-branch", label: "current" },
       ]);
       expect(before.find((commit) => commit.revisionId === ancestorId)!.decorations).toEqual([
@@ -224,12 +224,13 @@ describe("Jujutsu history production", () => {
           .find((commit) => commit.revisionId === currentId)!
           .decorations.filter((ref) => ref.kind === "ref"),
       ).toEqual([
-        { kind: "ref", label: "@alpha" },
-        { kind: "ref", label: "@default" },
+        { kind: "ref", label: "@alpha", workspaceName: "alpha" },
+        { kind: "ref", label: "@default", workspaceName: "default" },
       ]);
       expect(after.find((commit) => commit.revisionId === ancestorId)!.decorations).toContainEqual({
         kind: "ref",
         label: "@zeta",
+        workspaceName: "zeta",
       });
       const withoutWorkspaceNames = (commits: typeof before) =>
         commits.map((commit) => ({

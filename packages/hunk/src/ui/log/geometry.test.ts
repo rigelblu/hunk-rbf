@@ -30,7 +30,7 @@ describe("log viewport geometry", () => {
       rows,
       selected: 0,
       requestedTop: 0,
-      bodyHeight: 13,
+      bodyHeight: 11,
       groupByDay: true,
     });
     expect(geometry.entries.map((entry) => [entry.index, entry.showDayHeader])).toEqual([
@@ -38,7 +38,7 @@ describe("log viewport geometry", () => {
       [1, false],
       [2, true],
     ]);
-    expect(geometry.usedHeight).toBe(13);
+    expect(geometry.usedHeight).toBe(10);
   });
 
   test("repeats the current day heading while backfilling near EOF", () => {
@@ -65,8 +65,9 @@ describe("log viewport geometry", () => {
       [0, false],
       [1, false],
       [2, false],
+      [3, false],
     ]);
-    expect(geometry.usedHeight).toBe(9);
+    expect(geometry.usedHeight).toBe(8);
   });
 
   test("bounds planning work when jumping deep into a large history", () => {
@@ -87,8 +88,8 @@ describe("log viewport geometry", () => {
       bodyHeight: 17,
       groupByDay: false,
     });
-    expect(geometry.top).toBe(9_995);
-    expect(geometry.entries).toHaveLength(5);
+    expect(geometry.top).toBe(9_992);
+    expect(geometry.entries).toHaveLength(8);
     expect(indexedReads).toBeLessThan(100);
   });
 
@@ -97,12 +98,12 @@ describe("log viewport geometry", () => {
       rows,
       selected: 2,
       requestedTop: 0,
-      bodyHeight: 10,
+      bodyHeight: 8,
       groupByDay: true,
     });
     expect(geometry.top).toBe(1);
     expect(geometry.entries.at(-1)?.index).toBe(2);
-    expect(geometry.usedHeight).toBeLessThanOrEqual(10);
+    expect(geometry.usedHeight).toBeLessThanOrEqual(8);
   });
 
   test("preserves a physical selection row across rewritten day groups", () => {
@@ -119,12 +120,12 @@ describe("log viewport geometry", () => {
       groupByDay: true,
       requestedSelectedRowOffset: 22,
     });
-    expect(geometry.top).toBe(4);
+    expect(geometry.top).toBe(3);
     expect(geometry.selectedRowOffset).toBe(22);
     expect(geometry.backfilled).toBeFalse();
   });
 
-  test("chooses the closest fitting physical row and retains EOF backfill", () => {
+  test("keeps the requested physical row ahead of EOF backfill", () => {
     const geometry = planLogViewportGeometry({
       rows,
       selected: 3,
@@ -133,9 +134,9 @@ describe("log viewport geometry", () => {
       groupByDay: true,
       requestedSelectedRowOffset: 2,
     });
-    expect(geometry.top).toBe(2);
-    expect(geometry.selectedRowOffset).toBe(5);
-    expect(geometry.backfilled).toBeTrue();
+    expect(geometry.top).toBe(3);
+    expect(geometry.selectedRowOffset).toBe(2);
+    expect(geometry.backfilled).toBeFalse();
   });
 
   test("bounds physical-position planning by the viewport in a deep history", () => {
@@ -157,7 +158,7 @@ describe("log viewport geometry", () => {
       groupByDay: true,
       requestedSelectedRowOffset: 7,
     });
-    expect(geometry.selectedRowOffset).toBe(7);
+    expect(geometry.selectedRowOffset).toBe(8);
     expect(indexedReads).toBeLessThan(150);
   });
 });
@@ -179,7 +180,7 @@ test("HK-93 cutoff topology measures stub heights without turning them into comm
     });
     expect(geometry.entries.map((entry) => entry.index)).toEqual([0, 1]);
     expect(geometry.entries.map((entry) => entry.showDayHeader)).toEqual([groupByDay, false]);
-    expect(geometry.usedHeight).toBe(groupByDay ? 10 : 8);
+    expect(geometry.usedHeight).toBe(groupByDay ? 8 : 6);
   }
 });
 
@@ -195,10 +196,10 @@ test("HK-93 short grouped view retains a cutoff commit by omitting its day headi
     rows: row,
     selected: 0,
     requestedTop: 0,
-    bodyHeight: 5,
+    bodyHeight: 4,
     groupByDay: true,
   });
   expect(view.entries).toHaveLength(1);
   expect(view.entries[0]?.showDayHeader).toBe(false);
-  expect(view.usedHeight).toBe(4);
+  expect(view.usedHeight).toBe(3);
 });
