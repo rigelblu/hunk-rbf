@@ -421,7 +421,7 @@ export class LogController {
   /** Toggle exactly one displayed revision without changing focus or review range. */
   toggleMark(index = this.snapshot.selected) {
     const row = this.snapshot.rows[index];
-    if (!row || this.snapshot.markStatus !== "ready") return false;
+    if (this.closed || !row || this.snapshot.markStatus !== "ready") return false;
     const existing = this.snapshot.marks.findIndex(
       (entry) => entry.kind === "resolved" && entry.revisionId === row.commit.revisionId,
     );
@@ -457,12 +457,50 @@ export class LogController {
     return true;
   }
 
+  /** Seed a fresh operation's marks from the highlight after the host checks eligibility. */
+  seedSourceSelection(expectedRevisionId: string) {
+    const row = this.snapshot.rows[this.snapshot.selected];
+    if (
+      this.closed ||
+      !row ||
+      row.commit.revisionId !== expectedRevisionId ||
+      this.snapshot.markStatus !== "ready"
+    )
+      return false;
+    this.markGeneration += 1;
+    this.publish({
+      marks: Object.freeze([
+        Object.freeze({
+          kind: "resolved" as const,
+          mark: revisionMark(
+            row.commit,
+            revisionMarkSeenUnder(this.acceptedTraversalKey, this.source.scope),
+          ),
+          revisionId: row.commit.revisionId,
+        }),
+      ]),
+    });
+    return true;
+  }
+
+  /** Clear mark intent without changing review ranges, queued navigation or reading position. */
+  clearRevisionMarks() {
+    if (this.closed || this.snapshot.marks.length === 0) return false;
+    this.markGeneration += 1;
+    this.publish({
+      marks: Object.freeze([]),
+      markStatus: this.snapshot.markStatus === "checking" ? "checking" : "ready",
+    });
+    return true;
+  }
+
   /** Return a detached immutable operation snapshot, independently of review endpoints. */
-  getOperationTargets() {
+  getOperationTargets(options: { allowHighlightedFallback?: boolean } = {}) {
     return historyOperationTargets({
       ...this.snapshot,
       status: this.snapshot.markStatus,
       generation: this.operationGeneration,
+      allowHighlightedFallback: options.allowHighlightedFallback,
     });
   }
 

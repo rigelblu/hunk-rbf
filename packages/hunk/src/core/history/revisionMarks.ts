@@ -222,12 +222,15 @@ export function historyOperationTargets({
   rows,
   selected,
   generation,
+  allowHighlightedFallback = true,
 }: {
   marks: readonly RevisionMarkResolution[];
   status: RevisionMarkStatus;
   rows: readonly HistoryGraphRow[];
   selected: number;
   generation: number;
+  /** False inside explicit operation source selection, where an empty set stays empty. */
+  allowHighlightedFallback?: boolean;
 }): HistoryOperationTargets {
   if (marks.length > 0) {
     const unresolved = Object.freeze(
@@ -249,6 +252,7 @@ export function historyOperationTargets({
       revisionIds: Object.freeze(revisionIds),
     });
   }
+  if (!allowHighlightedFallback) return Object.freeze({ kind: "empty" });
   const focus = rows[selected];
   return focus
     ? Object.freeze({

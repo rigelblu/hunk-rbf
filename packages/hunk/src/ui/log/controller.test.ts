@@ -3,7 +3,7 @@ import { createTestExtensionSession } from "../../../../../test/helpers/extensio
 import { persistedViewPreferencesFromOptions } from "../../core/run/config";
 import type { HistoryRuntime } from "../history/types";
 import { LogController } from "./controller";
-import type { HistoryCommit } from "../../core/history/types";
+import { RevisionSourceSelection } from "./revisionSourceSelection";
 import { planLogViewportGeometry } from "./geometry";
 
 type TestHistoryEntry =
@@ -2220,4 +2220,289 @@ describe("revision marks under a revision or first-parent filter", () => {
       });
       await controller.close();
     });
+});
+
+describe("operation source selection preparation", () => {
+  test("seeds the highlight, toggles without moving focus, and leaves explicit empty sources", async () => {
+    const { runtime } = createTestRuntime(["A", "B", "C"]);
+    const controller = new LogController(runtime);
+    await controller.last(8);
+    const selection = new RevisionSourceSelection(controller, () => ({ eligible: true }));
+    const visit = Symbol("operation");
+    expect(selection.begin(visit)).toEqual({ kind: "changed" });
+    expect(selection.targets(visit)).toMatchObject({ source: "marks", revisionIds: ["C"] });
+    expect(selection.indicator("C")).toBe("✓");
+    const { selected, top, entryScroll } = controller.getSnapshot();
+    expect(selection.toggle(visit)).toEqual({ kind: "changed" });
+    expect(selection.targets(visit)).toEqual({ kind: "empty" });
+    expect(selection.lock(visit)).toEqual({ kind: "empty" });
+    expect(selection.indicator("C")).toBe(" ");
+    expect(controller.getSnapshot()).toMatchObject({ selected, top, entryScroll });
+    // Other consumers retain their existing highlighted fallback until host wiring changes.
+    expect(controller.getOperationTargets()).toMatchObject({
+      source: "highlight",
+      revisionIds: ["C"],
+    });
+    expect(selection.toggle(visit, 0)).toEqual({ kind: "changed" });
+    expect(selection.targets(visit)).toMatchObject({ revisionIds: ["A"] });
+    expect(controller.getSnapshot().selected).toBe(selected);
+    selection.end(visit);
+    await controller.close();
+  });
+
+  test("keeps exact provider order and a frozen source indication through a locked phase", async () => {
+    const { runtime } = createTestRuntime(["A", "B", "C"]);
+    const controller = new LogController(runtime);
+    await controller.last(8);
+    const selection = new RevisionSourceSelection(controller, () => ({ eligible: true }));
+    const visit = Symbol("operation");
+    selection.begin(visit);
+    selection.toggle(visit, 0);
+    const targets = selection.lock(visit);
+    expect(targets).toMatchObject({ source: "marks", revisionIds: ["A", "C"] });
+    expect(Object.isFrozen(targets)).toBeTrue();
+    if (targets.kind === "ready") expect(Object.isFrozen(targets.revisionIds)).toBeTrue();
+    await controller.select(1, 8);
+    expect(selection.toggle(visit)).toEqual({ kind: "inactive" });
+    expect(selection.targets(visit)).toBe(targets);
+    expect(selection.indicator("A")).toBe("✓");
+    expect(selection.indicator("B")).toBe(" ");
+    expect(selection.indicator("C")).toBe("✓");
+    selection.end(visit);
+    expect(controller.getSnapshot().selected).toBe(1);
+    expect(selection.indicator("A")).toBe(" ");
+    await controller.close();
+  });
+
+  test("leaves eligibility and its refusal wording with the host", async () => {
+    const { runtime } = createTestRuntime(["A", "B"]);
+    const controller = new LogController(runtime);
+    await controller.loadMore();
+    let allowed = false;
+    const selection = new RevisionSourceSelection(controller, () =>
+      allowed ? { eligible: true } : { eligible: false, reason: "Host source refusal" },
+    );
+    const visit = Symbol("operation");
+    expect(selection.begin(visit)).toEqual({ kind: "refused", reason: "Host source refusal" });
+    expect(controller.getSnapshot().marks).toEqual([]);
+    allowed = true;
+    expect(selection.begin(visit)).toEqual({ kind: "changed" });
+    allowed = false;
+    expect(selection.toggle(visit, 1)).toEqual({ kind: "refused", reason: "Host source refusal" });
+    expect(selection.targets(visit)).toMatchObject({ revisionIds: ["A"] });
+    expect(selection.toggle(visit)).toEqual({ kind: "changed" });
+    expect(selection.targets(visit)).toEqual({ kind: "empty" });
+    selection.end(visit);
+    await controller.close();
+  });
+
+  test("rejects overlapping visits and ignores stale callbacks after a new visit starts", async () => {
+    const { runtime } = createTestRuntime(["A", "B"]);
+    const controller = new LogController(runtime);
+    await controller.loadMore();
+    const selection = new RevisionSourceSelection(controller, () => ({ eligible: true }));
+    const first = Symbol("first");
+    const second = Symbol("second");
+    selection.begin(first);
+    expect(selection.begin(second).kind).toBe("refused");
+    expect(selection.end(first)).toBeTrue();
+    await controller.select(1, 8);
+    selection.begin(second);
+    expect(selection.end(first)).toBeFalse();
+    expect(selection.toggle(first)).toEqual({ kind: "inactive" });
+    expect(selection.lock(first)).toEqual({ kind: "empty" });
+    expect(selection.targets(second)).toMatchObject({ revisionIds: ["B"] });
+    selection.end(second);
+    await controller.close();
+  });
+
+  test("mark-only cleanup preserves review range and waits for queued navigation", async () => {
+    const { runtime } = createTestRuntime(["A", "B", "C"]);
+    const read = runtime.source.read.bind(runtime.source);
+    let reads = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    runtime.source.read = async (options) => {
+      if (++reads === 2) await gate;
+      return read(options);
+    };
+    const controller = new LogController(runtime);
+    await controller.loadMore();
+    await controller.select(1, 1);
+    controller.beginVisualSelection();
+    controller.seedSourceSelection("B");
+    const moving = controller.move(1, 1, { extend: true });
+    let settled = false;
+    const settlement = controller.settleNavigation().then(() => {
+      settled = true;
+    });
+    expect(controller.clearRevisionMarks()).toBeTrue();
+    await Promise.resolve();
+    expect(settled).toBeFalse();
+    expect(controller.getSnapshot()).toMatchObject({
+      selected: 1,
+      selectionAnchor: 1,
+      visualSelectionActive: true,
+    });
+    release();
+    await Promise.all([moving, settlement]);
+    expect(controller.getSnapshot()).toMatchObject({
+      selected: 2,
+      selectionAnchor: 1,
+      visualSelectionActive: true,
+      marks: [],
+    });
+    await controller.close();
+  });
+
+  test("mark-only cleanup during refresh cannot resurrect source intent", async () => {
+    const { runtime } = createTestRuntime(["A", "B"]);
+    const controller = new LogController(runtime);
+    await controller.loadMore();
+    controller.seedSourceSelection("A");
+    const reopen = runtime.reopenSource.bind(runtime);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    runtime.reopenSource = async (signal) => {
+      await gate;
+      return reopen(signal);
+    };
+    const refreshing = controller.refresh();
+    expect(controller.seedSourceSelection("A")).toBeFalse();
+    expect(controller.clearRevisionMarks()).toBeTrue();
+    release();
+    expect(await refreshing).toBeTrue();
+    expect(controller.getOperationTargets({ allowHighlightedFallback: false })).toEqual({
+      kind: "empty",
+    });
+    expect(controller.getSnapshot().marks).toEqual([]);
+    expect(controller.clearRevisionMarks()).toBeFalse();
+    await controller.close();
+  });
+
+  test("refuses to lock unresolved sources and keeps them available for recovery", async () => {
+    const { runtime, setHistory } = createTestRuntime(["A", "B"]);
+    const controller = new LogController(runtime);
+    await controller.loadMore();
+    const selection = new RevisionSourceSelection(controller, () => ({ eligible: true }));
+    const visit = Symbol("operation");
+    selection.begin(visit);
+    setHistory(["B"]);
+    await controller.refresh();
+    expect(selection.lock(visit)).toMatchObject({ kind: "blocked", reason: "unresolved" });
+    expect(selection.targets(visit)).not.toHaveProperty("revisionIds");
+    controller.removeUnresolvedMarks();
+    expect(selection.targets(visit)).toEqual({ kind: "empty" });
+    expect(selection.toggle(visit)).toEqual({ kind: "changed" });
+    expect(selection.targets(visit)).toMatchObject({ revisionIds: ["B"] });
+    selection.end(visit);
+    await controller.close();
+  });
+});
+
+test("source entry publishes its checkmark immediately and cannot seed an unchecked replacement highlight", async () => {
+  const { runtime } = createTestRuntime(["A", "B"]);
+  const controller = new LogController(runtime);
+  await controller.loadMore();
+  const selection = new RevisionSourceSelection(controller, () => ({ eligible: true }));
+  const indications: string[] = [];
+  const unsubscribe = controller.subscribe(() => {
+    indications.push(selection.indicator("A"));
+  });
+  const visit = Symbol("operation");
+  expect(selection.begin(visit)).toEqual({ kind: "changed" });
+  expect(indications[0]).toBe("✓");
+  selection.end(visit);
+  unsubscribe();
+  await controller.select(1, 8);
+  expect(controller.seedSourceSelection("A")).toBeFalse();
+  expect(controller.getSnapshot().marks).toEqual([]);
+  await controller.close();
+});
+
+test("a host callback cannot replace a visit during begin and have it overwritten", async () => {
+  const { runtime } = createTestRuntime(["A", "B"]);
+  const controller = new LogController(runtime);
+  await controller.loadMore();
+  const first = Symbol("first");
+  const second = Symbol("second");
+  let replace = true;
+  const selection = new RevisionSourceSelection(controller, () => {
+    if (replace) {
+      replace = false;
+      expect(selection.end(first)).toBeTrue();
+      void controller.select(1, 8);
+      expect(selection.begin(second)).toEqual({ kind: "changed" });
+    }
+    return { eligible: true };
+  });
+  expect(selection.begin(first)).toEqual({ kind: "inactive" });
+  expect(selection.targets(second)).toMatchObject({ revisionIds: ["B"] });
+  expect(selection.end(first)).toBeFalse();
+  selection.end(second);
+  await controller.close();
+});
+
+test("an obsolete toggle cannot remove a replacement visit's source after host eligibility", async () => {
+  const { runtime } = createTestRuntime(["A", "B"]);
+  const controller = new LogController(runtime);
+  await controller.loadMore();
+  const first = Symbol("first");
+  const second = Symbol("second");
+  let replace = false;
+  const selection = new RevisionSourceSelection(controller, () => {
+    if (replace) {
+      replace = false;
+      selection.end(first);
+      void controller.select(1, 8);
+      selection.begin(second);
+    }
+    return { eligible: true };
+  });
+  selection.begin(first);
+  replace = true;
+  expect(selection.toggle(first, 1)).toEqual({ kind: "inactive" });
+  expect(selection.targets(second)).toMatchObject({ revisionIds: ["B"] });
+  expect(selection.indicator("B")).toBe("✓");
+  selection.end(second);
+  await controller.close();
+});
+
+test("a closed controller cannot report a successful source toggle", async () => {
+  const { runtime } = createTestRuntime(["A", "B"]);
+  const controller = new LogController(runtime);
+  await controller.loadMore();
+  const selection = new RevisionSourceSelection(controller, () => ({ eligible: true }));
+  const visit = Symbol("operation");
+  selection.begin(visit);
+  await controller.close();
+  expect(selection.toggle(visit, 1)).toMatchObject({ kind: "refused" });
+  expect(selection.targets(visit)).toMatchObject({ revisionIds: ["A"] });
+  expect(controller.toggleMark(1)).toBeFalse();
+  selection.end(visit);
+});
+
+test("source entry cannot lock generic marks before seeding its checked highlight", async () => {
+  const { runtime } = createTestRuntime(["A", "B"]);
+  const controller = new LogController(runtime);
+  await controller.loadMore();
+  controller.toggleMark(1);
+  const visit = Symbol("operation");
+  const selection = new RevisionSourceSelection(controller, () => {
+    expect(selection.lock(visit)).toEqual({ kind: "empty" });
+    expect(selection.toggle(visit, 1)).toEqual({ kind: "inactive" });
+    expect(selection.indicator("B")).toBe(" ");
+    return { eligible: true };
+  });
+  expect(selection.begin(visit)).toEqual({ kind: "changed" });
+  expect(selection.targets(visit)).toMatchObject({ revisionIds: ["A"] });
+  expect(controller.getOperationTargets()).toMatchObject({ revisionIds: ["A"] });
+  expect(selection.indicator("A")).toBe("✓");
+  expect(selection.indicator("B")).toBe(" ");
+  selection.end(visit);
+  await controller.close();
 });
