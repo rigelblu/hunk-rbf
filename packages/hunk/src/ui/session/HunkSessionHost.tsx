@@ -465,6 +465,7 @@ export function HunkSessionHost({
       onOutcome={(outcome) => handleHistoryOutcome(route, outcome)}
       quitScheduler={deps.viewPreferenceQuitScheduler}
       sessionViewPreferences={sessionViewPreferencesRef.current}
+      onViewPreferencesChange={retainSessionViewPreferences}
       autoRefreshEnabled={autoRefreshEnabled}
       onAutoRefreshEnabledChange={setAutoRefreshEnabled}
       refreshOnMountGeneration={historyReturnGeneration}

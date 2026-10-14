@@ -302,7 +302,7 @@ export function parseJjHistory(
     if (currentWorkingCopy === "1") decorations.push({ kind: "head", label: "@" });
     // JJ suppresses this field in singleton repositories; no inventory query is needed.
     for (const name of decodeWorkspaceNames(workspaceNames)) {
-      decorations.push({ kind: "ref", label: `@${name}` });
+      decorations.push({ kind: "ref", label: `@${name}`, workspaceName: name });
     }
     appendDecorations(decorations, localBookmarks, "local-branch");
     appendDecorations(decorations, remoteBookmarks, "remote-branch");

@@ -1,5 +1,5 @@
 import type { KeyEvent, MouseEvent as TuiMouseEvent } from "@opentui/core";
-import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
+import { flushSync, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
 import { basename } from "node:path";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { APP_COMMAND_NAMES } from "../../core/run/commandCatalog";
@@ -50,8 +50,8 @@ import { monochromeLogTheme, resolveInteractiveLogPalette } from "./colorPolicy"
 import { splitHistoryTitle } from "../history/title";
 import { resolveHistoryTitlePalette } from "../history/titlePalette";
 import { formatHistoryDay } from "./formatting";
-import { commitEntryHeight, LOG_DAY_HEADER_HEIGHT, planLogViewportGeometry } from "./geometry";
-import { projectResponsiveLogRow, resolveLogResponsiveLayout } from "./responsiveLayout";
+import { LOG_DAY_HEADER_HEIGHT } from "./geometry";
+import { projectResponsiveLogRow, resolveLogViewportBodyHeight } from "./responsiveLayout";
 import { historyScopeText } from "../history/staticProjection";
 
 /** Render graph cells with stable semantic colors from the active Hunk theme. */
@@ -84,6 +84,7 @@ export function LogApp({
   runtime,
   onOutcome,
   sessionViewPreferences,
+  onViewPreferencesChange,
   autoRefreshEnabled,
   onAutoRefreshEnabledChange,
   refreshOnMountGeneration,
@@ -96,6 +97,7 @@ export function LogApp({
   onOutcome: (outcome: LogAppOutcome) => void | Promise<void>;
   /** Latest review preferences retained by the routed interactive session. */
   sessionViewPreferences: PersistedViewPreferences;
+  onViewPreferencesChange?: (preferences: PersistedViewPreferences) => void;
   autoRefreshEnabled: boolean;
   onAutoRefreshEnabledChange: (enabled: boolean) => void;
   refreshOnMountGeneration: number;
@@ -147,19 +149,23 @@ export function LogApp({
     snapshot.rows.some((row) => Boolean(row.cutoffLanes?.length)),
   );
   const scopeLines = scopeText ? wrapText(scopeText, Math.max(1, terminal.width - 2)) : [];
-  const responsiveLayout = resolveLogResponsiveLayout(
-    terminal.width,
-    terminal.height - scopeLines.length,
-  );
-  const viewportBodyHeight = responsiveLayout.bodyHeight;
+  const viewportBodyHeight = resolveLogViewportBodyHeight(terminal.height - scopeLines.length);
   const currentViewPreferences = useMemo(
-    () => ({ ...sessionViewPreferences, theme: themeSelector.themeId }),
-    [sessionViewPreferences, themeSelector.themeId],
+    () => ({
+      ...sessionViewPreferences,
+      theme: themeSelector.themeId,
+      historyWorkspaceNames: snapshot.presentation.workspaceNames ?? true,
+    }),
+    [sessionViewPreferences, themeSelector.themeId, snapshot.presentation.workspaceNames],
   );
+  useEffect(() => {
+    onViewPreferencesChange?.(currentViewPreferences);
+  }, [currentViewPreferences, onViewPreferencesChange]);
   const viewPreferenceQuit = useViewPreferenceQuitController({
     currentPreferences: currentViewPreferences,
     initialPreferences: {
       ...runtime.initialViewPreferences,
+      historyWorkspaceNames: runtime.initialViewPreferences.historyWorkspaceNames ?? true,
       theme: themeController.initialThemeId,
     },
     configPath: runtime.viewPreferencesConfigPath,
@@ -320,6 +326,15 @@ export function LogApp({
     "hunk.history.toggleAuthor": () => controller.togglePresentation("author"),
     "hunk.history.toggleDate": () => controller.togglePresentation("date"),
     "hunk.history.toggleDecorations": () => controller.togglePresentation("decorations"),
+    "hunk.history.toggleWorkspaceNames": () => {
+      // Commit the preference before a following quit key reads the dirty-state hook.
+      flushSync(() => controller.togglePresentation("workspaceNames"));
+      // Retain synchronously before a following key opens a review in the same input chunk.
+      onViewPreferencesChange?.({
+        ...currentViewPreferences,
+        historyWorkspaceNames: controller.getSnapshot().presentation.workspaceNames ?? true,
+      });
+    },
     "hunk.history.startVisualSelection": () => controller.beginVisualSelection(),
     "hunk.history.clearSelection": () => void controller.clearSelection(),
     "hunk.history.previousCommit": () =>
@@ -411,6 +426,9 @@ export function LogApp({
       commandItem("hunk.history.toggleUnicode", { checked: snapshot.presentation.unicode }),
       commandItem("hunk.history.toggleAuthor", { checked: snapshot.presentation.author }),
       commandItem("hunk.history.toggleDate", { checked: snapshot.presentation.date }),
+      commandItem("hunk.history.toggleWorkspaceNames", {
+        checked: snapshot.presentation.workspaceNames ?? true,
+      }),
       commandItem("hunk.history.toggleDecorations", {
         checked: snapshot.presentation.decorations,
       }),
@@ -558,14 +576,8 @@ export function LogApp({
     return () => clearInterval(timer);
   }, []);
   useEffect(() => {
-    controller.clampViewport(viewportBodyHeight);
-    const geometry = planLogViewportGeometry({
-      rows: snapshot.rows,
-      selected: snapshot.selected,
-      requestedTop: snapshot.top,
-      bodyHeight: viewportBodyHeight,
-      groupByDay: !snapshot.presentation.graph,
-    });
+    controller.setViewport(terminal.width, viewportBodyHeight);
+    const geometry = controller.planViewport(viewportBodyHeight, terminal.width);
     if (
       geometry.entries.at(-1)?.index !== undefined &&
       geometry.entries.at(-1)!.index + 8 >= snapshot.rows.length &&
@@ -576,7 +588,8 @@ export function LogApp({
   }, [
     controller,
     snapshot.historyDone,
-    snapshot.presentation.graph,
+    snapshot.presentation,
+    terminal.width,
     snapshot.rows,
     snapshot.selected,
     snapshot.top,
@@ -698,13 +711,7 @@ export function LogApp({
     consume();
   });
 
-  const viewportGeometry = planLogViewportGeometry({
-    rows: snapshot.rows,
-    selected: snapshot.selected,
-    requestedTop: snapshot.top,
-    bodyHeight: viewportBodyHeight,
-    groupByDay: !snapshot.presentation.graph,
-  });
+  const viewportGeometry = controller.planViewport(viewportBodyHeight, terminal.width);
   const visible = viewportGeometry.entries;
   const visualSelectionKey = findAppCommandById(commands, "hunk.history.startVisualSelection")
     ?.keyLabels[0];
@@ -758,7 +765,7 @@ export function LogApp({
       <box
         style={{
           width: "100%",
-          height: responsiveLayout.bodyHeight,
+          height: viewportBodyHeight,
           flexDirection: "column",
           paddingLeft: 1,
           paddingRight: 1,
@@ -776,7 +783,7 @@ export function LogApp({
           <box
             style={{
               width: "100%",
-              height: responsiveLayout.bodyHeight,
+              height: viewportBodyHeight,
               flexDirection: "column",
               justifyContent: "center",
               alignItems: "center",
@@ -804,7 +811,6 @@ export function LogApp({
             const projected = projectResponsiveLogRow({
               row,
               presentation: snapshot.presentation,
-              layout: responsiveLayout,
               width: terminal.width,
               now: relativeTimeNow,
             });
@@ -813,6 +819,27 @@ export function LogApp({
               selected ? theme.selectedHunk : theme.background,
               useColor,
             );
+            /** Preserve the existing revision/summary action only on its own rendered cells. */
+            const handleRevisionMouseUp = (event: TuiMouseEvent) => {
+              event.stopPropagation();
+              clearTransientNotice();
+              if (event.modifiers.shift) {
+                lastClick.current = { index: -1, at: 0 };
+                void controller.select(index, viewportBodyHeight, { extend: true });
+                return;
+              }
+              const copyIconStart =
+                1 +
+                projected.graphWidth +
+                projected.leftWidth +
+                projected.columnGap +
+                projected.rightWidth -
+                measureTextWidth(projected.copyIcon);
+              void controller.select(index, viewportBodyHeight).then(() => {
+                if (event.x >= copyIconStart) copySelected(row);
+                else void openSelected();
+              });
+            };
             return (
               <box
                 key={row.commit.revisionId}
@@ -829,9 +856,7 @@ export function LogApp({
                     position: "absolute",
                     top: index === snapshot.selected ? -snapshot.entryScroll : 0,
                     width: "100%",
-                    height:
-                      commitEntryHeight(row, !snapshot.presentation.graph) +
-                      (showDayHeader ? LOG_DAY_HEADER_HEIGHT : 0),
+                    height: projected.commitHeight + (showDayHeader ? LOG_DAY_HEADER_HEIGHT : 0),
                     flexDirection: "column",
                   }}
                 >
@@ -856,7 +881,7 @@ export function LogApp({
                   ) : null}
                   <box
                     style={{
-                      height: responsiveLayout.rowHeight,
+                      height: projected.textRowCount,
                       width: "100%",
                       flexDirection: "row",
                       backgroundColor: selected ? theme.selectedHunk : theme.background,
@@ -881,30 +906,26 @@ export function LogApp({
                       <box
                         style={{
                           width: projected.graphWidth,
-                          height: responsiveLayout.rowHeight,
+                          height: projected.textRowCount,
                           flexDirection: "column",
                         }}
                       >
                         <HistoryGraphLine text={projected.graph} colors={graphColors} />
                         <HistoryGraphLine text={projected.continuation} colors={graphColors} />
-                        <HistoryGraphLine text={projected.convergence} colors={graphColors} />
+                        {projected.textRowCount === 3 ? (
+                          <HistoryGraphLine text={projected.convergence} colors={graphColors} />
+                        ) : null}
                       </box>
                     ) : null}
                     <box
                       style={{
                         width: projected.textWidth,
-                        height: responsiveLayout.rowHeight,
+                        height: projected.textRowCount,
                         flexDirection: "column",
                       }}
                     >
-                      <box style={{ width: projected.textWidth, height: 2, flexDirection: "row" }}>
-                        <box
-                          style={{
-                            width: projected.leftWidth,
-                            height: 2,
-                            flexDirection: "column",
-                          }}
-                        >
+                      <box style={{ width: projected.textWidth, height: 1, flexDirection: "row" }}>
+                        <box style={{ width: projected.leftWidth, height: 1 }}>
                           <text fg={theme.text}>
                             {splitHistoryTitle(row.commit, projected.title).map(
                               (span, spanIndex) => (
@@ -914,44 +935,13 @@ export function LogApp({
                               ),
                             )}
                           </text>
-                          <CommitMetadataText
-                            author={projected.author}
-                            relativeTime={projected.relativeTime}
-                            authorColor={logPalette.author}
-                            separatorColor={logPalette.separator}
-                            relativeTimeColor={logPalette.relativeTime}
-                          />
                         </box>
                         {projected.columnGap ? (
                           <box style={{ width: projected.columnGap }} />
                         ) : null}
                         <box
-                          style={{
-                            width: projected.rightWidth,
-                            height: 2,
-                            flexDirection: "column",
-                            alignItems: "flex-end",
-                          }}
-                          onMouseUp={(event: TuiMouseEvent) => {
-                            event.stopPropagation();
-                            clearTransientNotice();
-                            if (event.modifiers.shift) {
-                              lastClick.current = { index: -1, at: 0 };
-                              void controller.select(index, viewportBodyHeight, { extend: true });
-                              return;
-                            }
-                            const copyIconStart =
-                              1 +
-                              projected.graphWidth +
-                              projected.leftWidth +
-                              projected.columnGap +
-                              projected.rightWidth -
-                              measureTextWidth(projected.copyIcon);
-                            void controller.select(index, viewportBodyHeight).then(() => {
-                              if (event.x >= copyIconStart) copySelected(row);
-                              else void openSelected();
-                            });
-                          }}
+                          style={{ width: projected.rightWidth, height: 1, alignItems: "flex-end" }}
+                          onMouseUp={handleRevisionMouseUp}
                         >
                           <RevisionIdControl
                             displayRevision={projected.displayId}
@@ -976,17 +966,49 @@ export function LogApp({
                                 .then(() => copySelected(row));
                             }}
                           />
-                          {projected.secondary ? (
-                            <text fg={logPalette.decoration}>{projected.secondary}</text>
-                          ) : null}
                         </box>
                       </box>
-                      <text
-                        style={{ width: projected.textWidth, height: 1 }}
-                        fg={logPalette.decoration}
-                      >
-                        {projected.refLine || " "}
-                      </text>
+                      <box style={{ width: projected.textWidth, height: 1, flexDirection: "row" }}>
+                        <box style={{ width: projected.metadataWidth, height: 1 }}>
+                          <CommitMetadataText
+                            author={projected.author}
+                            relativeTime={projected.relativeTime}
+                            authorColor={logPalette.author}
+                            separatorColor={logPalette.separator}
+                            relativeTimeColor={logPalette.relativeTime}
+                          />
+                        </box>
+                        {projected.metadataGap ? (
+                          <box style={{ width: projected.metadataGap }} />
+                        ) : null}
+                        {projected.inlineRefLine ? (
+                          <text
+                            style={{ width: measureTextWidth(projected.inlineRefLine), height: 1 }}
+                            fg={logPalette.decoration}
+                          >
+                            {projected.inlineRefLine}
+                          </text>
+                        ) : null}
+                        {projected.summaryGap ? (
+                          <box style={{ width: projected.summaryGap }} />
+                        ) : null}
+                        {projected.secondary ? (
+                          <box
+                            style={{ width: projected.secondaryWidth, height: 1 }}
+                            onMouseUp={handleRevisionMouseUp}
+                          >
+                            <text fg={logPalette.decoration}>{projected.secondary}</text>
+                          </box>
+                        ) : null}
+                      </box>
+                      {projected.textRowCount === 3 ? (
+                        <text
+                          style={{ width: projected.textWidth, height: 1 }}
+                          fg={logPalette.decoration}
+                        >
+                          {projected.refLine || " "}
+                        </text>
+                      ) : null}
                     </box>
                   </box>
                   {projected.cutoffs.map((line, cut) => (

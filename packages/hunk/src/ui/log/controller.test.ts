@@ -3,11 +3,18 @@ import { createTestExtensionSession } from "../../../../../test/helpers/extensio
 import { persistedViewPreferencesFromOptions } from "../../core/run/config";
 import type { HistoryRuntime } from "../history/types";
 import { LogController } from "./controller";
+import type { HistoryCommit } from "../../core/history/types";
 import { planLogViewportGeometry } from "./geometry";
 
 type TestHistoryEntry =
   | string
-  | { revisionId: string; subject?: string; logicalId?: string; authoredAt?: string };
+  | {
+      revisionId: string;
+      subject?: string;
+      logicalId?: string;
+      authoredAt?: string;
+      decorations?: HistoryCommit["decorations"];
+    };
 
 function createTestRuntime(
   subjects: TestHistoryEntry[] = ["first", "second", "third"],
@@ -26,7 +33,12 @@ function createTestRuntime(
           commits: selected.map((entry) => {
             const commit =
               typeof entry === "string"
-                ? { revisionId: entry, subject: entry, authoredAt: undefined }
+                ? {
+                    revisionId: entry,
+                    subject: entry,
+                    authoredAt: undefined,
+                    decorations: undefined,
+                  }
                 : entry;
             return {
               revisionId: commit.revisionId,
@@ -36,7 +48,7 @@ function createTestRuntime(
               ...(commit.logicalId ? { logicalId: commit.logicalId } : {}),
               authorName: "Ada",
               authoredAt: commit.authoredAt ?? "2026-01-01T00:00:00Z",
-              decorations: [],
+              decorations: commit.decorations ?? [],
             };
           }),
           done: cursor >= entries.length,
@@ -160,11 +172,11 @@ describe("LogController", () => {
     await controller.loadMore();
     await controller.loadMore();
     await controller.halfPage(1, 10);
-    expect(controller.getSnapshot().selected).toBe(1);
-    await controller.halfPage(1, 10);
     expect(controller.getSnapshot().selected).toBe(2);
+    await controller.halfPage(1, 10);
+    expect(controller.getSnapshot().selected).toBe(4);
     await controller.halfPage(-1, 10);
-    expect(controller.getSnapshot().selected).toBe(1);
+    expect(controller.getSnapshot().selected).toBe(2);
     await controller.close();
   });
 
@@ -453,7 +465,7 @@ describe("LogController", () => {
 
     const refresh = controller.refresh();
     await started;
-    expect(controller.getSnapshot().rows).toHaveLength(2);
+    expect(controller.getSnapshot().rows).toHaveLength(3);
     controller.beginVisualSelection();
     release();
     await refresh;
@@ -541,10 +553,10 @@ describe("LogController", () => {
     const { runtime } = createTestRuntime(["one", "two", "three", "four"]);
     const controller = new LogController(runtime);
     await controller.loadMore();
-    await controller.select(2, 8);
+    await controller.select(2, 6);
     expect(controller.getSnapshot().top).toBe(1);
     controller.setSearch("four");
-    await controller.findMatch(1, 8);
+    await controller.findMatch(1, 6);
     expect(controller.getSnapshot()).toMatchObject({ selected: 3, top: 2 });
     await controller.refresh();
     expect(
@@ -590,8 +602,9 @@ describe("LogController", () => {
     );
     expect(await controller.refresh()).toBeTrue();
     expect(controller.getSelectedRow()?.commit.revisionId).toBe("rewritten-8");
-    expect(measure()).toBe(before);
-    expect(before).toBe(20);
+    expect(measure()).toBe(20);
+    expect(Math.abs(measure()! - before!)).toBe(2);
+    expect(before).toBe(18);
     expect(controller.getSnapshot().notice).toBe("History refreshed.");
     await controller.close();
   });
@@ -1347,9 +1360,9 @@ test("HK-93 page and wheel scrolling reach every oversized cutoff while preservi
   controller.clampViewport(20);
   await controller.page(1, 20);
   expect(controller.getSnapshot().selected).toBe(0);
-  expect(controller.getSnapshot().entryScroll).toBe(5);
+  expect(controller.getSnapshot().entryScroll).toBe(4);
   expect(controller.scrollEntry(-3, 20)).toBe(true);
-  expect(controller.getSnapshot().entryScroll).toBe(2);
+  expect(controller.getSnapshot().entryScroll).toBe(1);
   await controller.page(-1, 20);
   expect(controller.getSnapshot().entryScroll).toBe(0);
   controller.clampViewport(30);
@@ -1398,7 +1411,7 @@ test("HK-93 tail offsets follow reconciled identity and reset on search or refre
     async close() {},
   });
   expect(await controller.refresh()).toBe(true);
-  expect(controller.getSnapshot().entryScroll).toBe(5);
+  expect(controller.getSnapshot().entryScroll).toBe(4);
   runtime.reopenSource = async () => ({
     async read() {
       return { commits: [createTestCutoffCommit("unrelated")], done: true };
@@ -1436,5 +1449,84 @@ test("HK-93 latest tail scrolling cancels older pending End navigation", async (
   await end;
   expect(controller.getSelectedRow()?.commit.revisionId).toBe("one");
   expect(controller.getSnapshot().entryScroll).toBe(3);
+  await controller.close();
+});
+
+test("compact toggles and resize retain focused identity at the nearest whole-entry row", async () => {
+  const entries = Array.from({ length: 20 }, (_, index) => ({
+    revisionId: `revision-${index}`,
+    decorations: [
+      {
+        kind: "ref" as const,
+        label: `@workspace-with-a-long-recorded-name-${index}`,
+        workspaceName: `workspace-${index}`,
+      },
+    ],
+  }));
+  const { runtime } = createTestRuntime(entries);
+  const controller = new LogController(runtime);
+  while (!controller.getSnapshot().historyDone) await controller.loadMore();
+  controller.setViewport(70, 13);
+  controller.togglePresentation("graph");
+  await controller.select(8, 13);
+  const before = controller.planViewport().selectedRowOffset!;
+  expect(before).toBe(9);
+  controller.togglePresentation("workspaceNames");
+  const hidden = controller.planViewport().selectedRowOffset!;
+  expect(controller.getSelectedRow()?.commit.revisionId).toBe("revision-8");
+  expect(Math.abs(hidden - before)).toBe(1);
+  expect(controller.planViewport().usedHeight).toBeLessThanOrEqual(13);
+  controller.togglePresentation("workspaceNames");
+  expect(controller.planViewport().selectedRowOffset).toBe(9);
+  controller.setViewport(120, 13);
+  expect(Math.abs(controller.planViewport().selectedRowOffset! - 9)).toBe(1);
+  controller.setViewport(70, 13);
+  expect(controller.planViewport().selectedRowOffset).toBe(9);
+  controller.beginVisualSelection();
+  await controller.move(1, 13, { extend: true });
+  const selection = controller.getSelection();
+  controller.togglePresentation("workspaceNames");
+  expect(controller.getSelection()?.focus.commit.revisionId).toBe(
+    selection?.focus.commit.revisionId,
+  );
+  expect(controller.getSelection()?.oldest.commit.revisionId).toBe(
+    selection?.oldest.commit.revisionId,
+  );
+  await controller.close();
+});
+
+test("compact pointer-only label refresh keeps the old focus instead of following a new head", async () => {
+  const entries = Array.from({ length: 20 }, (_, index) => ({
+    revisionId: `revision-${index}`,
+    decorations: [
+      {
+        kind: "ref" as const,
+        label: `@workspace-with-a-long-recorded-name-${index}`,
+        workspaceName: `workspace-${index}`,
+      },
+    ],
+  }));
+  const { runtime, setHistory } = createTestRuntime(entries);
+  const controller = new LogController(runtime);
+  while (!controller.getSnapshot().historyDone) await controller.loadMore();
+  controller.setViewport(70, 13);
+  controller.togglePresentation("graph");
+  await controller.select(8, 13);
+  const before = controller.planViewport().selectedRowOffset!;
+  setHistory(
+    entries.map((entry, index) => ({
+      ...entry,
+      decorations:
+        index === 8
+          ? []
+          : index === 12
+            ? [...entry.decorations, entries[8]!.decorations[0]!]
+            : entry.decorations,
+    })),
+  );
+  expect(await controller.refresh()).toBe(true);
+  expect(controller.getSelectedRow()?.commit.revisionId).toBe("revision-8");
+  expect(controller.getSelectedRow()?.commit.decorations).toHaveLength(0);
+  expect(Math.abs(controller.planViewport().selectedRowOffset! - before)).toBeLessThanOrEqual(1);
   await controller.close();
 });

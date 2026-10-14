@@ -4,13 +4,8 @@ import { sanitizeTerminalLine } from "../../lib/terminalText";
 import type { HistoryRuntime } from "../history/types";
 import { commitEntryHeight, planLogViewportGeometry } from "./geometry";
 
-export interface LogPresentation {
-  graph: boolean;
-  unicode: boolean;
-  author: boolean;
-  date: boolean;
-  decorations: boolean;
-}
+import type { LogPresentation } from "./presentation";
+export type { LogPresentation } from "./presentation";
 
 /** Return whether traversal filters can omit commits between adjacent displayed rows. */
 export function historyFiltersCanHideIntermediateCommits(input: HistoryRuntime["input"]) {
@@ -90,6 +85,8 @@ export class LogController {
   private selectionGeneration = 0;
   private closed = false;
   private viewportBodyHeight = 1;
+  private viewportWidth = 80;
+  private viewportAnchorOffset: number | null = null;
   private noticeTimer: ReturnType<typeof setTimeout> | null = null;
   private startupNotices = new Set<string>();
   private snapshot: LogSnapshot;
@@ -115,6 +112,7 @@ export class LogController {
         author: true,
         date: true,
         decorations: true,
+        workspaceNames: runtime.initialViewPreferences.historyWorkspaceNames ?? true,
       },
     };
   }
@@ -185,6 +183,35 @@ export class LogController {
     }
   }
 
+  /** Plan the mounted viewport with its current responsive heights and optional reading anchor. */
+  planViewport(bodyHeight = this.viewportBodyHeight, width = this.viewportWidth) {
+    return planLogViewportGeometry({
+      rows: this.snapshot.rows,
+      selected: this.snapshot.selected,
+      requestedTop: this.snapshot.top,
+      bodyHeight,
+      width,
+      presentation: this.snapshot.presentation,
+      groupByDay: !this.snapshot.presentation.graph,
+      requestedSelectedRowOffset: this.viewportAnchorOffset,
+    });
+  }
+
+  /** Retain the closest feasible selected-title row when terminal dimensions change. */
+  setViewport(width: number, bodyHeight: number) {
+    const safeWidth = Math.max(1, width),
+      safeHeight = Math.max(1, bodyHeight);
+    if (safeWidth === this.viewportWidth && safeHeight === this.viewportBodyHeight) return;
+    this.viewportAnchorOffset = this.planViewport().selectedRowOffset;
+    this.viewportWidth = safeWidth;
+    this.clampViewport(safeHeight);
+  }
+
+  /** Supply the same width/presentation to every geometry and oversized-entry calculation. */
+  private entryDimensions() {
+    return { width: this.viewportWidth, presentation: this.snapshot.presentation };
+  }
+
   /** Keep the selected commit visible across grouped and graph viewport projections. */
   clampViewport(bodyHeight: number) {
     const safeHeight = Math.max(1, bodyHeight);
@@ -194,6 +221,8 @@ export class LogController {
       Math.min(Math.max(0, this.snapshot.rows.length - 1), this.snapshot.selected),
     );
     const geometry = planLogViewportGeometry({
+      ...this.entryDimensions(),
+      requestedSelectedRowOffset: this.viewportAnchorOffset,
       rows: this.snapshot.rows,
       selected,
       requestedTop: this.snapshot.top,
@@ -209,7 +238,11 @@ export class LogController {
           );
     const row = this.snapshot.rows[selected];
     const maximumScroll = row
-      ? Math.max(0, commitEntryHeight(row, !this.snapshot.presentation.graph) - safeHeight)
+      ? Math.max(
+          0,
+          commitEntryHeight(row, !this.snapshot.presentation.graph, this.entryDimensions()) -
+            safeHeight,
+        )
       : 0;
     const entryScroll = Math.min(this.snapshot.entryScroll, maximumScroll);
     if (
@@ -224,6 +257,7 @@ export class LogController {
   /** Select a target, optionally extending a contiguous range from the current focus. */
   select(index: number, viewportBodyHeight: number, { extend = false }: { extend?: boolean } = {}) {
     this.clearNotice();
+    this.viewportAnchorOffset = null;
     if (extend && historyFiltersCanHideIntermediateCommits(this.runtime.input)) {
       this.setNotice(
         "Multi-commit selection is unavailable when history traversal can hide or interleave commits.",
@@ -259,6 +293,7 @@ export class LogController {
       this.clampViewport(this.viewportBodyHeight);
       if (this.navigationTarget === target) this.navigationTarget = null;
       const visibleCount = planLogViewportGeometry({
+        ...this.entryDimensions(),
         rows: this.snapshot.rows,
         selected: this.snapshot.selected,
         requestedTop: this.snapshot.top,
@@ -354,7 +389,8 @@ export class LogController {
     if (!row) return false;
     const maximum = Math.max(
       0,
-      commitEntryHeight(row, !this.snapshot.presentation.graph) - Math.max(1, viewportBodyHeight),
+      commitEntryHeight(row, !this.snapshot.presentation.graph, this.entryDimensions()) -
+        Math.max(1, viewportBodyHeight),
     );
     const entryScroll = Math.max(0, Math.min(maximum, this.snapshot.entryScroll + delta));
     if (entryScroll === this.snapshot.entryScroll) return false;
@@ -376,6 +412,7 @@ export class LogController {
     )
       return Promise.resolve();
     const visibleCount = planLogViewportGeometry({
+      ...this.entryDimensions(),
       rows: this.snapshot.rows,
       selected: this.snapshot.selected,
       requestedTop: this.snapshot.top,
@@ -427,6 +464,7 @@ export class LogController {
 
   /** Resolve the submitted match only while its navigation request remains current. */
   findMatch(direction: 1 | -1, viewportHeight = this.viewportBodyHeight) {
+    this.viewportAnchorOffset = null;
     const needle = this.snapshot.search.toLocaleLowerCase();
     const requestGeneration = ++this.selectionGeneration;
     if (!needle) {
@@ -511,10 +549,11 @@ export class LogController {
   }
 
   togglePresentation(key: keyof LogPresentation) {
+    this.viewportAnchorOffset = this.planViewport().selectedRowOffset;
     this.publish({
       presentation: { ...this.snapshot.presentation, [key]: !this.snapshot.presentation[key] },
     });
-    if (key === "graph") this.clampViewport(this.viewportBodyHeight);
+    this.clampViewport(this.viewportBodyHeight);
   }
 
   /** Refresh the provider cursor while reconciling selection by immutable or logical identity. */
@@ -593,8 +632,16 @@ export class LogController {
         const selectionAnchor =
           anchor ?? (visualSelectionActive && !anchorIdentity ? selected : null);
         const bodyHeight = this.viewportBodyHeight;
-        const requestedTop = Math.max(0, selected - (current.selected - current.top));
+        const width = this.viewportWidth;
+        const previousTop = findHistoryRowIndex(rows, current.rows[current.top]?.commit);
+        const requestedTop =
+          previousTop >= 0
+            ? Math.min(selected, previousTop)
+            : Math.max(0, selected - (current.selected - current.top));
         const currentGeometry = planLogViewportGeometry({
+          width,
+          presentation: current.presentation,
+          requestedSelectedRowOffset: this.viewportAnchorOffset,
           rows: current.rows,
           selected: current.selected,
           requestedTop: current.top,
@@ -602,6 +649,8 @@ export class LogController {
           groupByDay: !current.presentation.graph,
         });
         const geometry = planLogViewportGeometry({
+          width,
+          presentation: current.presentation,
           rows,
           selected,
           requestedTop,
@@ -619,6 +668,7 @@ export class LogController {
         if (
           current !== this.snapshot ||
           bodyHeight !== this.viewportBodyHeight ||
+          width !== this.viewportWidth ||
           this.navigationPromise
         )
           continue;
@@ -631,6 +681,7 @@ export class LogController {
         this.checkpoint = checkpoint;
         this.loadingPromise = null;
         previousAbort.abort();
+        this.viewportAnchorOffset = currentGeometry.selectedRowOffset;
         this.publish({
           rows,
           selected,
@@ -643,7 +694,10 @@ export class LogController {
             rows[selected]
               ? Math.max(
                   0,
-                  commitEntryHeight(rows[selected]!, !current.presentation.graph) - bodyHeight,
+                  commitEntryHeight(rows[selected]!, !current.presentation.graph, {
+                    width,
+                    presentation: current.presentation,
+                  }) - bodyHeight,
                 )
               : 0,
           ),
