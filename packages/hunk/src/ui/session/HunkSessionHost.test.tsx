@@ -1018,3 +1018,186 @@ test("cancels stale preparation, retires its owned registry, and quits once", as
     await history.controller.close();
   }
 });
+
+/** Expose only operation entry for retained-inspection tests; no provider command runs here. */
+function enableSourceSelectionTestMutations(history: HistorySurfaceRoute) {
+  history.runtime.mutations = {
+    availability: async () => ({
+      kind: "supported",
+      kinds: ["squash", "rebase"],
+      providerVersion: "test",
+    }),
+    prepare: async () => {
+      throw new Error("Inspection unexpectedly prepared a mutation");
+    },
+    apply: async () => {
+      throw new Error("Inspection unexpectedly applied a mutation");
+    },
+    dispose: async () => {},
+  };
+  history.runtime.promptSaveViewPreferences = false;
+}
+
+test("operation inspection borrows singleton review and returns to the same marks, range and reading position", async () => {
+  const history = await createHistoryRoute(["Source A", "Inspect B", "Older C"]);
+  enableSourceSelectionTestMutations(history);
+  const planned: string[] = [];
+  const originalPlan = history.runtime.planReview;
+  history.runtime.planReview = async (commit, options, signal) => {
+    planned.push(commit.revisionId);
+    return originalPlan(commit, options, signal);
+  };
+  const quit = mock(() => undefined);
+  const stop = mock(() => undefined);
+  const setup = await testRender(
+    <HunkSessionHost
+      initialRoute={history}
+      initialization={history.runtime.initialization}
+      externalQuitSignal={new AbortController().signal}
+      onQuit={quit}
+      deps={{
+        prepareReview: (async () => {
+          const bootstrap = createTestVcsAppBootstrap({
+            changesetId: "inspect",
+            files: [createTestDiffFile({ id: "inspect.ts", path: "inspect.ts" })],
+          });
+          bootstrap.extensions = history.runtime.extensionSession.current;
+          return {
+            bootstrap,
+            initialization: history.runtime.initialization,
+            borrowsExtensions: true,
+          };
+        }) as never,
+        createReviewRuntime: (() => ({
+          hostClient: undefined,
+          reviewProducer: undefined,
+          stop,
+        })) as never,
+      }}
+    />,
+    { width: 100, height: 24 },
+  );
+  try {
+    await settle(setup);
+    await act(async () => setup.mockInput.pressKey("S"));
+    await settle(setup);
+    await act(async () => history.controller.select(1, 15, { extend: true }));
+    await settle(setup);
+    const before = history.controller.getSnapshot();
+    await act(async () => setup.mockInput.pressKey("I"));
+    await settle(setup);
+    expect(planned).toEqual(["revision-b"]);
+    expect(setup.captureCharFrame()).toContain("inspect.ts");
+    await act(async () => setup.mockInput.pressKey("q"));
+    await settle(setup);
+    const after = history.controller.getSnapshot();
+    expect(setup.captureCharFrame()).toContain("Choose squash sources");
+    expect(setup.captureCharFrame()).toContain("I Inspect");
+    expect(after.marks).toEqual(before.marks);
+    expect(after.selected).toBe(before.selected);
+    expect(after.selectionAnchor).toBe(before.selectionAnchor);
+    expect(after.entryScroll).toBe(before.entryScroll);
+    expect(after.top).toBe(before.top);
+    expect(quit).not.toHaveBeenCalled();
+    expect(stop).toHaveBeenCalledTimes(1);
+    await act(async () => setup.mockInput.pressKey(" "));
+    await settle(setup);
+    expect(history.controller.getSnapshot().marks).toHaveLength(2);
+  } finally {
+    await act(async () => setup.renderer.destroy());
+    await history.controller.close();
+  }
+});
+
+test("failed inspection preparation resumes editable source selection without clearing marks", async () => {
+  const history = await createHistoryRoute(["Source A", "Inspect B"]);
+  enableSourceSelectionTestMutations(history);
+  const setup = await testRender(
+    <HunkSessionHost
+      initialRoute={history}
+      initialization={history.runtime.initialization}
+      externalQuitSignal={new AbortController().signal}
+      onQuit={() => {}}
+      deps={{
+        prepareReview: (async () => {
+          throw new Error("Test inspection refused");
+        }) as never,
+      }}
+    />,
+    { width: 100, height: 24 },
+  );
+  try {
+    await settle(setup);
+    await act(async () => setup.mockInput.pressKey("S"));
+    await settle(setup);
+    await act(async () => setup.mockInput.pressArrow("down"));
+    await settle(setup);
+    await act(async () => setup.mockInput.pressKey("i"));
+    await settle(setup);
+    expect(setup.captureCharFrame()).toContain("Choose squash sources");
+    expect(history.controller.getSnapshot().marks).toHaveLength(1);
+    await act(async () => setup.mockInput.pressKey(" "));
+    await settle(setup);
+    expect(history.controller.getSnapshot().marks).toHaveLength(2);
+  } finally {
+    await act(async () => setup.renderer.destroy());
+    await history.controller.close();
+  }
+});
+
+test("raw interrupt during inspection planning yields to host cancellation and awaits planning before quit", async () => {
+  const history = await createHistoryRoute(["Source A", "Inspect B"]);
+  enableSourceSelectionTestMutations(history);
+  let resolvePlan!: (value: { kind: "revision-show"; revisionId: string }) => void;
+  const planning = new Promise<{ kind: "revision-show"; revisionId: string }>((resolve) => {
+    resolvePlan = resolve;
+  });
+  let planningSignal: AbortSignal | undefined;
+  history.runtime.planReview = async (_commit, _options, signal) => {
+    planningSignal = signal;
+    return planning;
+  };
+  let interruptClaim: (() => boolean) | undefined;
+  const quit = mock(() => undefined);
+  const prepareReview = mock(async () => {
+    throw new Error("Cancelled inspection reached preparation");
+  });
+  const abort = new AbortController();
+  const setup = await testRender(
+    <HunkSessionHost
+      initialRoute={history}
+      initialization={history.runtime.initialization}
+      externalQuitSignal={abort.signal}
+      onQuit={quit}
+      claimInterrupt={(claim) => {
+        interruptClaim = claim;
+        return () => {
+          interruptClaim = undefined;
+        };
+      }}
+      deps={{ prepareReview: prepareReview as never }}
+    />,
+    { width: 100, height: 24 },
+  );
+  try {
+    await settle(setup);
+    await act(async () => setup.mockInput.pressKey("S"));
+    await settle(setup);
+    await act(async () => setup.mockInput.pressKey("I"));
+    await settle(setup);
+    expect(planningSignal).toBeDefined();
+    expect(interruptClaim?.()).toBe(false);
+    await act(async () => abort.abort());
+    await settle(setup);
+    expect(planningSignal?.aborted).toBe(true);
+    expect(quit).not.toHaveBeenCalled();
+    resolvePlan({ kind: "revision-show", revisionId: "revision-a" });
+    await settle(setup);
+    expect(prepareReview).not.toHaveBeenCalled();
+    expect(quit).toHaveBeenCalledTimes(1);
+    expect(history.controller.getSnapshot().marks).toHaveLength(0);
+  } finally {
+    await act(async () => setup.renderer.destroy());
+    await history.controller.close();
+  }
+});

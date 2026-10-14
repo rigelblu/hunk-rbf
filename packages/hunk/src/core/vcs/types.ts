@@ -8,6 +8,7 @@ import type {
   ExtensionVcsHistoryRangeSelection,
   ExtensionVcsHistoryReviewAction,
   ExtensionVcsHistoryReviewOptions,
+  ExtensionVcsMutationCapability,
   ExtensionVcsWatchPlan,
 } from "../../extension-api/types";
 import type { DiffFile } from "../changeset/model";
@@ -119,6 +120,8 @@ export interface VcsAdapter {
   detect(cwd: string): VcsDetection | null;
   operations: VcsOperations;
   history?: VcsHistoryCapability;
+  /** Local history changes the provider can prepare and apply. Absent when it offers none. */
+  mutations?: ExtensionVcsMutationCapability;
   /** Detection order weight; higher is consulted first. See the public contract. */
   detectionPriority?: number;
 }

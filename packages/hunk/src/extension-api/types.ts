@@ -21,7 +21,7 @@
  * Extensions can branch on `hunk.apiVersion` so a newer Hunk can keep loading
  * older extensions without guessing at their expectations.
  */
-export const HUNK_EXTENSION_API_VERSION = 32;
+export const HUNK_EXTENSION_API_VERSION = 33;
 export type HunkExtensionApiVersion = typeof HUNK_EXTENSION_API_VERSION;
 
 export type ExtensionNotifyType = "info" | "warning" | "error";
@@ -835,6 +835,8 @@ export interface ExtensionVcsHistoryCommit {
    * never changes the semantic subject or body. Added in API 30.
    */
   isEmpty?: boolean;
+  /** The provider refuses to rewrite this revision. `undefined` when the provider does not say. Added in API 33. */
+  isImmutable?: boolean;
 }
 
 /** Provider-neutral history traversal accepted by `hunk log`, selected by flags and filters. */
@@ -1231,6 +1233,277 @@ export interface ExtensionVcsOperations {
   "stash-show"?: ExtensionVcsOperation<ExtensionVcsStashShowInput>;
 }
 
+/* -------------------------------------------------------------------------- */
+/* History mutations                                                           */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * A provider that can change local history offers `mutations` on its adapter.
+ * The host asks it to prepare a request, shows the user what would change, and
+ * applies it once after a final check. Every type here is JSON-safe except the
+ * execution handle the host passes to `apply`. Added in API 33.
+ */
+
+/** Kinds of history change a provider may offer. */
+export type ExtensionVcsMutationKind = "abandon" | "squash" | "rebase" | "split";
+
+/** Names one revision. `revisionId` is the exact version (a JJ commit id); `logicalId` survives rewrites (a JJ change id). */
+export interface ExtensionVcsMutationRevisionRef {
+  revisionId: string;
+  logicalId?: string;
+}
+
+/** A bookmark pointing at a revision. `remote` is absent for a local bookmark. */
+export interface ExtensionVcsMutationBookmark {
+  name: string;
+  remote?: string;
+}
+
+/** What the provider observed about one revision. */
+export interface ExtensionVcsMutationRevision extends ExtensionVcsMutationRevisionRef {
+  parents: ExtensionVcsMutationRevisionRef[];
+  /** The full raw description. */
+  description: string;
+  isEmpty: boolean;
+  hasConflict: boolean;
+  /** Its `logicalId` names more than one visible revision. */
+  isDivergent: boolean;
+  /** It is this workspace's working-copy revision. */
+  isWorkingCopy: boolean;
+  /** The provider refuses to rewrite it. True for the root. */
+  isImmutable: boolean;
+  isRoot: boolean;
+  bookmarks: ExtensionVcsMutationBookmark[];
+}
+
+/** Working-copy file changes the provider has not recorded yet. Read without moving the current operation. */
+export type ExtensionVcsMutationFileState =
+  | { kind: "clean" }
+  | { kind: "pending"; paths: string[] }
+  | { kind: "unknown"; reason: string };
+
+/** Everything observed before a mutation. */
+export interface ExtensionVcsMutationFacts {
+  /** The provider tool's version, for example "0.46.0". */
+  providerVersion: string;
+  /** The current operation when the facts were read. */
+  operationId: string;
+  /** One entry per revision the request names, in the order the kind declares. */
+  revisions: ExtensionVcsMutationRevision[];
+  files: ExtensionVcsMutationFileState;
+}
+
+/** One operation the provider recorded. */
+export interface ExtensionVcsMutationOperation {
+  operationId: string;
+  description: string;
+  /** It only recorded working-copy file changes. */
+  isSnapshot: boolean;
+  /** This command wrote it. False for an operation another writer recorded in the same span. */
+  isOwn: boolean;
+}
+
+/** One change id's versions before and after. */
+export interface ExtensionVcsMutationRevisionChange {
+  logicalId?: string;
+  /** Visible versions before. Empty for a revision that was created. */
+  before: ExtensionVcsMutationRevision[];
+  /** Visible versions after. Empty when the revision left. More than one means it is now divergent. */
+  after: ExtensionVcsMutationRevision[];
+}
+
+/** One bookmark's targets before and after. */
+export interface ExtensionVcsMutationBookmarkChange {
+  name: string;
+  remote?: string;
+  before: ExtensionVcsMutationRevisionRef[];
+  after: ExtensionVcsMutationRevisionRef[];
+  isConflicted: boolean;
+  /** It only followed its revision through a rewrite: the change id it points at is the same. Not a move. */
+  followsRevision: boolean;
+}
+
+/** What a dry run would change, or what a real run did change. The same shape for both. */
+export interface ExtensionVcsMutationChange {
+  /** Oldest first. Empty means nothing changed. A snapshot can come before the mutation's own operation. */
+  operations: ExtensionVcsMutationOperation[];
+  revisions: ExtensionVcsMutationRevisionChange[];
+  bookmarks: ExtensionVcsMutationBookmarkChange[];
+}
+
+/** What the user asks for. Revisions are the ones Hunk's history showed. */
+export type ExtensionVcsMutationRequest =
+  | {
+      kind: "abandon";
+      sources: readonly [ExtensionVcsMutationRevisionRef, ...ExtensionVcsMutationRevisionRef[]];
+    }
+  | {
+      kind: "squash";
+      sources: readonly [ExtensionVcsMutationRevisionRef, ...ExtensionVcsMutationRevisionRef[]];
+      destination: ExtensionVcsMutationRevisionRef;
+    }
+  | {
+      kind: "rebase";
+      sources: readonly [ExtensionVcsMutationRevisionRef, ...ExtensionVcsMutationRevisionRef[]];
+      destination: ExtensionVcsMutationRevisionRef;
+      placement: "onto" | "before" | "after";
+      skipEmptied: boolean;
+    }
+  | { kind: "split"; source: ExtensionVcsMutationRevisionRef };
+
+/** A revision the kind wants called out. `label` is the text the user reads: "Source", "Destination", "First part". */
+export interface ExtensionVcsMutationNamedRevision {
+  label: string;
+  revision: ExtensionVcsMutationRevisionRef;
+}
+
+/** The kind's words for the confirm step. Untrusted text; the host sanitizes it. */
+export interface ExtensionVcsMutationProjection {
+  /** One sentence naming what Apply will do. */
+  headline: string;
+  notes: string[];
+  /** What the user must read before Apply: conflicts created, a bookmark Git cannot hold, and so on. */
+  warnings: string[];
+  named: ExtensionVcsMutationNamedRevision[];
+}
+
+/** The kind's judgement of what was read back after the run. */
+export interface ExtensionVcsMutationVerdict {
+  /**
+   * completed: it did what was confirmed. no-op: nothing changed. failed: the command did not do it
+   * (effects may still exist, see the change). unexpected: the kind does not recognise the outcome.
+   */
+  outcome: "completed" | "no-op" | "failed" | "unexpected";
+  headline: string;
+  notes: string[];
+  /** What the user must read about a finished run: conflicts created, revisions emptied, a change left divergent. */
+  warnings: string[];
+  named: ExtensionVcsMutationNamedRevision[];
+  /** The revision the history view should select after its refresh. Absent: the existing refresh rule applies. */
+  selectAfter?: ExtensionVcsMutationRevisionRef;
+}
+
+/** A prepared mutation, shown to the user before Apply. */
+export interface ExtensionVcsMutationPrepared {
+  /** Valid for one apply, in this provider session only. */
+  handleId: string;
+  request: ExtensionVcsMutationRequest;
+  facts: ExtensionVcsMutationFacts;
+  /** What a dry run would change. Absent for a plan previewed from facts only. */
+  preview?: ExtensionVcsMutationChange;
+  /** The dry run's own text, shown under Details. Untrusted. */
+  previewText?: string;
+  projection: ExtensionVcsMutationProjection;
+  /** The composed description, for a kind that writes one. An empty string means "no description". */
+  description?: string;
+  /** Apply hands the terminal to the provider's command. */
+  isInteractive: boolean;
+}
+
+export type ExtensionVcsMutationPreparation =
+  | { kind: "ready"; prepared: ExtensionVcsMutationPrepared }
+  /**
+   * `providerText` is the provider tool's own message, for example jj's `Error:` and `Hint:` lines.
+   * `isWorkingCopyStale` is set when the working copy is behind the repository; the host words that case itself.
+   */
+  | {
+      kind: "refused";
+      reason: string;
+      providerText?: string;
+      isWorkingCopyStale?: boolean;
+      facts?: ExtensionVcsMutationFacts;
+    }
+  | { kind: "cancelled" };
+
+/** The command the host runs for Apply. */
+export interface ExtensionVcsMutationInvocation {
+  executable: string;
+  args: string[];
+  cwd: string;
+  /** captured: Hunk keeps the terminal. handed-over: the command and its editors own it until they exit. */
+  terminal: "captured" | "handed-over";
+}
+
+/** How the command ended. */
+export interface ExtensionVcsMutationProcessOutcome {
+  /** False when the command could not be started. */
+  started: boolean;
+  exitCode: number | null;
+  signal: string | null;
+  /** Hunk asked it to stop. */
+  wasInterrupted: boolean;
+  terminal: "captured" | "handed-over";
+  /** False when Hunk could not take the terminal back cleanly. */
+  terminalRestored: boolean;
+  /** The command's own diagnostic text. Untrusted. */
+  text: string;
+}
+
+/** What the host gives the provider for one Apply. */
+export interface ExtensionVcsMutationExecution {
+  signal: AbortSignal;
+  /** Runs the mutation command. The host allows one call per Apply. */
+  run(invocation: ExtensionVcsMutationInvocation): Promise<ExtensionVcsMutationProcessOutcome>;
+}
+
+/** Where a named revision stands at the final check. */
+export type ExtensionVcsMutationRevisionState =
+  | "current"
+  | "snapshot-only"
+  | "rewritten"
+  | "hidden"
+  | "gone";
+
+export type ExtensionVcsMutationResult =
+  /** stale-handle: the handle is unknown, already used or disposed. */
+  | { kind: "not-run"; reason: "cancelled" | "stale-handle" }
+  /** The command could not be started. Nothing ran. */
+  | { kind: "not-run"; reason: "start-failed"; text: string }
+  /** The final check found a different preview. `refreshed` is the new preparation, for the flow to show. */
+  | {
+      kind: "not-run";
+      reason: "changed";
+      detail: string;
+      revisions: {
+        revision: ExtensionVcsMutationRevisionRef;
+        state: ExtensionVcsMutationRevisionState;
+      }[];
+      refreshed: ExtensionVcsMutationPreparation;
+    }
+  | {
+      kind: "ran";
+      process: ExtensionVcsMutationProcessOutcome;
+      /** What was read back, or why it could not be read. */
+      change:
+        | { kind: "read"; value: ExtensionVcsMutationChange }
+        | { kind: "unread"; reason: string };
+      verdict: ExtensionVcsMutationVerdict;
+      /** After the run the working copy is behind the repository. The host words what that means. */
+      isWorkingCopyStale: boolean;
+    };
+
+/** Local history changes a provider can prepare and apply. Optional on an adapter. */
+export interface ExtensionVcsMutationCapability {
+  availability(
+    context: ExtensionVcsLoadContext,
+  ): Promise<
+    | { kind: "supported"; kinds: ExtensionVcsMutationKind[]; providerVersion: string }
+    | { kind: "unsupported"; reason: string }
+  >;
+  /** Reads facts, plans, previews. Moves nothing the user can see. */
+  prepare(
+    request: ExtensionVcsMutationRequest,
+    context: ExtensionVcsLoadContext,
+  ): Promise<ExtensionVcsMutationPreparation>;
+  /** Final check, one run, read-back, verdict. */
+  apply(
+    handleId: string,
+    execution: ExtensionVcsMutationExecution,
+    context: ExtensionVcsLoadContext,
+  ): Promise<ExtensionVcsMutationResult>;
+  dispose(handleId: string): void | Promise<void>;
+}
+
 /**
  * An additional VCS backend contributed by an extension.
  *
@@ -1245,6 +1518,8 @@ export interface ExtensionVcsAdapter {
   operations?: ExtensionVcsOperations;
   /** Optional static/interactive history enumeration capability. */
   history?: ExtensionVcsHistoryCapability;
+  /** Optional local history changes: abandon, squash, rebase, split. Added in API 33. */
+  mutations?: ExtensionVcsMutationCapability;
   /**
    * Where this adapter sits in detection order; higher is consulted first.
    *

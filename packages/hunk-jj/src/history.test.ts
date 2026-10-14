@@ -150,6 +150,7 @@ describe("Jujutsu history production", () => {
       "",
       "false",
       "",
+      "false",
     ];
     for (const encoded of ['"unterminated', "false", "{}", "[]"]) {
       fields[14] = encoded;
@@ -328,6 +329,7 @@ describe("Jujutsu history production", () => {
       "v1.0.0@origin",
       "false",
       "",
+      "false",
     ].join("\0");
     expect(parseJjHistory(raw)).toEqual([
       {
@@ -349,6 +351,7 @@ describe("Jujutsu history production", () => {
           { kind: "tag", label: "v1.0.0@origin" },
         ],
         isEmpty: false,
+        isImmutable: false,
       },
     ]);
   });
@@ -375,6 +378,7 @@ describe("Jujutsu history production", () => {
       "",
       "true",
       "",
+      "false",
     ].join("\0");
     const parsed = parseJjHistory(raw, false, true)[0]!;
     expect(parsed.parentRevisionIds).toEqual(["b".repeat(40)]);
@@ -399,6 +403,7 @@ describe("Jujutsu history production", () => {
       "",
       "false",
       "",
+      "false",
     ].join("\0");
     const parsed = parseJjHistory(raw, true)[0]!;
     expect(parsed.parentRevisionIds).toEqual(["b".repeat(40)]);
@@ -423,10 +428,17 @@ describe("Jujutsu history production", () => {
         "",
         emptyValue,
         "",
+        "false",
       ].join("\0");
 
     expect(parseJjHistory(makeRaw("true"))[0]!.isEmpty).toBe(true);
     expect(parseJjHistory(makeRaw("false"))[0]!.isEmpty).toBe(false);
+    expect(parseJjHistory(makeRaw("false"))[0]!.isImmutable).toBe(false);
+    const immutableRaw = makeRaw("false").replace(/false$/, "true");
+    expect(parseJjHistory(immutableRaw)[0]!.isImmutable).toBe(true);
+    expect(() => parseJjHistory(makeRaw("false").replace(/false$/, "1"))).toThrow(
+      "Jujutsu returned an invalid history record.",
+    );
 
     for (const invalid of ["1", "0", "True", "False", "", "null", "undefined"]) {
       expect(() => parseJjHistory(makeRaw(invalid))).toThrow(
@@ -480,13 +492,13 @@ printf '%s\\0%s\\0%s\\0%s\\0' "Ada" "" "2026-01-01T00:00:00+00:00" "First split"
 printf '%s\\0%s\\0%s\\0%s\\0%s\\0' "0" "" "" "" ""
 printf 'tr'
 sleep 0.02
-printf 'ue\\0\\0'
+printf 'ue\\0\\0false\\0'
 printf '%s\\0%s\\0%s\\0%s\\0' "${"b".repeat(40)}" "bbbbbbbb" "${"k".repeat(32)}" "${"a".repeat(40)}"
 printf '%s\\0%s\\0%s\\0%s\\0' "Ada" "" "2026-01-02T00:00:00+00:00" "Second split"
 printf '%s\\0%s\\0%s\\0%s\\0%s\\0' "0" "" "" "" ""
 printf 'fal'
 sleep 0.02
-printf 'se\\0\\0'
+printf 'se\\0\\0true\\0'
 `;
     writeFileSync(executable, script);
     chmodSync(executable, 0o755);
@@ -500,6 +512,7 @@ printf 'se\\0\\0'
     expect(page.commits[0]!.subject).toBe("First split");
     expect(page.commits[1]!.isEmpty).toBe(false);
     expect(page.commits[1]!.subject).toBe("Second split");
+    expect(page.commits.map((commit) => commit.isImmutable)).toEqual([false, true]);
   });
 
   test("owns default and explicitly selected parent review semantics", async () => {

@@ -10,11 +10,12 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 
 ## 🟠⋯ Added for End Users
 
-- 2026-10-11 - feat (ux) | mark separate history revisions with x, checkboxes, or Ctrl-click; preserve marks independently from highlighted and range review, and recover unresolved marks after refresh (#hk-27)
+- 2026-10-14 - feat (ux) | select exact revisions with Space or checkmarks after choosing Squash or Rebase, inspect the highlighted diff with I, and preview one-source operations before Apply (#hk-27)
 - 2026-10-12 - feat (ux) | edit the complete active JJ revset in `hunk log` with `L`, reuse earlier revsets from this session, and restore launch policy with Reset; completion is not available yet (#hk-19)
 
 ## 🟠⋯ Added for Technical Users
 
+- 2026-10-14 - feat (technical) | let opted-in history providers prepare, confirm and report mutation results through extension API 33, with JJ Squash and Rebase using the shared runtime (#hk-27)
 - 2026-10-12 - feat (technical) | let a history provider opt in to complete expression input and report the exact query text through extension API 32; providers without `acceptsExpression` keep today's behavior (#hk-19)
 
 ## 🟠⋯ Fixed for End Users

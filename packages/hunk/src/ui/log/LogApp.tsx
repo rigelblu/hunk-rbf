@@ -1,4 +1,4 @@
-import type { KeyEvent, MouseEvent as TuiMouseEvent } from "@opentui/core";
+import { MouseButton, type KeyEvent, type MouseEvent as TuiMouseEvent } from "@opentui/core";
 import {
   flushSync,
   useKeyboard,
@@ -81,14 +81,20 @@ import {
   type EditorActionId,
   type RevsetEditorState,
 } from "./revsetEditor";
+import {
+  HistoryMutationFlowController,
+  type HistoryInspectionToken,
+} from "./HistoryMutationFlowController";
+import type { HistoryMutationModalFrame } from "./mutationFlow";
+import { RevisionSourceMark } from "./RevisionSourcePanel";
 import { historyScopeText } from "../history/staticProjection";
 
 /** Cells for the focus `>` and review-range `|` markers at the start of every revision row. */
 const LOG_FOCUS_CELLS_WIDTH = 2;
-/** Cells for the `[x] ` mark checkbox, between the focus cells and the graph. */
-const LOG_MARK_CHECKBOX_WIDTH = 4;
+/** Cells for operation membership, between the focus cells and graph. */
+const LOG_REVISION_MARK_WIDTH = 4;
 /** Cells every revision row spends before its graph; lines drawn under the graph skip them too. */
-const LOG_MARK_COLUMN_WIDTH = LOG_FOCUS_CELLS_WIDTH + LOG_MARK_CHECKBOX_WIDTH;
+const LOG_MARK_COLUMN_WIDTH = LOG_FOCUS_CELLS_WIDTH + LOG_REVISION_MARK_WIDTH;
 
 /** Render graph cells with stable semantic colors from the active Hunk theme. */
 function HistoryGraphLine({ text, colors }: { text: string; colors: readonly string[] }) {
@@ -112,6 +118,7 @@ export type LogAppOutcome =
       commits: readonly ExtensionVcsHistoryCommit[];
       count: number;
       parentRevisionId?: string;
+      inspectionToken?: HistoryInspectionToken;
     };
 
 /** Render the bounded history list inside Hunk's shared desktop chrome. */
@@ -129,8 +136,10 @@ export function LogApp({
   quitScheduler,
   previousInputs,
   claimInterrupt,
+  mutationFlow,
 }: {
   controller: LogController;
+  mutationFlow?: HistoryMutationFlowController;
   runtime: InteractiveHistoryRuntime;
   onOutcome: (outcome: LogAppOutcome) => void | Promise<void>;
   /** Latest review preferences retained by the routed interactive session. */
@@ -148,6 +157,17 @@ export function LogApp({
   claimInterrupt?: (claim: () => boolean) => () => void;
 }) {
   const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
+  const [localMutationFlow] = useState(
+    () => mutationFlow ?? new HistoryMutationFlowController(controller, runtime.mutations),
+  );
+  const operations = mutationFlow ?? localMutationFlow;
+  const operation = useSyncExternalStore(operations.subscribe, operations.getSnapshot);
+  useEffect(() => {
+    if (!mutationFlow)
+      return () => {
+        void operations.shutdown();
+      };
+  }, [mutationFlow, operations]);
   const terminal = useTerminalDimensions();
   const renderer = useRenderer();
   const [showHelp, setShowHelp] = useState(false);
@@ -196,9 +216,32 @@ export function LogApp({
     scopeText && !queryView.replacesScopeLine
       ? wrapText(scopeText, Math.max(1, terminal.width - 2))
       : [];
+  const operationFrame = (): HistoryMutationModalFrame => {
+    const visit = operations.getSnapshot().visit;
+    return {
+      theme,
+      terminalWidth: renderer.width,
+      terminalHeight: renderer.height,
+      highlighted: controller.getSelectedRow()?.commit ?? null,
+      inspectHighlighted: () => {
+        void requestInspectHighlighted(visit);
+      },
+      reviewMarks: () => {
+        if (operations.getSnapshot().visit === visit) setMarksDialogIndex(0);
+      },
+    };
+  };
+  const operationDocked = operation.modal?.presentation === "docked" && !operation.suspended;
+  const replacesStatus =
+    operationDocked && operation.phase !== "destination" && !statusLineState.prompt;
+  const operationRows = operationDocked ? (operation.modal?.rows?.(operationFrame()) ?? 0) : 0;
   const responsiveLayout = resolveLogResponsiveLayout(
     terminal.width,
-    terminal.height - scopeLines.length - historyQueryViewRows(queryView),
+    terminal.height -
+      scopeLines.length -
+      historyQueryViewRows(queryView) -
+      operationRows +
+      (replacesStatus ? 1 : 0),
   );
   const viewportBodyHeight = responsiveLayout.bodyHeight;
   const currentViewPreferences = useMemo(
@@ -255,13 +298,21 @@ export function LogApp({
       setTransientNotice("Clipboard is unavailable in this terminal.");
     }
   };
-  const openSelected = async (parentRevisionId?: string, pending = false) => {
+  const openSelected = async (
+    parentRevisionId?: string,
+    pending = false,
+    inspectionToken?: HistoryInspectionToken,
+  ) => {
     if (reviewPending.current && !pending) return;
     reviewPending.current = true;
     interactionActive.current = true;
     reviewQuitEnabled.current = false;
     await controller.settleNavigation();
-    const currentSelection = controller.getSelection();
+    const highlighted = controller.getSelectedRow();
+    const currentSelection =
+      inspectionToken && highlighted
+        ? { newest: highlighted, oldest: highlighted, focus: highlighted, count: 1 }
+        : controller.getSelection();
     if (!currentSelection) {
       reviewPending.current = false;
       return;
@@ -282,7 +333,10 @@ export function LogApp({
           newestCommit: currentSelection.newest.commit,
           oldestCommit: currentSelection.oldest.commit,
         },
-        commits: controller.getSelectedRows(8).map((row) => row.commit),
+        commits: inspectionToken
+          ? [currentSelection.focus.commit]
+          : controller.getSelectedRows(8).map((row) => row.commit),
+        ...(inspectionToken ? { inspectionToken } : {}),
         count: currentSelection.count,
         ...(parentRevisionId === undefined ? {} : { parentRevisionId }),
       });
@@ -349,6 +403,17 @@ export function LogApp({
     }
     await openSelected(undefined, true);
   };
+  /** Inspect only the highlight, retaining any unrelated review range and operation sources. */
+  const requestInspectHighlighted = async (expectedVisit: symbol | null) => {
+    if (reviewPending.current || !expectedVisit) return;
+    operations.inspectSource(expectedVisit, async (token) => {
+      if (!controller.getSelectedRow()) {
+        operations.finishInspection(token);
+        return;
+      }
+      await openSelected(undefined, false, token);
+    });
+  };
   // The revset editor. Its state lives here while it is open; applying goes through the controller.
   const queryGeneration = snapshot.query?.generation ?? 0;
   const watchedQueryGeneration = useRef(queryGeneration);
@@ -404,11 +469,18 @@ export function LogApp({
   useEffect(
     () =>
       claimInterrupt?.(() => {
+        if (reviewPending.current) return false;
+        const currentOperation = operations.getSnapshot();
+        if (currentOperation.modal) {
+          if (currentOperation.visit) void operations.cancelVisit(currentOperation.visit);
+          else operations.closeResult();
+          return true;
+        }
         if (!editorRef.current) return false;
         cancelEditorRef.current();
         return true;
       }),
-    [claimInterrupt],
+    [claimInterrupt, operations],
   );
   /** Read current bounds for input events that precede React's resize commit. */
   const planEditorForInput = (state: RevsetEditorState) =>
@@ -570,16 +642,25 @@ export function LogApp({
       });
     },
     "hunk.history.startVisualSelection": () => controller.beginVisualSelection(),
-    "hunk.history.toggleMark": () => controller.toggleMark(),
-    "hunk.history.reviewMarks": () => setMarksDialogIndex(0),
+    "hunk.history.squash": () => {
+      void operations.beginSources("squash");
+    },
+    "hunk.history.rebase": () => {
+      void operations.beginSources("rebase");
+    },
+    "hunk.history.operationResult": () => operations.openResult(),
     "hunk.history.clearSelection": () => void controller.clearSelection(),
     "hunk.history.previousCommit": () =>
       void controller.move(-1, viewportBodyHeight, {
-        extend: controller.getSnapshot().visualSelectionActive,
+        extend:
+          (!operations.getSnapshot().visit || operations.getSnapshot().phase === "sources") &&
+          controller.getSnapshot().visualSelectionActive,
       }),
     "hunk.history.nextCommit": () =>
       void controller.move(1, viewportBodyHeight, {
-        extend: controller.getSnapshot().visualSelectionActive,
+        extend:
+          (!operations.getSnapshot().visit || operations.getSnapshot().phase === "sources") &&
+          controller.getSnapshot().visualSelectionActive,
       }),
     "hunk.history.extendPrevious": () =>
       void controller.move(-1, viewportBodyHeight, { extend: true }),
@@ -603,6 +684,7 @@ export function LogApp({
   };
   const commands = buildHistoryCommands({
     getSnapshot: controller.getSnapshot,
+    getOperation: operations.getSnapshot,
     handlers: commandHandlers,
     resolvedKeys: historyKeymap.keys,
   });
@@ -645,6 +727,7 @@ export function LogApp({
       commandItem("hunk.history.openSelection"),
       commandItem("hunk.history.copyRevision"),
       commandItem("hunk.history.refresh"),
+      commandItem("hunk.history.operationResult"),
       {
         kind: "item",
         label: `Auto-refresh history: ${autoRefreshEnabled ? "on" : "off"}`,
@@ -674,8 +757,6 @@ export function LogApp({
     navigate: [
       commandItem("hunk.history.previousCommit"),
       commandItem("hunk.history.nextCommit"),
-      commandItem("hunk.history.toggleMark"),
-      commandItem("hunk.history.reviewMarks"),
       commandItem("hunk.history.startVisualSelection"),
       commandItem("hunk.history.clearSelection"),
       commandItem("hunk.history.extendPrevious"),
@@ -692,6 +773,9 @@ export function LogApp({
       commandItem("hunk.history.previousMatch"),
     ],
     commit: [
+      commandItem("hunk.history.squash"),
+      commandItem("hunk.history.rebase"),
+      { kind: "separator" },
       commandItem("hunk.history.openSelection"),
       commandItem("hunk.history.copyRevision"),
       { kind: "separator" },
@@ -703,6 +787,7 @@ export function LogApp({
   const menu = useMenuController(menus);
 
   const activeInteraction = Boolean(
+    operation.visit ||
     editor ||
     menu.activeMenuId ||
     statusLineState.prompt ||
@@ -891,6 +976,11 @@ export function LogApp({
       consume();
       return;
     }
+    if (operation.modal?.presentation === "overlay") {
+      operation.modal.handleKey(key, operationFrame());
+      consume();
+      return;
+    }
     if (editorRef.current) {
       // The open editor owns every key; typing it does not handle goes to the focused field.
       if (handleEditorKey(key)) consume();
@@ -976,6 +1066,11 @@ export function LogApp({
       consume();
       return;
     }
+    const activeModal = operations.getSnapshot().modal;
+    if (activeModal && activeModal.handleKey(key, operationFrame())) {
+      consume();
+      return;
+    }
     const command = dispatchAppCommand(commands, key);
     if (!command) return;
     consume();
@@ -1003,7 +1098,6 @@ export function LogApp({
     statusText,
     terminal.width,
   );
-  const unresolvedMarks = snapshot.marks.filter((entry) => entry.kind === "unresolved").length;
   const statusItems: StatusItem[] = [
     { id: "log:status", spans: [{ text: statusText, tone: "muted" }], priority: 1 },
   ];
@@ -1019,34 +1113,7 @@ export function LogApp({
       priority: 2,
     });
   }
-  if (snapshot.marks.length > 0) {
-    const detail =
-      snapshot.markStatus === "checking"
-        ? " · Checking marks…"
-        : snapshot.markStatus === "refresh-failed"
-          ? ""
-          : unresolvedMarks
-            ? ` · ${unresolvedMarks} unresolved`
-            : "";
-    statusItems.push({
-      id: "log:marks",
-      spans: [
-        {
-          text:
-            snapshot.markStatus === "refresh-failed"
-              ? `${snapshot.marks.length} marked · Marks could not be checked. Refresh history or clear selection.`
-              : `${snapshot.marks.length} marked${detail} · Review marks`,
-          tone: "muted",
-        },
-      ],
-      priority: 3,
-    });
-  }
-  if (
-    snapshot.marks.length ||
-    snapshot.selectionAnchor !== null ||
-    snapshot.visualSelectionActive
-  ) {
+  if (snapshot.selectionAnchor !== null || snapshot.visualSelectionActive) {
     statusItems.push({
       id: "log:clear",
       spans: [{ text: "Clear selection", tone: "muted" }],
@@ -1163,6 +1230,10 @@ export function LogApp({
               width: terminal.width - 4,
               now: relativeTimeNow,
             });
+            const operationMark =
+              operation.phase === "destination"
+                ? operation.modal?.rowMark?.(row.commit, operationFrame())
+                : null;
             const titlePalette = resolveHistoryTitlePalette(
               theme,
               selected ? theme.selectedHunk : theme.background,
@@ -1237,12 +1308,24 @@ export function LogApp({
                     }}
                     onMouseUp={(event: TuiMouseEvent) => {
                       clearTransientNotice();
+                      if (
+                        event.button !== MouseButton.LEFT ||
+                        operation.modal?.presentation === "overlay"
+                      )
+                        return;
                       if (event.modifiers.ctrl) {
                         lastClick.current = { index: -1, at: 0 };
-                        controller.toggleMark(index);
+                        const visit = operation.visit;
+                        if (visit && operations.getSnapshot().phase === "sources")
+                          operations.toggleSource(visit, row.commit.revisionId);
                         return;
                       }
                       if (event.modifiers.shift) {
+                        if (
+                          operations.getSnapshot().visit &&
+                          operations.getSnapshot().phase !== "sources"
+                        )
+                          return;
                         lastClick.current = { index: -1, at: 0 };
                         void controller.select(index, viewportBodyHeight, { extend: true });
                         return;
@@ -1251,7 +1334,7 @@ export function LogApp({
                       const shouldOpen =
                         lastClick.current.index === index && now - lastClick.current.at < 400;
                       void controller.select(index, viewportBodyHeight).then(() => {
-                        if (shouldOpen) void openSelected();
+                        if (shouldOpen && !operations.getSnapshot().visit) void openSelected();
                       });
                       lastClick.current = { index, at: now };
                     }}
@@ -1267,28 +1350,25 @@ export function LogApp({
                         fg={theme.accent}
                       >{`${index === snapshot.selected ? ">" : " "}${selected && (snapshot.selectionAnchor !== null || snapshot.visualSelectionActive) ? "|" : " "}`}</text>
                     </box>
-                    <box
-                      style={{
-                        width: LOG_MARK_CHECKBOX_WIDTH,
-                        height: responsiveLayout.rowHeight,
-                        flexShrink: 0,
-                      }}
-                      onMouseUp={(event: TuiMouseEvent) => {
-                        event.stopPropagation();
-                        menu.closeMenu();
+                    <RevisionSourceMark
+                      selected={operations.indicator(row.commit.revisionId) === "✓"}
+                      editable={
+                        operation.phase === "sources" &&
+                        !operation.suspended &&
+                        !menu.activeMenuId &&
+                        marksDialogIndex === null &&
+                        !statusLineState.prompt
+                      }
+                      height={responsiveLayout.rowHeight}
+                      theme={theme}
+                      onMouseGesture={() => {
                         lastClick.current = { index: -1, at: 0 };
-                        controller.toggleMark(index);
                       }}
-                    >
-                      <text fg={theme.accent}>
-                        {snapshot.marks.some(
-                          (entry) =>
-                            entry.kind === "resolved" && entry.revisionId === row.commit.revisionId,
-                        )
-                          ? "[x] "
-                          : "[ ] "}
-                      </text>
-                    </box>
+                      onToggle={() => {
+                        const visit = operation.visit;
+                        if (visit) operations.toggleSource(visit, row.commit.revisionId);
+                      }}
+                    />
                     {projected.graphWidth ? (
                       <box
                         style={{
@@ -1335,13 +1415,21 @@ export function LogApp({
                           }}
                           onMouseUp={(event: TuiMouseEvent) => {
                             event.stopPropagation();
+                            if (event.button !== MouseButton.LEFT) return;
                             clearTransientNotice();
                             if (event.modifiers.ctrl) {
                               lastClick.current = { index: -1, at: 0 };
-                              controller.toggleMark(index);
+                              const visit = operation.visit;
+                              if (visit && operations.getSnapshot().phase === "sources")
+                                operations.toggleSource(visit, row.commit.revisionId);
                               return;
                             }
                             if (event.modifiers.shift) {
+                              if (
+                                operations.getSnapshot().visit &&
+                                operations.getSnapshot().phase !== "sources"
+                              )
+                                return;
                               lastClick.current = { index: -1, at: 0 };
                               void controller.select(index, viewportBodyHeight, { extend: true });
                               return;
@@ -1356,7 +1444,7 @@ export function LogApp({
                               measureTextWidth(projected.copyIcon);
                             void controller.select(index, viewportBodyHeight).then(() => {
                               if (event.x >= copyIconStart) copySelected(row);
-                              else void openSelected();
+                              else if (!operations.getSnapshot().visit) void openSelected();
                             });
                           }}
                         >
@@ -1367,15 +1455,23 @@ export function LogApp({
                             copyIcon={projected.copyIcon}
                             onRevisionClick={() => {
                               clearTransientNotice();
-                              void controller
-                                .select(index, viewportBodyHeight)
-                                .then(() => openSelected());
+                              void controller.select(index, viewportBodyHeight).then(() => {
+                                if (!operations.getSnapshot().visit) void openSelected();
+                              });
                             }}
+                            primaryMouseOnly
                             onMarkClick={() => {
                               lastClick.current = { index: -1, at: 0 };
-                              controller.toggleMark(index);
+                              const visit = operation.visit;
+                              if (visit && operations.getSnapshot().phase === "sources")
+                                operations.toggleSource(visit, row.commit.revisionId);
                             }}
                             onShiftClick={() => {
+                              if (
+                                operations.getSnapshot().visit &&
+                                operations.getSnapshot().phase !== "sources"
+                              )
+                                return;
                               clearTransientNotice();
                               lastClick.current = { index: -1, at: 0 };
                               void controller.select(index, viewportBodyHeight, { extend: true });
@@ -1389,47 +1485,21 @@ export function LogApp({
                           />
                         </box>
                       </box>
-                      <box style={{ width: projected.textWidth, height: 1, flexDirection: "row" }}>
-                        <box style={{ width: projected.metadataWidth, height: 1 }}>
-                          <CommitMetadataText
-                            author={projected.author}
-                            relativeTime={projected.relativeTime}
-                            authorColor={logPalette.author}
-                            separatorColor={logPalette.separator}
-                            relativeTimeColor={logPalette.relativeTime}
-                          />
-                        </box>
-                        {projected.metadataGap ? (
-                          <box style={{ width: projected.metadataGap }} />
-                        ) : null}
-                        {projected.inlineRefLine ? (
-                          <text
-                            style={{ width: measureTextWidth(projected.inlineRefLine), height: 1 }}
-                            fg={logPalette.decoration}
-                          >
-                            {projected.inlineRefLine}
-                          </text>
-                        ) : null}
-                        {projected.summaryGap ? (
-                          <box style={{ width: projected.summaryGap }} />
-                        ) : null}
-                        {projected.secondary ? (
-                          <box
-                            style={{ width: projected.secondaryWidth, height: 1 }}
-                            onMouseUp={handleRevisionMouseUp}
-                          >
-                            <text fg={logPalette.decoration}>{projected.secondary}</text>
-                          </box>
-                        ) : null}
-                      </box>
-                      {projected.textRowCount === 3 ? (
-                        <text
-                          style={{ width: projected.textWidth, height: 1 }}
-                          fg={logPalette.decoration}
-                        >
-                          {projected.refLine || " "}
-                        </text>
-                      ) : null}
+                      <text
+                        style={{ width: projected.textWidth, height: 1 }}
+                        fg={operationMark?.muted ? theme.muted : logPalette.decoration}
+                      >
+                        {fitText(
+                          [
+                            projected.refLine,
+                            ...(operationMark?.tags.map((tag) => `[${tag}]`) ?? []),
+                          ]
+                            .filter(Boolean)
+                            .join(" ") || " ",
+                          projected.textWidth,
+                          "…",
+                        )}
+                      </text>
                     </box>
                   </box>
                   {/* Cutoff markers are not revisions: they carry no checkbox and continue the
@@ -1488,24 +1558,49 @@ export function LogApp({
           ))}
         </box>
       ) : null}
-      <StatusLine
-        badge={null}
-        snapshot={{
-          items: [...statusItems, ...statusLineState.items],
-          prompt: statusLineState.prompt,
-        }}
-        terminalWidth={terminal.width}
-        theme={theme}
-        onCloseMenu={menu.closeMenu}
-        onItemClick={(id) => {
-          menu.closeMenu();
-          if (id === "log:marks") setMarksDialogIndex(0);
-          else if (id === "log:clear") controller.clearSelection();
-        }}
-        onPromptCancel={statusLineStore.cancelPrompt}
-        onPromptInput={statusLineStore.updatePromptValue}
-        onPromptSubmit={statusLineStore.submitPrompt}
-      />
+      {operationDocked ? operation.modal!.render(operationFrame()) : null}
+      {replacesStatus ? null : (
+        <StatusLine
+          badge={null}
+          snapshot={{
+            items: [
+              ...(operationDocked
+                ? [
+                    {
+                      id: "log:operation",
+                      spans: [
+                        {
+                          text:
+                            operation.reason ||
+                            operation.modal?.statusLine?.(operationFrame()) ||
+                            "",
+                          tone: "muted" as const,
+                        },
+                      ],
+                      priority: 1,
+                    },
+                  ]
+                : statusItems),
+              ...statusLineState.items,
+            ],
+            prompt: statusLineState.prompt,
+          }}
+          terminalWidth={terminal.width}
+          theme={theme}
+          onCloseMenu={menu.closeMenu}
+          onItemClick={(id) => {
+            menu.closeMenu();
+            if (id === "log:marks") setMarksDialogIndex(0);
+            else if (id === "log:clear") controller.clearSelection();
+          }}
+          onPromptCancel={statusLineStore.cancelPrompt}
+          onPromptInput={statusLineStore.updatePromptValue}
+          onPromptSubmit={statusLineStore.submitPrompt}
+        />
+      )}
+      {operation.modal?.presentation === "overlay"
+        ? operation.modal.render(operationFrame())
+        : null}
       {menu.activeMenuId && menu.activeMenuSpec ? (
         <MenuDropdown
           activeMenuId={menu.activeMenuId}
@@ -1592,6 +1687,7 @@ export function LogApp({
             snapshot.query?.editable
               ? commands
               : commands.filter((command) => command.id !== "hunk.history.editRevset"),
+            operation,
           )}
           terminalHeight={terminal.height}
           terminalWidth={terminal.width}

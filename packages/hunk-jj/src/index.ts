@@ -19,6 +19,7 @@ import {
   planJjHistoryRangeReview,
 } from "./history";
 import { resolveJjRepoStoreDirectory } from "./repoStore";
+import { createJjMutationCapability } from "./mutationRunner";
 import { readJjFileSource } from "./source";
 import { describeDiffRange } from "@hunk/vcs/diff-target";
 import { commitReviewInfo, comparisonReviewInfo } from "@hunk/vcs/review-info";
@@ -177,6 +178,7 @@ export function createJjVcsAdapter({ jjExecutable = "jj" }: Readonly<JjVcsAdapte
     // Above Git: a colocated jj repository carries a `.git` directory too, and
     // reviewing it as plain Git would show the wrong working copy.
     detectionPriority: HUNK_VCS_DETECTION_BASELINE_PRIORITY + 200,
+    mutations: createJjMutationCapability({ jjExecutable }),
     history: {
       acceptsExpression: true,
       open(input, { cwd, signal }) {

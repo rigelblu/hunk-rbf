@@ -8,7 +8,8 @@
 import { MouseButton, type KeyEvent, type MouseEvent as TuiMouseEvent } from "@opentui/core";
 import type { HistoryOperationTargets } from "../../core/history/revisionMarks";
 import { DialogActionRow, type ConfirmDialogAction } from "../components/chrome/ConfirmDialog";
-import { fitText, measureTextWidth, wrapText } from "../lib/text";
+import { fitText, wrapText } from "../lib/text";
+import { layoutDialogActionRows } from "../lib/dialogActions";
 import type { AppTheme } from "../themes";
 
 /** Project the controller's membership and the host's separate progression refusal. */
@@ -18,6 +19,8 @@ export interface RevisionSourcePanelState {
   selectedCount: number;
   /** Keep eligibility and arity judgments with the operation host. */
   continueRefusal?: string;
+  /** Report a refused edit without blocking an otherwise valid source tuple. */
+  notice?: string;
 }
 
 /** Share actions between mouse and source-phase keys without a global listener. */
@@ -26,6 +29,7 @@ export interface RevisionSourcePanelActions {
   continue: () => void;
   cancel: () => void;
   reviewMarks?: () => void;
+  inspect?: () => void;
 }
 
 /** Describe exactly the rows the host must reserve for this docked panel. */
@@ -71,7 +75,7 @@ export function handleRevisionSourcePanelKey(
     key.ctrl ||
     key.meta ||
     key.option ||
-    key.shift ||
+    (key.shift && key.sequence !== "I" && key.name !== "I" && key.name !== "i") ||
     key.super ||
     key.hyper
   )
@@ -80,8 +84,14 @@ export function handleRevisionSourcePanelKey(
   if (key.eventType === "repeat" || key.repeated) {
     return (
       ["space", "return", "enter", "escape"].includes(key.name) ||
-      (key.name === "r" && canReviewSources(state, actions))
+      (key.name === "r" && canReviewSources(state, actions)) ||
+      ((key.name === "i" || key.name === "I" || key.sequence === "I") &&
+        actions.inspect !== undefined)
     );
+  }
+  if ((key.name === "i" || key.name === "I" || key.sequence === "I") && actions.inspect) {
+    actions.inspect();
+    return true;
   }
   if (key.name === "space") {
     if (canToggleSources(state)) actions.toggle();
@@ -100,11 +110,6 @@ export function handleRevisionSourcePanelKey(
     return true;
   }
   return false;
-}
-
-/** Measure each shared legend action including its two padding cells. */
-function sourceActionWidth(action: ConfirmDialogAction) {
-  return measureTextWidth(`${action.keyLabel} ${action.label}`) + 2;
 }
 
 /** Prepare compact source copy and reflow shared action rows within the host's width. */
@@ -138,7 +143,7 @@ export function revisionSourcePanelLayout({
             : "Marks could not be checked. Refresh history or clear selection.";
         break;
     }
-  } else message = state.continueRefusal ?? "";
+  } else message = state.continueRefusal ?? state.notice ?? "";
   const wrapped = wrapText(message ? `${count} · ${message}` : count, contentWidth);
   const status =
     wrapped.length <= 2
@@ -147,30 +152,13 @@ export function revisionSourcePanelLayout({
   const available: ConfirmDialogAction[] = [];
   if (canToggleSources(state))
     available.push({ keyLabel: "Space", label: "Select/unselect", run: actions.toggle });
+  if (actions.inspect) available.push({ keyLabel: "I", label: "Inspect", run: actions.inspect });
   if (canContinueSources(state))
     available.push({ keyLabel: "Enter", label: "Continue", run: actions.continue });
   if (canReviewSources(state, actions))
-    available.push({ keyLabel: "R", label: "Review marks", run: () => actions.reviewMarks?.() });
+    available.push({ keyLabel: "r", label: "Review marks", run: () => actions.reviewMarks?.() });
   available.push({ keyLabel: "Esc", label: "Cancel", run: actions.cancel });
-  const actionRows: ConfirmDialogAction[][] = [];
-  let used = 0;
-  for (const action of available) {
-    // Shared rows add three separator cells; fit a lone action at very small widths.
-    const keyLabel = fitText(action.keyLabel, Math.max(1, contentWidth - 2));
-    const fitted = {
-      ...action,
-      keyLabel,
-      label: fitText(action.label, Math.max(0, contentWidth - measureTextWidth(keyLabel) - 3), "…"),
-    };
-    const cells = sourceActionWidth(fitted);
-    if (!actionRows.length || used + 3 + cells > contentWidth) {
-      actionRows.push([fitted]);
-      used = cells;
-    } else {
-      actionRows[actionRows.length - 1]!.push(fitted);
-      used += 3 + cells;
-    }
-  }
+  const actionRows = layoutDialogActionRows(available, contentWidth);
   return {
     title: fitText(`Choose ${operationLabel} sources`, contentWidth, "…"),
     status,
@@ -226,12 +214,14 @@ export function RevisionSourceMark({
   editable,
   height = 1,
   onToggle,
+  onMouseGesture,
   theme,
 }: {
   selected: boolean;
   editable: boolean;
   height?: number;
   onToggle: () => void;
+  onMouseGesture?: () => void;
   theme: AppTheme;
 }) {
   return (
@@ -239,6 +229,7 @@ export function RevisionSourceMark({
       style={{ width: 4, height, flexShrink: 0 }}
       onMouseUp={(event: TuiMouseEvent) => {
         event.stopPropagation();
+        onMouseGesture?.();
         if (editable && event.button === MouseButton.LEFT) onToggle();
       }}
     >

@@ -460,6 +460,39 @@ describe("LogController", () => {
     await controller.close();
   });
 
+  test("a refresh after a mutation reads again when a refresh was already in flight", async () => {
+    const { runtime } = createTestRuntime(["one", "two", "three"]);
+    const reopenSource = runtime.reopenSource.bind(runtime);
+    let reads = 0;
+    let release!: () => void;
+    let markStarted!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    runtime.reopenSource = async (signal) => {
+      reads += 1;
+      markStarted();
+      if (reads === 1) await deferred;
+      return reopenSource(signal);
+    };
+    const controller = new LogController(runtime);
+    await controller.loadMore();
+
+    const inFlight = controller.refresh();
+    await started;
+    // A plain refresh joins the read in flight; the mutation's refresh must begin a new one.
+    const joined = controller.refresh();
+    const afterMutation = controller.refreshAfterMutation();
+    release();
+    await Promise.all([inFlight, joined, afterMutation]);
+
+    expect(reads).toBe(2);
+    await controller.close();
+  });
+
   test("entering visual selection while refreshed rows load preserves the new mode", async () => {
     const { runtime } = createTestRuntime(["one", "two", "three"]);
     const reopenSource = runtime.reopenSource.bind(runtime);
@@ -2505,4 +2538,27 @@ test("source entry cannot lock generic marks before seeding its checked highligh
   expect(selection.indicator("B")).toBe(" ");
   selection.end(visit);
   await controller.close();
+});
+
+test("operation endpoint highlighting retains range and current geometry without logical retargeting", async () => {
+  const { runtime } = createTestRuntime([
+    { revisionId: "A", logicalId: "same" },
+    { revisionId: "B", logicalId: "same" },
+    { revisionId: "C", logicalId: "other" },
+  ]);
+  const controller = new LogController(runtime);
+  try {
+    await controller.loadMore();
+    await controller.loadMore();
+    await controller.select(2, 10);
+    await controller.select(1, 10, { extend: true });
+    const anchor = controller.getSnapshot().selectionAnchor;
+    expect(controller.highlightLoadedRevision("A")).toBe(true);
+    expect(controller.getSnapshot().selected).toBe(0);
+    expect(controller.getSnapshot().selectionAnchor).toBe(anchor);
+    expect(controller.highlightLoadedRevision("absent")).toBe(false);
+    expect(controller.getSnapshot().selected).toBe(0);
+  } finally {
+    await controller.close();
+  }
 });

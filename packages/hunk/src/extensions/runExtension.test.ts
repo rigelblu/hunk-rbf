@@ -14,7 +14,7 @@ function bundledMetadata(id: string) {
 
 describe("runExtensionFactory", () => {
   test("advertises history expression input through the current extension API", () => {
-    expect(HUNK_EXTENSION_API_VERSION).toBe(32);
+    expect(HUNK_EXTENSION_API_VERSION).toBe(33);
   });
 
   test("applies a synchronous factory before returning, with nothing to await", () => {
@@ -791,6 +791,86 @@ describe("registerCommand", () => {
 
     expect(registry.commands).toEqual([]);
     expect(issues[0]?.message).toContain("handler function");
+  });
+});
+
+describe("toInternalVcsAdapter mutations", () => {
+  const base = { id: "demo", name: "Demo", detect: () => null };
+
+  test("leaves an adapter without mutations as it is", () => {
+    expect(toInternalVcsAdapter(base).mutations).toBeUndefined();
+  });
+
+  test("rejects a capability that lacks one of its four functions", () => {
+    const partial = {
+      availability: async () => ({}),
+      prepare: async () => ({}),
+      apply: async () => ({}),
+    };
+    expect(() => toInternalVcsAdapter({ ...base, mutations: partial as never })).toThrow(
+      "registerVcsAdapter mutations must provide availability(), prepare(), apply() and dispose() functions.",
+    );
+  });
+
+  test("calls the provider with its own receiver and passes its answers through", async () => {
+    const calls: string[] = [];
+    const provider = {
+      label: "provider",
+      async availability(this: { label: string }) {
+        calls.push(`availability:${this.label}`);
+        return { kind: "unsupported" as const, reason: "too old" };
+      },
+      async prepare(this: { label: string }) {
+        calls.push(`prepare:${this.label}`);
+        return { kind: "cancelled" as const };
+      },
+      async apply(this: { label: string }) {
+        calls.push(`apply:${this.label}`);
+        return { kind: "not-run" as const, reason: "stale-handle" as const };
+      },
+      dispose(this: { label: string }, handleId: string) {
+        calls.push(`dispose:${this.label}:${handleId}`);
+      },
+    };
+    const mutations = toInternalVcsAdapter({ ...base, mutations: provider }).mutations!;
+    const context = { cwd: "/repo" };
+    const execution = { signal: new AbortController().signal, run: async () => ({}) as never };
+
+    expect(await mutations.availability(context)).toEqual({
+      kind: "unsupported",
+      reason: "too old",
+    });
+    expect(
+      await mutations.prepare({ kind: "split", source: { revisionId: "a" } }, context),
+    ).toEqual({
+      kind: "cancelled",
+    });
+    expect(await mutations.apply("h1", execution, context)).toEqual({
+      kind: "not-run",
+      reason: "stale-handle",
+    });
+    await mutations.dispose("h1");
+    expect(calls).toEqual([
+      "availability:provider",
+      "prepare:provider",
+      "apply:provider",
+      "dispose:provider:h1",
+    ]);
+  });
+
+  test("turns a provider failure into a rejected call", async () => {
+    const mutations = toInternalVcsAdapter({
+      ...base,
+      mutations: {
+        availability: async () => {
+          throw new Error("jj is missing");
+        },
+        prepare: async () => ({ kind: "cancelled" }),
+        apply: async () => ({ kind: "not-run", reason: "cancelled" }),
+        dispose: () => {},
+      },
+    }).mutations!;
+    await expect(mutations.availability({ cwd: "/repo" })).rejects.toThrow("jj is missing");
   });
 });
 

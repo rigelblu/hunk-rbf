@@ -196,7 +196,7 @@ describe("PTY known-empty JJ history", () => {
         await harness.pressAndWaitForText(session, "f10", /Auto-refresh history: off/, {
           timeout: 5_000,
         });
-        await session.press(["down", "down", "down", "enter"]);
+        await session.press(["down", "down", "down", "down", "enter"]);
         await session.press("f10");
         await session.waitForText(/Auto-refresh history: on/, { timeout: 5_000 });
         await session.press("escape");

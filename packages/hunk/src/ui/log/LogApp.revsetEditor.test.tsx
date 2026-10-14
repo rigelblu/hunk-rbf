@@ -434,12 +434,13 @@ test("Esc while applying aborts the candidate and returns to the editor with the
 test("Escape closes the editor before it clears a selection, and the selection survives", async () => {
   const fixture = await createTestEditorHistory();
   try {
-    await fixture.press("x");
-    expect(await flush(fixture.setup)).toContain("1 marked");
+    await fixture.press("v");
+    await fixture.press("ARROW_DOWN");
+    expect(await flush(fixture.setup)).toContain("2 in review range");
     await fixture.press("L");
     const frame = await fixture.press("ESCAPE");
     expect(frame).not.toContain("Edit revset");
-    expect(frame).toContain("1 marked");
+    expect(frame).toContain("2 in review range");
   } finally {
     await fixture.close();
   }

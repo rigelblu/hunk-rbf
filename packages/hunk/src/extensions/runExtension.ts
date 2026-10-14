@@ -31,6 +31,7 @@ import type {
   ExtensionVcsHistoryCommit,
   ExtensionVcsHistoryInput,
   ExtensionVcsHistoryRangeSelection,
+  ExtensionVcsMutationCapability,
   ExtensionVcsHistoryReviewAction,
   ExtensionVcsHistorySource,
   ExtensionVcsOperation,
@@ -387,6 +388,7 @@ function normalizeHistoryCommit(
     "decorations",
     "logicalId",
     "isEmpty",
+    "isImmutable",
   ]);
   const required = (key: string) =>
     assertNonEmptyString(snapshot[key], `VCS history commit ${key} must be a non-empty string.`);
@@ -421,6 +423,9 @@ function normalizeHistoryCommit(
   }
   if (snapshot.isEmpty !== undefined && typeof snapshot.isEmpty !== "boolean") {
     throw new Error("VCS history commit isEmpty must be a boolean when present.");
+  }
+  if (snapshot.isImmutable !== undefined && typeof snapshot.isImmutable !== "boolean") {
+    throw new Error("VCS history commit isImmutable must be a boolean when present.");
   }
 
   const parentValues = snapshotArray(snapshot.parentRevisionIds, 256);
@@ -522,6 +527,7 @@ function normalizeHistoryCommit(
       ? { logicalId: sanitizeTerminalLine(snapshot.logicalId).replaceAll("\t", " ") }
       : {}),
     ...(typeof snapshot.isEmpty === "boolean" ? { isEmpty: snapshot.isEmpty } : {}),
+    ...(typeof snapshot.isImmutable === "boolean" ? { isImmutable: snapshot.isImmutable } : {}),
   };
 }
 
@@ -707,6 +713,7 @@ export function toInternalVcsAdapter(
     "name",
     "operations",
     "history",
+    "mutations",
     "detect",
     "detectionPriority",
   ]);
@@ -777,6 +784,7 @@ export function toInternalVcsAdapter(
   const historyGetWatchPlan = historyWatchPlan as NonNullable<
     ExtensionVcsAdapter["history"]
   >["watchPlan"];
+  const mutations = toInternalMutationCapability(adapterFields.mutations);
   const detect = adapterFields.detect;
   if (typeof detect !== "function") {
     throw new Error("registerVcsAdapter requires a detect() function.");
@@ -812,6 +820,7 @@ export function toInternalVcsAdapter(
       return { id: adapterId, repoRoot: detectionFields.repoRoot };
     },
     operations: internalOperations,
+    ...(mutations && { mutations }),
     ...(history && {
       history: {
         ...(acceptsExpression && { acceptsExpression: true as const }),
@@ -917,6 +926,47 @@ export function toInternalVcsAdapter(
         }),
       },
     }),
+  };
+}
+
+/**
+ * Wraps an extension's mutation capability so its failures reach the user as plain errors.
+ *
+ * The four functions are captured once, so an accessor cannot swap one later.
+ * The values they return are the provider's words and facts; the history view
+ * sanitizes each text where it draws it.
+ */
+function toInternalMutationCapability(value: unknown): ExtensionVcsMutationCapability | undefined {
+  if (value === undefined) return undefined;
+  const fields = isPlainObject(value)
+    ? snapshotProperties(value, ["availability", "prepare", "apply", "dispose"])
+    : undefined;
+  if (
+    !fields ||
+    typeof fields.availability !== "function" ||
+    typeof fields.prepare !== "function" ||
+    typeof fields.apply !== "function" ||
+    typeof fields.dispose !== "function"
+  ) {
+    throw new Error(
+      "registerVcsAdapter mutations must provide availability(), prepare(), apply() and dispose() functions.",
+    );
+  }
+  const capability = fields as unknown as ExtensionVcsMutationCapability;
+  /** Runs one capability call and translates what it throws or rejects with. */
+  const guarded = async <Result>(call: () => Result | Promise<Result>): Promise<Result> => {
+    try {
+      return await call();
+    } catch (error) {
+      throw toUserFacingError(error);
+    }
+  };
+  return {
+    availability: (context) => guarded(() => capability.availability.call(value, context)),
+    prepare: (request, context) => guarded(() => capability.prepare.call(value, request, context)),
+    apply: (handleId, execution, context) =>
+      guarded(() => capability.apply.call(value, handleId, execution, context)),
+    dispose: (handleId) => guarded(() => capability.dispose.call(value, handleId)),
   };
 }
 

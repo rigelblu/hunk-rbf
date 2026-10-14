@@ -108,7 +108,7 @@ describe("prepared source panel", () => {
           expect(frame.includes("Space Select/unselect")).toBe(
             !["checking", "failed"].includes(name),
           );
-          expect(frame.includes("R Review marks")).toBe(["failed", "unresolved"].includes(name));
+          expect(frame.includes("r Review marks")).toBe(["failed", "unresolved"].includes(name));
           for (const line of lines) expect(measureTextWidth(line)).toBeLessThanOrEqual(width);
           if (width >= 80) expect(layout.rows).toBe(3);
           if (name === "failed" && width < 60) expect(frame).toContain("cancel.");
@@ -206,7 +206,7 @@ describe("prepared source panel", () => {
       [ready, "Space Select/unselect", "toggle"],
       [ready, "Enter Continue", "continue"],
       [ready, "Esc Cancel", "cancel"],
-      [states.unresolved!, "R Review marks", "review"],
+      [states.unresolved!, "r Review marks", "review"],
     ] as const) {
       const { calls, actions } = createTestSourceActions();
       const setup = await testRender(
@@ -384,4 +384,36 @@ describe("prepared source panel", () => {
       await controller.close();
     }
   });
+});
+
+test("source inspection accepts i, I and shifted kitty i once, while modifiers/releases/repeats do not inspect", () => {
+  let inspected = 0;
+  const { actions } = createTestSourceActions();
+  const inspecting = {
+    ...actions,
+    inspect: () => {
+      inspected++;
+    },
+  };
+  for (const key of [
+    createTestSourceKey("i"),
+    createTestSourceKey("i", { shift: true, sequence: "I" }),
+    createTestSourceKey("i", { shift: true, sequence: "\x1b[105;2u" }),
+  ])
+    expect(handleRevisionSourcePanelKey(key, ready, inspecting)).toBe(true);
+  expect(inspected).toBe(3);
+  expect(
+    handleRevisionSourcePanelKey(createTestSourceKey("i", { ctrl: true }), ready, inspecting),
+  ).toBe(false);
+  expect(
+    handleRevisionSourcePanelKey(
+      createTestSourceKey("i", { eventType: "release" }),
+      ready,
+      inspecting,
+    ),
+  ).toBe(false);
+  expect(
+    handleRevisionSourcePanelKey(createTestSourceKey("i", { repeated: true }), ready, inspecting),
+  ).toBe(true);
+  expect(inspected).toBe(3);
 });

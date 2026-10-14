@@ -15,7 +15,7 @@ import {
 import { runAbortableCommand } from "@hunk/vcs/async-process";
 import { normalizePathForOS } from "@hunk/vcs/path";
 
-const HISTORY_FIELDS_PER_COMMIT = 15;
+const HISTORY_FIELDS_PER_COMMIT = 16;
 const REF_SEPARATOR = "\x1f";
 const FULL_COMMIT_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const DISPLAY_ID_PATTERN = /^[a-z0-9]{4,64}$/;
@@ -39,6 +39,7 @@ const JJ_HISTORY_TEMPLATE =
     'remote_tags.map(|r| r.name() ++ "@" ++ r.remote()).join("\\x1f")',
     'if(empty, "true", "false")',
     'working_copies.map(|w| w.name().escape_json()).join("\\x1f")',
+    'if(immutable, "true", "false")',
   ].join(' ++ "\\0" ++ ') + ' ++ "\\0"';
 
 export interface JjHistoryOptions {
@@ -326,13 +327,15 @@ export function parseJjHistory(
     const remoteTags = fields[offset + 12]!;
     const emptyField = fields[offset + 13]!;
     const workspaceNames = fields[offset + 14]!;
+    const immutableField = fields[offset + 15]!;
 
     if (
       !FULL_COMMIT_ID_PATTERN.test(revisionId) ||
       !DISPLAY_ID_PATTERN.test(displayId) ||
       !logicalId ||
       !authoredAt ||
-      (emptyField !== "true" && emptyField !== "false")
+      (emptyField !== "true" && emptyField !== "false") ||
+      (immutableField !== "true" && immutableField !== "false")
     ) {
       throw new Error("Jujutsu returned an invalid history record.");
     }
@@ -383,6 +386,7 @@ export function parseJjHistory(
       decorations,
       logicalId,
       isEmpty: emptyField === "true",
+      isImmutable: immutableField === "true",
     });
   }
   return commits;

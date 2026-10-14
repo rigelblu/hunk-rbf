@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { KeyEvent } from "@opentui/core";
 import type { LogSnapshot } from "./controller";
+import { dispatchAppCommand } from "../lib/appCommands";
+import type { HistoryOperationSnapshot } from "./historyOperationTypes";
 import { resolveCommandKeys } from "../lib/keymap";
 import {
   buildHistoryCommands,
@@ -13,7 +15,7 @@ import {
 } from "./commands";
 
 const key = (name: string, sequence = name, ctrl = false, shift = false) =>
-  ({ name, sequence, ctrl, shift }) as KeyEvent;
+  ({ name, sequence, ctrl, shift, preventDefault() {}, stopPropagation() {} }) as KeyEvent;
 
 const snapshot = (parents: string[] = []): LogSnapshot => ({
   rows: [
@@ -184,13 +186,12 @@ describe("history command authority", () => {
 });
 
 test("marks preserve paging bindings, remaps, context labels, and clear availability", () => {
-  expect(matchCommand(key("x"))).toBe("hunk.history.toggleMark");
+  expect(matchCommand(key("x"))).toBeUndefined();
   expect(matchCommand(key("space", " "))).toBe("hunk.history.pageDown");
   expect(matchCommand(key("space", " ", false, true))).toBe("hunk.history.pageUp");
-  expect(matchCommand(key("m"), { "hunk.history.toggleMark": "m" })).toBe(
-    "hunk.history.toggleMark",
-  );
-  expect(matchCommand(key("x"), { "hunk.history.toggleMark": "m" })).toBeUndefined();
+  expect(matchCommand(key("x"))).toBeUndefined();
+  expect(matchCommand(key("s", "S", false, true))).toBe("hunk.history.squash");
+  expect(matchCommand(key("r", "R", false, true))).toBe("hunk.history.rebase");
   const marked: LogSnapshot = {
     ...snapshot(),
     marks: [
@@ -213,10 +214,104 @@ test("marks preserve paging bindings, remaps, context labels, and clear availabi
   expect(isHistoryCommandEnabled("hunk.history.clearSelection", marked)).toBe(true);
   expect(isHistoryCommandEnabled("hunk.history.clearSelection", snapshot())).toBe(false);
   expect(
-    isHistoryCommandEnabled("hunk.history.toggleMark", { ...marked, markStatus: "checking" }),
+    buildHistoryHelpSections(build(marked))
+      .flatMap((section) => section.rows)
+      .some((row) => row.description === "mark/unmark revision"),
   ).toBe(false);
-  expect(buildHistoryHelpSections(build(marked)).flatMap((s) => s.rows)).toContainEqual({
-    keys: "x",
-    description: "mark/unmark revision",
+});
+
+test("operation locks follow command identity through remapped keyboard bindings", () => {
+  let phase: HistoryOperationSnapshot["phase"] = "sources";
+  let visit: symbol | null = Symbol("visit");
+  const invoked: string[] = [];
+  const handlers = Object.fromEntries(
+    historyCommandKeyDefaults().map(({ id }) => [id, () => invoked.push(id)]),
+  ) as unknown as HistoryCommandHandlers;
+  const { keys } = resolveCommandKeys({
+    defaults: historyCommandKeyDefaults(),
+    userBindings: {
+      "hunk.history.editRevset": "ctrl+e",
+      "hunk.history.refresh": "ctrl+r",
+      "hunk.history.extendNext": "ctrl+n",
+      "hunk.history.nextCommit": "x",
+    },
   });
+  const value = {
+    ...snapshot(["parent"]),
+    query: { editable: true },
+    historyDone: false,
+  } as LogSnapshot;
+  const commands = buildHistoryCommands({
+    getSnapshot: () => value,
+    getOperation: () => ({ visit, phase }),
+    handlers,
+    resolvedKeys: keys,
+  });
+  expect(dispatchAppCommand(commands, key("e", "", true))).toBeUndefined();
+  expect(dispatchAppCommand(commands, key("r", "", true))?.id).toBe("hunk.history.refresh");
+  expect(dispatchAppCommand(commands, key("n", "", true))?.id).toBe("hunk.history.extendNext");
+  phase = "destination";
+  expect(dispatchAppCommand(commands, key("r", "", true))).toBeUndefined();
+  expect(dispatchAppCommand(commands, key("n", "", true))).toBeUndefined();
+  expect(dispatchAppCommand(commands, key("x"))?.id).toBe("hunk.history.nextCommit");
+  visit = null;
+  expect(dispatchAppCommand(commands, key("e", "", true))?.id).toBe("hunk.history.editRevset");
+  expect(invoked).toEqual([
+    "hunk.history.refresh",
+    "hunk.history.extendNext",
+    "hunk.history.nextCommit",
+    "hunk.history.editRevset",
+  ]);
+});
+
+test("help describes operation keys and excludes commands locked in that phase", () => {
+  const commands = buildHistoryCommands({
+    getSnapshot: () => ({ ...snapshot(), query: { editable: true } }) as LogSnapshot,
+    handlers: noopHandlers,
+  });
+  const source = buildHistoryHelpSections(commands, { phase: "sources", operation: "squash" });
+  const rows = source.flatMap((section) => section.rows);
+  expect(source[0]?.title).toBe("Source selection");
+  expect(rows).toContainEqual({
+    keys: "I / i",
+    description: "inspect highlighted revision and return",
+  });
+  expect(rows).toContainEqual({ keys: "Enter", description: "continue with one explicit source" });
+  expect(rows.some((row) => row.description.startsWith("open highlighted"))).toBe(false);
+  expect(rows.some((row) => row.description === "edit revset")).toBe(false);
+  expect(rows.find((row) => row.description === "page down")?.keys).not.toContain("Space");
+  const dest = buildHistoryHelpSections(commands, { phase: "destination", operation: "rebase" });
+  expect(dest[0]?.rows).toContainEqual({
+    keys: "o / A / B",
+    description: "choose onto, after or before",
+  });
+  expect(
+    dest
+      .flatMap((section) => section.rows)
+      .some((row) => row.description === "extend selection down"),
+  ).toBe(false);
+  expect(buildHistoryHelpSections(commands)[0]?.title).toBe("Navigation");
+});
+
+test("source help keeps remapped Refresh and removes a reserved Space-only paging row", () => {
+  const { keys } = resolveCommandKeys({
+    defaults: historyCommandKeyDefaults(),
+    userBindings: {
+      "hunk.history.refresh": "ctrl+r",
+      "hunk.history.pageDown": "space",
+    },
+  });
+  const commands = buildHistoryCommands({
+    getSnapshot: snapshot,
+    handlers: noopHandlers,
+    resolvedKeys: keys,
+  });
+  const rows = buildHistoryHelpSections(commands, {
+    phase: "sources",
+    operation: "squash",
+  }).flatMap((section) => section.rows);
+  expect(rows).toContainEqual({ keys: "Ctrl+R", description: "refresh history" });
+  expect(rows).toContainEqual({ keys: "r", description: "review unresolved marks when available" });
+  expect(rows.some((row) => row.description === "page down")).toBe(false);
+  expect(rows.every((row) => row.keys.length > 0)).toBe(true);
 });

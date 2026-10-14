@@ -89,9 +89,7 @@ History-specific commands:
 | `hunk.history.previousCommit`       | Move to the previous commit  | `up`, `k`                    |
 | `hunk.history.nextCommit`           | Move to the next commit      | `down`, `j`                  |
 | `hunk.history.startVisualSelection` | Start visual selection       | `v`                          |
-| `hunk.history.clearSelection`       | Clear marks and review range | `escape`                     |
-| `hunk.history.toggleMark`           | Toggle the focused mark      | `x`                          |
-| `hunk.history.reviewMarks`          | Review retained marks        | _(none)_                     |
+| `hunk.history.clearSelection`       | Clear the review range       | `escape`                     |
 | `hunk.history.extendPrevious`       | Extend selection upward      | `shift+up`, `K`              |
 | `hunk.history.extendNext`           | Extend selection downward    | `shift+down`, `J`            |
 | `hunk.history.pageUp`               | Move up one page             | `pageup`, `b`, `shift+space` |
@@ -110,6 +108,9 @@ History-specific commands:
 | `hunk.history.toggleDate`           | Toggle date metadata         | _(none)_                     |
 | `hunk.history.toggleWorkspaceNames` | Toggle workspace names       | _(none)_                     |
 | `hunk.history.toggleDecorations`    | Toggle ref decorations       | _(none)_                     |
+| `hunk.history.squash`               | Choose squash sources        | `S`                          |
+| `hunk.history.rebase`               | Choose rebase sources        | `R`                          |
+| `hunk.history.operationResult`      | Open the last action result  | _(none)_                     |
 | `hunk.history.openFirstParent`      | Compare with first parent    | _(none)_                     |
 | `hunk.history.openParent`           | Choose a parent to compare   | _(none)_                     |
 | `hunk.history.showAbout`            | Show application information | _(none)_                     |
@@ -212,3 +213,7 @@ cannot trap the keyboard.
 `[keybindings]` is read from your user config only — never from a repository's
 `.hunk/config.toml`. Which keys do what is a property of your keyboard and your
 habits, so a checkout you review cannot rearrange them.
+
+History operation selection starts from Commit > Squash revision… or Rebase revision…. In that source phase, Space or a primary checkmark click selects/unselects a revision without moving the highlight. I (or i) inspects only the highlighted diff and returns to the same selection; Enter Continue locks an explicit single source and advances to destination choice. PageUp/PageDown and history navigation remain available. Lowercase r opens mark recovery when needed; otherwise it refreshes history. File > Refresh history is available while selecting sources. Selecting no sources or multiple sources withholds Continue.
+
+Ordinary history keeps Space paging and Enter highlighted/range review, with no operation checkmarks or x binding. Source membership remains visible through destination choice and confirmation cancellation, then clears when the operation ends. During destination choice, source and range edits are locked. Confirmation starts focused on Cancel; Tab/Shift-Tab choose Cancel, Apply or Details, Enter activates the focused choice, and Escape returns to the destination. Details has no dedicated letter. Rebase offers Onto (o), After (A), Before (B), and the s abandon-if-empty toggle. The result reports actual readback and is available again under File > Operation result….

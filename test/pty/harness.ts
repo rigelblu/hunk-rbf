@@ -1087,11 +1087,7 @@ end
     writeText(join(beforeDir, "scroll.ts"), beforeText);
     writeText(join(afterDir, "scroll.ts"), afterText);
 
-    const patch = runGit(
-      ["diff", "--no-index", "--no-color", "--", beforeDir, afterDir],
-      dir,
-      true,
-    );
+    const patch = runGit(["diff", "--no-index", "--no-color", "--", "before", "after"], dir, true);
     writeText(patchFile, patch);
 
     return { dir, patchFile };

@@ -1,4 +1,4 @@
-import type { MouseEvent as TuiMouseEvent } from "@opentui/core";
+import { MouseButton, type MouseEvent as TuiMouseEvent } from "@opentui/core";
 import type { ReactNode } from "react";
 import { resolveModalGeometry } from "../../lib/modalGeometry";
 import { fitText, padText } from "../../lib/text";
@@ -18,6 +18,7 @@ export function ModalFrame({
   theme,
   title,
   width,
+  primaryMouseOnly = false,
 }: {
   children: ReactNode;
   /** Drop the title and bottom padding rows, for terminals too short for the normal frame. */
@@ -34,6 +35,7 @@ export function ModalFrame({
   theme: AppTheme;
   title: string;
   width: number;
+  primaryMouseOnly?: boolean;
 }) {
   const {
     height: clampedHeight,
@@ -67,7 +69,9 @@ export function ModalFrame({
           height: terminalHeight,
           zIndex: 55,
         }}
-        onMouseUp={onClose}
+        onMouseUp={(event: TuiMouseEvent) => {
+          if (!primaryMouseOnly || event.button === MouseButton.LEFT) onClose?.();
+        }}
       />
       <box
         style={{
@@ -101,7 +105,7 @@ export function ModalFrame({
             <box
               onMouseUp={(event: TuiMouseEvent) => {
                 event.stopPropagation();
-                onClose?.();
+                if (!primaryMouseOnly || event.button === MouseButton.LEFT) onClose?.();
               }}
             >
               <text fg={theme.badgeNeutral}>{closeText}</text>

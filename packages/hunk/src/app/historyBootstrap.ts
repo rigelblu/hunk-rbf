@@ -39,6 +39,7 @@ import { mergeStartupNotices } from "../extensions/startup";
 import { createExtensionSession, type ExtensionSession } from "../extensions/session";
 import type { ExtensionLoadResult } from "../extensions/types";
 import { resolveConfiguredExtensions } from "./extensionBootstrap";
+import { createHistoryMutationCoordinator } from "./mutationCoordinator";
 
 /** Fully owned resources required by static or interactive history output. */
 export interface HistoryBootstrap {
@@ -242,6 +243,9 @@ export async function loadHistoryBootstrap({
       planRangeReview(selection, options, signal) {
         return planVcsHistoryRangeReview(adapter, selection, { cwd: repoRoot, signal }, options);
       },
+    }),
+    ...(adapter.mutations && {
+      mutations: createHistoryMutationCoordinator({ capability: adapter.mutations, cwd: repoRoot }),
     }),
     get historyWatchPlan() {
       return historyWatchPlan;

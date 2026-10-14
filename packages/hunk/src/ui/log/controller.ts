@@ -384,6 +384,20 @@ export class LogController {
     return this.trackNavigation(navigation);
   }
 
+  /** Highlight an exact loaded operation endpoint using current geometry and retained range state. */
+  highlightLoadedRevision(revisionId: string) {
+    if (this.closed) return false;
+    const index = this.snapshot.rows.findIndex((row) => row.commit.revisionId === revisionId);
+    if (index < 0) return false;
+    if (index === this.snapshot.selected) return true;
+    this.selectionGeneration += 1;
+    this.navigationTarget = null;
+    this.setNavigationPromise(null);
+    this.publish({ selected: index, entryScroll: 0 });
+    this.clampViewport(this.viewportBodyHeight);
+    return true;
+  }
+
   /** Track only the latest request so refresh cannot restore ahead of pending input. */
   private trackNavigation(navigation: Promise<void>) {
     this.setNavigationPromise(navigation);
@@ -741,6 +755,17 @@ export class LogController {
     } finally {
       if (this.refreshPromise === refreshing) this.refreshPromise = null;
     }
+  }
+
+  /**
+   * Refresh with a read that begins after this call.
+   *
+   * `refresh` joins a read already in flight, and that read may have started
+   * before a history change recorded its operation. This waits it out first.
+   */
+  async refreshAfterMutation(shouldApply: () => boolean = () => true) {
+    if (this.refreshPromise) await this.refreshPromise.catch(() => undefined);
+    return this.refresh(shouldApply);
   }
 
   /** Close an unaccepted candidate once, including when quit races its read. */

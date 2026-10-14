@@ -615,7 +615,7 @@ describe("interactive hunk log", () => {
       expect(wide).toContain("history ·");
       expect(wide).toContain("○─ Commits on Sep 6, 2026");
       expect(wide).toContain("Commits on Sep 5, 2026");
-      expect(wide).toMatch(/Commits on Sep 6, 2026\n\s*│\s*\n\s*> \[ \] │\s+Second history commit/);
+      expect(wide).toMatch(/Commits on Sep 6, 2026\n\s*│\s*\n\s*> +│\s+Second history commit/);
       expect(wide).not.toContain("Responsive description");
       expect(rightmostColumnOf(wide, displayId)).toBeGreaterThan(95);
 
@@ -652,7 +652,7 @@ describe("interactive hunk log", () => {
         .find((line) => line.includes("Second history com"));
       expect(narrow).toContain("history ·");
       expect(narrowCommitLine).toContain(displayId);
-      expect(narrowCommitLine?.trimStart()).toStartWith("> [ ] │");
+      expect(narrowCommitLine?.trimStart()).toStartWith(">     │");
       expect(rightmostColumnOf(narrow, displayId)).toBeGreaterThan(27);
       await session.press("q");
     } finally {
@@ -757,6 +757,7 @@ describe("interactive hunk log", () => {
       await session.press("down");
       await session.press("down");
       await session.press("down");
+      await session.press("down");
       await session.press("enter");
       await session.press("f10");
       await session.waitForText(/Auto-refresh history: on/, { timeout: 5_000 });
@@ -777,6 +778,7 @@ describe("interactive hunk log", () => {
       });
 
       await session.press("f10");
+      await session.press("down");
       await session.press("down");
       await session.press("down");
       await session.press("down");
@@ -826,6 +828,7 @@ describe("interactive hunk log", () => {
       await session.press("down");
       await session.press("down");
       await session.press("down");
+      await session.press("down");
       await session.press("enter");
       await session.press("f10");
       await session.waitForText(/Auto-refresh history: off/, { timeout: 5_000 });
@@ -854,6 +857,7 @@ describe("interactive hunk log", () => {
       const headSummary = initialLines[initialRow + 1]!.match(/\([^()]+\)/)?.[0];
       expect(headSummary).toBeDefined();
       await session.press("f10");
+      await session.press("down");
       await session.press("down");
       await session.press("down");
       await session.press("down");
@@ -902,6 +906,7 @@ describe("interactive hunk log", () => {
       await session.press("down");
       await session.press("down");
       await session.press("down");
+      await session.press("down");
       await session.press("enter");
       await session.press("f10");
       await session.waitForText(/Auto-refresh history: on/, { timeout: 5_000 });
@@ -944,10 +949,7 @@ describe("interactive hunk log", () => {
       await harness.pressAndWaitForText(session, "right", /Compare with parent/, {
         timeout: 5_000,
       });
-      await session.press("down");
-      await session.press("down");
-      await session.press("down");
-      await session.press("enter");
+      await session.click("Compare with parent…");
       await session.waitForText(/Compare with parent/, { timeout: 5_000 });
       session.writeRaw("\x1b[<65;50;10M");
       await session.waitIdle();
@@ -1468,7 +1470,7 @@ describe("HK-92 workspace history", () => {
         15_000,
       );
       await session.press("f10");
-      await session.press(["down", "down", "down", "enter"]);
+      await session.press(["down", "down", "down", "down", "enter"]);
       await session.press("f10");
       await session.waitForText(/Auto-refresh history: on/);
       await session.press("escape");
@@ -1585,8 +1587,8 @@ describe("HK-92 workspace visibility", () => {
   });
 });
 
-describe("separate history marks", () => {
-  test("reviews highlighted B with A/C marks, preserves them on return, and reviews an explicit A–C range", async () => {
+describe("ordinary history selection", () => {
+  test("keeps highlighted and explicit range review while x no longer marks revisions", async () => {
     const cwd = createHistoryRepo();
     writeFileSync(join(cwd, "history.ts"), "export const historyValue = 'third';\n");
     git(cwd, ["commit", "-qam", "Third history commit"]);
@@ -1598,11 +1600,8 @@ describe("separate history marks", () => {
     });
     try {
       await session.waitForText(/Third history commit/, { timeout: 15_000 });
-      await harness.pressAndWaitForText(session, "x", /1 marked/);
+      await session.press("x");
       await session.press("down");
-      await session.press("down");
-      await harness.pressAndWaitForText(session, "x", /2 marked/);
-      await session.press("up");
       const review = await harness.pressAndWaitForText(
         session,
         "enter",
@@ -1612,7 +1611,8 @@ describe("separate history marks", () => {
       expect(review).not.toContain("Third history commit");
       expect(review).not.toContain("root-only.ts");
       const history = await returnToHistory(session);
-      expect(history).toContain("2 marked");
+      expect(history).not.toContain("marked");
+      expect(history).not.toContain("[ ]");
       await session.press("up");
       await session.press("v");
       await session.press("down");
@@ -1625,18 +1625,12 @@ describe("separate history marks", () => {
       expect(range).toContain("First history commit");
       await returnToHistory(session);
       await session.press("escape");
-      const cleared = await harness.waitForSnapshot(
-        session,
-        (text) => !text.includes("marked") && text.includes("Third history commit"),
-        5_000,
-      );
-      expect(cleared).not.toContain("marked");
+      expect(await session.text()).not.toContain("in review range");
     } finally {
       session.close();
     }
   });
-
-  test("checkbox spacing and Ctrl/Shift nested revision targets toggle once without opening or moving focus", async () => {
+  test("blank membership cells and Ctrl targets do not mark outside an operation; Shift still selects a review range", async () => {
     const cwd = createHistoryRepo();
     const session = await harness.launchHunk({
       args: ["log", "--color", "never", "--no-extensions"],
@@ -1646,50 +1640,30 @@ describe("separate history marks", () => {
     });
     try {
       let text = await session.waitForText(/First history commit/, { timeout: 15_000 });
-      const lines = text.split("\n");
-      const secondRow = lines.findIndex((line) => line.includes("First history commit"));
-      const focusRow = lines.findIndex((line) => line.includes("Second history commit"));
-      const checkX = lines[secondRow]!.indexOf("[ ]") + 3;
-      session.writeRaw(`\x1b[<0;${checkX + 1};${secondRow}M\x1b[<0;${checkX + 1};${secondRow}m`);
-      text = await session.waitForText(/1 marked/, { timeout: 5_000 });
-      expect(text.split("\n")[focusRow]).toMatch(/>.*Second history commit/);
-      // Repeated marking clicks undo and redo only the mark, including the fourth spacing cell.
-      for (const expected of ["[ ]", "[x]"]) {
-        session.writeRaw(`\x1b[<0;${checkX + 1};${secondRow}M\x1b[<0;${checkX + 1};${secondRow}m`);
-        await session.waitIdle();
-        expect((await session.text()).split("\n")[secondRow]).toContain(expected);
-      }
-      const idX = lines[secondRow]!.search(/[0-9a-f]{8}\s+⧉/);
-      session.writeRaw(`\x1b[<20;${idX + 1};${secondRow}M\x1b[<20;${idX + 1};${secondRow}m`);
+      const lines = text.replace(/^\n/, "").split("\n");
+      const row = lines.findIndex((line) => line.includes("First history commit"));
+      const focus = lines.findIndex((line) => line.includes("Second history commit"));
+      session.writeRaw(`\x1b[<0;4;${row + 1}M\x1b[<0;4;${row + 1}m`);
       await session.waitIdle();
       text = await session.text();
-      expect(text.split("\n")[secondRow]).toContain("[ ]");
-      expect(text.split("\n")[focusRow]).toMatch(/>.*Second history commit/);
-      const copyX = lines[secondRow]!.indexOf("⧉");
-      session.writeRaw(`\x1b[<16;${copyX + 1};${secondRow}M\x1b[<16;${copyX + 1};${secondRow}m`);
-      text = await session.waitForText(/1 marked/, { timeout: 5_000 });
-      expect(text).toContain("Git history");
-      expect(text).not.toContain("Preparing review");
-      expect(text.split("\n")[secondRow]).toContain("[x]");
-      // Search owns two Escape presses, and help owns its own Escape.
-      await session.press("/");
-      await session.type("First");
-      await session.press("escape");
-      await session.press("escape");
-      expect(await session.text()).toContain("1 marked");
-      await session.press("?");
-      await session.press("escape");
-      expect(await session.text()).toContain("1 marked");
-      await session.press("escape");
+      expect(text).not.toContain("marked");
+      expect(text).not.toContain("[x]");
+      expect(text.replace(/^\n/, "").split("\n")[focus]).toMatch(/>.*Second history commit/);
+      const idX = lines[row]!.search(/[0-9a-f]{8}\s+⧉/);
+      session.writeRaw(`\x1b[<16;${idX + 1};${row + 1}M\x1b[<16;${idX + 1};${row + 1}m`);
+      await session.waitIdle();
       expect(await session.text()).not.toContain("marked");
+      session.writeRaw(`\x1b[<4;${idX + 1};${row + 1}M\x1b[<4;${idX + 1};${row + 1}m`);
+      await session.waitForText(/2 in review range/);
+      await session.press("escape");
+      expect(await session.text()).not.toContain("in review range");
     } finally {
       reopened.close();
     }
   });
-
   for (const cols of [42, 60, 80, 120])
-    for (const rows of [12, 20]) {
-      test(`keeps marks and their recovery usable at ${cols} columns and ${rows} rows`, async () => {
+    for (const rows of [12, 20])
+      test(`unsupported operation refuses without selection at ${cols} columns and ${rows} rows`, async () => {
         const cwd = createHistoryRepo();
         const session = await harness.launchHunk({
           args: ["log", "--color", "never", "--no-extensions"],
@@ -1699,78 +1673,20 @@ describe("separate history marks", () => {
         });
         try {
           await session.waitForText(/Second history com/, { timeout: 15_000 });
-          let text = await harness.pressAndWaitForText(session, "x", /1 marked/);
-          await session.click("Review marks");
-          text = await session.waitForText(/1–1 of 1/, { timeout: 5_000 });
-          expect(text).toContain("1–1 of 1");
-          expect(text).toContain("Second history commit");
-          await session.press("y");
+          session.writeRaw("S");
+          const text = await session.waitForText(/provider does not offer/, { timeout: 10_000 });
+          expect(text).not.toContain("✓");
+          expect(text).not.toContain("Choose squash sources");
           await session.press("escape");
-          expect(await session.text()).toContain("1 marked");
-          // Remove the marked Git commit, leaving its original intent available for recovery.
-          git(cwd, ["reset", "--hard", "-q", "HEAD~1"]);
-          await harness.pressAndWaitForText(session, "r", /1 unresolved/, { timeout: 10_000 });
-          text = await session.text();
-          await session.click("Review marks");
-          text = await session.waitForText(/Missing/, { timeout: 5_000 });
-          expect(text).toContain("Second history commit");
-          expect(text).toContain("Remove unresolved marks");
-          await session.press("r");
-          text = await session.text();
-          expect(text).not.toContain("marked");
-          expect(text).toContain("First history comm");
+          await harness.waitForSnapshot(
+            session,
+            (text) => !text.includes("Operation result") && text.includes("Git · 2 commits"),
+            10_000,
+          );
         } finally {
           session.close();
         }
       });
-    }
-});
-
-test("long unresolved recovery scrolls keyboard focus and copies the original full ID", async () => {
-  const cwd = createHistoryRepo();
-  const ids: string[] = [];
-  for (let i = 0; i < 10; i++) {
-    writeFileSync(join(cwd, "history.ts"), `export const historyValue = '${i}';\n`);
-    git(cwd, ["commit", "-qam", `History mark ${i}`]);
-    ids.push(
-      Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd, stdout: "pipe" }).stdout.toString().trim(),
-    );
-  }
-  const session = await harness.launchHunk({
-    args: ["log", "--color", "never", "--no-extensions"],
-    cwd,
-    cols: 80,
-    rows: 18,
-  });
-  try {
-    await session.waitForText(/History mark 9/, { timeout: 15_000 });
-    for (let i = 0; i < 12; i++) {
-      await session.press("x");
-      if (i < 11) await session.press("down");
-    }
-    expect(await session.text()).toContain("12 marked");
-    git(cwd, ["reset", "--hard", "-q", "HEAD~10"]);
-    await harness.pressAndWaitForText(session, "r", /10 unresolved/, { timeout: 10_000 });
-    await session.click("Review marks");
-    let text = await session.waitForText(/1–3 of 10/, { timeout: 5_000 });
-    expect(text).toContain("History mark 9");
-    await session.press("pagedown");
-    text = await session.text();
-    expect(text).toContain(`> ${ids[6]!.slice(0, 8)}`);
-    expect(text).toContain("History mark 6");
-    await session.press("y");
-    expect(session.getRawOutput()).toContain(Buffer.from(ids[6]!).toString("base64"));
-    for (let i = 0; i < 12; i++) await session.press("down");
-    text = await session.text();
-    expect(text).toContain("8–10 of 10");
-    expect(text).toContain(`> ${ids[0]!.slice(0, 8)}`);
-    await session.press("r");
-    text = await session.text();
-    expect(text).toContain("2 marked");
-    expect(text).not.toContain("unresolved");
-  } finally {
-    session.close();
-  }
 });
 
 test("candidate diff command renders an actual changed file in a real terminal", async () => {
@@ -2100,8 +2016,8 @@ describe("HK-19.1 revset editor", () => {
       const session = await harness.launchHunk({ args: HK19_ARGS, cwd, env, cols: 120, rows: 32 });
       try {
         await session.waitForText(/Launch policy · Limit: 100/, { timeout: 15_000 });
-        session.writeRaw("x");
-        await session.waitForText(/1 marked/, { timeout: 5_000 });
+        session.writeRaw("v\x1b[B");
+        await session.waitForText(/2 in review range/, { timeout: 5_000 });
         session.writeRaw("L");
         await session.waitForText(/Edit revset/, { timeout: 5_000 });
         session.sendKey("escape");
@@ -2110,7 +2026,7 @@ describe("HK-19.1 revset editor", () => {
           (text) => !text.includes("Edit revset"),
           5_000,
         );
-        expect(closed).toContain("1 marked");
+        expect(closed).toContain("2 in review range");
 
         session.writeRaw("L");
         await session.waitForText(/Edit revset/, { timeout: 5_000 });

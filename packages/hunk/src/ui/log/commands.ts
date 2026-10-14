@@ -9,6 +9,7 @@ import { matchesAnyKeyChord } from "../../lib/commandKeys";
 import type { HelpSection } from "../lib/helpContent";
 import { formatKeyChord, type CommandKeyDefaults } from "../lib/keymap";
 import type { AppCommand, ResolvedCommandKeys } from "../lib/appCommands";
+import type { HistoryOperationPhase, HistoryOperationSnapshot } from "./historyOperationTypes";
 import type { LogSnapshot } from "./controller";
 
 export type { HistoryCommandId } from "../../core/run/historyCommandCatalog";
@@ -23,6 +24,7 @@ export interface BuildHistoryCommandsOptions {
   getSnapshot: () => LogSnapshot;
   handlers: HistoryCommandHandlers;
   resolvedKeys?: ResolvedCommandKeys;
+  getOperation?: () => Pick<HistoryOperationSnapshot, "visit" | "phase">;
 }
 
 /** Return the history command defaults consumed by shared keymap resolution. */
@@ -44,8 +46,6 @@ export function isHistoryCommandEnabled(id: HistoryCommandId, snapshot: LogSnaps
   )
     return Boolean(selected);
   if (id === "hunk.history.editRevset") return snapshot.query?.editable === true;
-  if (id === "hunk.history.toggleMark") return Boolean(selected) && snapshot.markStatus === "ready";
-  if (id === "hunk.history.reviewMarks") return snapshot.marks.length > 0;
   if (id === "hunk.history.clearSelection")
     return (
       snapshot.marks.length > 0 ||
@@ -79,11 +79,41 @@ export function isHistoryCommandEnabled(id: HistoryCommandId, snapshot: LogSnaps
   return true;
 }
 
+/** Gate semantic command identities, so remapped keys cannot bypass an operation's phase. */
+export function historyOperationCommandAllowed(
+  id: HistoryCommandId,
+  operation?: Pick<HistoryOperationSnapshot, "visit" | "phase">,
+) {
+  if (!operation?.visit) return true;
+  if (
+    [
+      "hunk.history.clearSelection",
+      "hunk.history.editRevset",
+      "hunk.history.openSelection",
+      "hunk.history.openFirstParent",
+      "hunk.history.openParent",
+    ].includes(id)
+  )
+    return false;
+  if (
+    operation.phase !== "sources" &&
+    [
+      "hunk.history.refresh",
+      "hunk.history.startVisualSelection",
+      "hunk.history.extendPrevious",
+      "hunk.history.extendNext",
+    ].includes(id)
+  )
+    return false;
+  return true;
+}
+
 /** Bind canonical history command identity to live terminal handlers. */
 export function buildHistoryCommands({
   getSnapshot,
   handlers,
   resolvedKeys,
+  getOperation,
 }: BuildHistoryCommandsOptions): AppCommand[] {
   return HISTORY_COMMAND_CATALOG.map((entry) => {
     const keys = resolvedKeys?.get(entry.id) ?? entry.defaultKeys;
@@ -101,7 +131,9 @@ export function buildHistoryCommands({
       keys,
       keyLabels: keys.map(formatKeyChord),
       defaultKeys: entry.defaultKeys,
-      isEnabled: () => isHistoryCommandEnabled(entry.id as HistoryCommandId, getSnapshot()),
+      isEnabled: () =>
+        isHistoryCommandEnabled(entry.id as HistoryCommandId, getSnapshot()) &&
+        historyOperationCommandAllowed(entry.id as HistoryCommandId, getOperation?.()),
       publicToExtensions: entry.publicToExtensions,
       verticalDirection: entry.verticalDirection,
       closesMenu: entry.closesMenu,
@@ -117,17 +149,53 @@ export function historyCommand(id: HistoryCommandId) {
 }
 
 /** Build history help from effective session bindings rather than shipped defaults. */
-export function buildHistoryHelpSections(commands: readonly AppCommand[]): readonly HelpSection[] {
+export function buildHistoryHelpSections(
+  commands: readonly AppCommand[],
+  operation?: { phase: HistoryOperationPhase; operation: "squash" | "rebase" | null },
+): readonly HelpSection[] {
   const order: readonly HistoryCommandHelpSection[] = ["Navigation", "Commit", "Application"];
   const byId = new Map(commands.map((command) => [command.id, command]));
-  return order.map((title) => ({
+  const source = operation?.phase === "sources";
+  const destination = operation?.phase === "destination";
+  const context = operation ? { visit: Symbol("help"), phase: operation.phase } : undefined;
+  const sections: HelpSection[] = order.map((title) => ({
     title,
     rows: HISTORY_COMMAND_CATALOG.filter((entry) => entry.helpSection === title)
       .map((entry) => ({ entry, command: byId.get(entry.id) }))
-      .filter(({ command }) => command !== undefined && command.keyLabels.length > 0)
+      .filter(
+        ({ entry, command }) =>
+          command !== undefined &&
+          command.keyLabels.length > 0 &&
+          ((!source && !destination) ||
+            historyOperationCommandAllowed(entry.id as HistoryCommandId, context)),
+      )
       .map(({ command }) => ({
-        keys: command!.keyLabels.join(" / "),
+        keys: command!.keyLabels.filter((label) => !source || label !== "Space").join(" / "),
         description: command!.title.toLocaleLowerCase(),
-      })),
+      }))
+      .filter((row) => row.keys.length > 0),
   }));
+  if (source)
+    sections.unshift({
+      title: "Source selection",
+      rows: [
+        { keys: "Space", description: "select/unselect highlighted revision" },
+        { keys: "I / i", description: "inspect highlighted revision and return" },
+        { keys: "Enter", description: "continue with one explicit source" },
+        { keys: "Esc", description: "cancel this action" },
+        { keys: "r", description: "review unresolved marks when available" },
+      ],
+    });
+  else if (destination)
+    sections.unshift({
+      title: "Destination",
+      rows: [
+        { keys: "Enter", description: "preview the highlighted destination" },
+        { keys: "Esc", description: "cancel this action" },
+        ...(operation?.operation === "rebase"
+          ? [{ keys: "o / A / B", description: "choose onto, after or before" }]
+          : []),
+      ],
+    });
+  return sections;
 }
