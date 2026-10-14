@@ -1,4 +1,4 @@
-import type { MouseEvent as TuiMouseEvent } from "@opentui/core";
+import { MouseButton, type MouseEvent as TuiMouseEvent } from "@opentui/core";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { MODAL_FRAME_CHROME_ROWS, resolveModalGeometry } from "../../lib/modalGeometry";
@@ -27,9 +27,12 @@ export function confirmDialogHeight(bodyRows: number) {
 export function DialogActionRow({
   actions,
   theme,
+  primaryMouseOnly = false,
 }: {
   actions: ConfirmDialogAction[];
   theme: AppTheme;
+  /** Let source controls ignore secondary clicks without changing existing dialogs. */
+  primaryMouseOnly?: boolean;
 }) {
   const [hoveredActionKey, setHoveredActionKey] = useState<string | null>(null);
 
@@ -53,7 +56,7 @@ export function DialogActionRow({
               }
               onMouseUp={(event: TuiMouseEvent) => {
                 event.stopPropagation();
-                action.run();
+                if (!primaryMouseOnly || event.button === MouseButton.LEFT) action.run();
               }}
             >
               <text fg={theme.accent}>{action.keyLabel}</text>
