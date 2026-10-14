@@ -79,7 +79,7 @@ complete active revset: `F2` or `Enter` applies it, `F3` restores the launch pol
 `Tab`/`Shift+Tab`, `Up`/`Down` or `Ctrl-N`/`Ctrl-P` highlight a revset applied earlier in the session, which `Enter` then
 inserts without applying it. Custom revsets retain direct graph connections and mark omitted parents with `~`;
 range selection remains unavailable.
-View → Use JJ graph displays JJ’s native projected graph for the same revset.
+View → Graph view (jj style) displays JJ’s native projected graph for the same revset.
 
 History-specific commands:
 
