@@ -52,6 +52,26 @@ describe("review state helpers", () => {
     // The agent's file summary is part of the haystack, not just the path.
     expect(visibleFor("gamma.ts note")).toEqual(["gamma"]);
     expect(visibleFor("nothing-matches")).toEqual([]);
+
+    // Exclusion filters out matching files and preserves non-matching files.
+    expect(visibleFor("!alpha")).toEqual(["beta", "gamma"]);
+    expect(visibleFor("!legacy-name")).toEqual(["alpha", "gamma"]);
+    expect(visibleFor("!gamma.ts note")).toEqual(["alpha", "beta"]);
+    expect(visibleFor("!")).toEqual(["alpha", "beta", "gamma"]);
+    expect(visibleFor("!   ")).toEqual(["alpha", "beta", "gamma"]);
+
+    // Literal ! handling via escape \! and exclusion of literal ! with !!.
+    const bangFile = createTestDiffFile({ id: "bang", path: "!bang.ts" });
+    const filesWithBang = [...files, bangFile];
+    const visibleWithBang = (filterQuery: string) =>
+      buildReviewStreamState({
+        files: filesWithBang,
+        liveCommentsByFileId: {},
+        filterQuery,
+      }).visibleFiles.map((file) => file.id);
+
+    expect(visibleWithBang("\\!bang")).toEqual(["bang"]);
+    expect(visibleWithBang("!!bang")).toEqual(["alpha", "beta", "gamma"]);
   });
 
   // Intent: annotated navigation plans against a file-key index the terminal derives once.

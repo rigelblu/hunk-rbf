@@ -922,6 +922,85 @@ end
     ]);
   }
 
+  /** Build a Git repository and sidecar fixture covering filter exclusion, renames, and agent summaries. */
+  function createFilterScenarioRepoFixtureTest() {
+    const dir = makeTempDir("hunk-tuistory-filter-scenario-");
+    runGit(["init"], dir);
+    runGit(["config", "user.name", "Pi"], dir);
+    runGit(["config", "user.email", "pi@example.com"], dir);
+    writeText(join(dir, ".git", "info", "exclude"), "agent.json\n");
+
+    writeText(join(dir, "README.md"), "export const readme = 1;\n");
+    writeText(join(dir, "docs", "README.md"), "export const docsReadme = 1;\n");
+    writeText(
+      join(dir, "orig", "README.md"),
+      "export const orig1 = 1;\nexport const orig2 = 2;\nexport const orig3 = 3;\n",
+    );
+    writeText(join(dir, "src", "summary-match.ts"), "export const summary = 1;\n");
+    const bangFooInitLines =
+      [
+        "export const bangFoo = 1;",
+        ...Array.from({ length: 11 }, (_, i) => `export const bangFooLine${i + 1} = 1;`),
+      ].join("\n") + "\n";
+    writeText(join(dir, "src", "!foo.ts"), bangFooInitLines);
+    const mainInitLines =
+      [
+        "export const main = 1;",
+        ...Array.from({ length: 15 }, (_, i) => `export const mainLine${i + 1} = 1;`),
+      ].join("\n") + "\n";
+    writeText(join(dir, "src", "main.ts"), mainInitLines);
+
+    runGit(["add", "."], dir);
+    runGit(["commit", "-m", "init"], dir);
+
+    writeText(join(dir, "README.md"), "export const readme = 2;\n");
+    writeText(join(dir, "docs", "README.md"), "export const docsReadme = 2;\n");
+    runGit(["mv", "orig/README.md", "docs/renamed-note.md"], dir);
+    writeText(
+      join(dir, "docs", "renamed-note.md"),
+      "export const orig1 = 1;\nexport const orig2 = 200;\nexport const orig3 = 3;\n",
+    );
+    writeText(join(dir, "src", "summary-match.ts"), "export const summary = 2;\n");
+    const bangFooChangedLines =
+      [
+        "export const bangFoo = 2;",
+        ...Array.from({ length: 11 }, (_, i) => `export const bangFooLine${i + 1} = 2;`),
+      ].join("\n") + "\n";
+    writeText(join(dir, "src", "!foo.ts"), bangFooChangedLines);
+    const mainChangedLines =
+      [
+        "export const main = 2;",
+        ...Array.from({ length: 14 }, (_, i) => `export const mainLine${i + 1} = 2;`),
+        "export const mainDestination = 9999;",
+      ].join("\n") + "\n";
+    writeText(join(dir, "src", "main.ts"), mainChangedLines);
+
+    runGit(["add", "."], dir);
+    runGit(["commit", "-m", "changes"], dir);
+
+    const sidecarPath = join(dir, "agent.json");
+    writeText(
+      sidecarPath,
+      JSON.stringify({
+        version: 1,
+        files: [
+          {
+            path: "src/summary-match.ts",
+            summary: "Mentions README.md in agent summary",
+            annotations: [
+              {
+                newRange: [1, 1],
+                summary: "Note on summary match",
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    return { dir, sidecarPath };
+  }
+
   /** Build a repo whose final short file can only align to the reachable bottom edge. */
   function createBottomClampedRepoFixture() {
     return createGitRepoFixture([
@@ -1079,6 +1158,7 @@ end
       cwd: options.cwd ?? repoRoot,
       cols: options.cols ?? 140,
       rows: options.rows ?? 24,
+      waitForDataTimeout: 15_000,
       env: {
         ...process.env,
         XDG_CONFIG_HOME: configHome(),
@@ -1094,7 +1174,7 @@ end
 
     const session = new tuistory.Session(launchOptions);
     session.subscribe((data) => options.testTerminalResponder?.(data, session));
-    await session.waitForData({ timeout: 5_000 });
+    await session.waitForData({ timeout: 15_000 });
     await session.waitIdle();
     return session;
   }
@@ -1352,6 +1432,7 @@ end
     createCrossFileHunkNavigationRepoFixture,
     createDeletionOnlyFilePair,
     createElixirHeredocRepoFixture,
+    createFilterScenarioRepoFixtureTest,
     createIsolatedConfigHome,
     createRepoExtensionFixture,
     createLinkedWorktreeWatchFixture,

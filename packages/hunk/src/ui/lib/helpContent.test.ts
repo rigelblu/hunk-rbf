@@ -114,4 +114,39 @@ describe("buildHelpSections", () => {
     expect(keysFor(buildHelpSections(enabled), "reload the review")).toBe("r");
     expect(keysFor(buildHelpSections(disabled), "reload the review")).toBeUndefined();
   });
+
+  test("documents the filter focus toggle row", () => {
+    const sections = helpSections();
+    const reviewSection = sections.find((section) => section.title === "Review");
+    const toggleRow = reviewSection?.rows.find(
+      (row) => row.description === "toggle files/filter focus",
+    );
+
+    expect(toggleRow?.keys).toBe("Tab");
+  });
+
+  test("documents remapped toggleFocusArea", () => {
+    const sections = helpSections({ "hunk.app.toggleFocusArea": "ctrl+t" });
+    const reviewSection = sections.find((section) => section.title === "Review");
+    const toggleRow = reviewSection?.rows.find(
+      (row) => row.description === "toggle files/filter focus",
+    );
+
+    expect(toggleRow?.keys).toBe("Ctrl+T");
+  });
+
+  test("documents focusFilter when toggleFocusArea is unbound", () => {
+    const sections = helpSections({
+      "hunk.app.toggleFocusArea": false,
+      "hunk.review.focusFilter": "ctrl+f",
+    });
+    const reviewSection = sections.find((section) => section.title === "Review");
+    const toggleRow = reviewSection?.rows.find(
+      (row) => row.description === "toggle files/filter focus",
+    );
+    const filterRow = reviewSection?.rows.find((row) => row.description === "focus file filter");
+
+    expect(toggleRow).toBeUndefined();
+    expect(filterRow?.keys).toBe("Ctrl+F");
+  });
 });

@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, mock, test } from "bun:test";
-import { CliRenderEvents } from "@opentui/core";
+import { CliRenderEvents, ScrollBoxRenderable } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
 import { SESSION_BROKER_REGISTRATION_VERSION } from "@hunk/session-broker-core";
@@ -173,6 +173,40 @@ function createBootstrap(initialMode: LayoutMode = "split", pager = false): AppB
     ],
     initialMode,
     pager,
+  });
+}
+
+/** Build a test changeset with README files, main source, and a literal bang file for filter tests. */
+function createTestReadmeBootstrap(): AppBootstrap {
+  return createTestVcsAppBootstrap({
+    changesetId: "changeset:readme-filter",
+    files: [
+      createTestDiffFile(
+        "readme",
+        "README.md",
+        "export const readme = 1;\n",
+        "export const readme = 2;\n",
+      ),
+      createTestDiffFile(
+        "docs-readme",
+        "docs/README.md",
+        "export const docs = 1;\n",
+        "export const docs = 2;\n",
+      ),
+      createTestDiffFile(
+        "main",
+        "src/main.ts",
+        "export const main = 1;\n",
+        "export const main = 2;\n",
+      ),
+      createTestDiffFile(
+        "bang-file",
+        "src/!foo.ts",
+        "export const bang = 1;\n",
+        "export const bang = 2;\n",
+      ),
+    ],
+    initialMode: "unified",
   });
 }
 
@@ -2984,6 +3018,396 @@ describe("App interactions", () => {
       frame = setup.captureCharFrame();
       expect(frame).toContain("filter=beta");
       expect(frame).toContain("beta.ts");
+    } finally {
+      await act(async () => {
+        setup.renderer.destroy();
+      });
+    }
+  });
+
+  test("filter exclusion with !README.md, focus retention, live editing, and escape recovery", async () => {
+    const { getLatestSnapshot, hostClient } = createMockHostClient();
+    const bootstrap = createTestReadmeBootstrap();
+    const setup = await testRender(<AppHost bootstrap={bootstrap} hostClient={hostClient} />, {
+      width: 120,
+      height: 30,
+    });
+
+    try {
+      await flush(setup);
+      expect(getLatestSnapshot()).toMatchObject({ selectedFileId: "readme", selectedHunkIndex: 0 });
+      let frame = setup.captureCharFrame();
+      expect(frame).toContain("README.md");
+      expect(frame).toContain("docs/README.md");
+      expect(frame).toContain("src/main.ts");
+      expect(frame).toContain("src/!foo.ts");
+
+      // Press Tab to open the filter
+      await act(async () => {
+        await setup.mockInput.pressTab();
+      });
+      await flush(setup);
+      frame = setup.captureCharFrame();
+      expect(frame).toContain("filter: text; !text excludes");
+
+      // Type !: bare bang with empty operand keeps all files visible
+      await act(async () => {
+        await setup.mockInput.typeText("!");
+      });
+      await flush(setup);
+      frame = setup.captureCharFrame();
+      expect(frame).toContain("filter: !");
+      expect(frame).toContain("README.md");
+      expect(frame).toContain("src/main.ts");
+
+      // Type doc: intermediate !doc excludes docs/README.md while keeping README.md, src/main.ts, src/!foo.ts
+      await act(async () => {
+        await setup.mockInput.typeText("doc");
+      });
+      await flush(setup);
+      frame = setup.captureCharFrame();
+      expect(frame).toContain("filter: !doc");
+      expect(frame).not.toContain("docs/README.md");
+      expect(frame).toContain("README.md");
+      expect(frame).toContain("src/main.ts");
+      expect(frame).toContain("src/!foo.ts");
+
+      // Clear doc with backspaces and type README.md
+      for (let i = 0; i < 3; i++) {
+        await act(async () => {
+          setup.mockInput.pressBackspace();
+        });
+        await flush(setup);
+      }
+      await act(async () => {
+        await setup.mockInput.typeText("README.md");
+      });
+      await flush(setup);
+
+      frame = setup.captureCharFrame();
+      expect(frame).toContain("filter: !README.md");
+      expect(frame).not.toContain("docs/README.md");
+      expect(frame).toContain("src/main.ts");
+      expect(frame).toContain("src/!foo.ts");
+      expect(getLatestSnapshot()).toMatchObject({ selectedFileId: "readme", selectedHunkIndex: 0 });
+
+      // Clear with Escape before deliberate navigation to prove hidden identity and notes restore cleanly
+      await act(async () => {
+        await setup.mockInput.pressEscape();
+      });
+      frame = await waitForFrame(setup, (f) => f.includes("filter: text; !text excludes"));
+      expect(frame).toContain("filter: text; !text excludes");
+      expect(frame).toContain("README.md");
+      expect(frame).toContain("docs/README.md");
+      expect(getLatestSnapshot()).toMatchObject({ selectedFileId: "readme", selectedHunkIndex: 0 });
+
+      // Type !README.md again to restore the filter before navigation
+      await act(async () => {
+        await setup.mockInput.typeText("!README.md");
+      });
+      frame = await waitForFrame(setup, (f) => f.includes("filter: !README.md"));
+      expect(frame).toContain("filter: !README.md");
+      expect(frame).not.toContain("docs/README.md");
+      expect(getLatestSnapshot()).toMatchObject({ selectedFileId: "readme", selectedHunkIndex: 0 });
+
+      // Press Tab to blur filter input, retaining the filter query in review stream
+      await act(async () => {
+        await setup.mockInput.pressTab();
+      });
+      await flush(setup);
+
+      frame = setup.captureCharFrame();
+      expect(frame).toContain("filter=!README.md");
+      expect(frame).not.toContain("docs/README.md");
+      expect(frame).toContain("src/main.ts");
+
+      // Visible-hunk navigation while filtered: [ and ] navigate between visible files
+      await act(async () => {
+        setup.mockInput.pressKey("]");
+      });
+      await flush(setup);
+      expect(getLatestSnapshot()).toMatchObject({ selectedFileId: "main", selectedHunkIndex: 0 });
+
+      await act(async () => {
+        setup.mockInput.pressKey("]");
+      });
+      await flush(setup);
+      expect(getLatestSnapshot()).toMatchObject({
+        selectedFileId: "bang-file",
+        selectedHunkIndex: 0,
+      });
+
+      await act(async () => {
+        setup.mockInput.pressKey("[");
+      });
+      await flush(setup);
+      expect(getLatestSnapshot()).toMatchObject({ selectedFileId: "main", selectedHunkIndex: 0 });
+
+      // Re-focus the filter with Tab
+      await act(async () => {
+        await setup.mockInput.pressTab();
+      });
+      await flush(setup);
+      frame = setup.captureCharFrame();
+      expect(frame).toContain("filter: !README.md");
+
+      // Backspace 1 character: intermediate !README.m state still excludes README.md
+      await act(async () => {
+        setup.mockInput.pressBackspace();
+      });
+      await flush(setup);
+      frame = setup.captureCharFrame();
+      expect(frame).toContain("filter: !README.m");
+      expect(frame).not.toContain("docs/README.md");
+
+      // Backspace remaining letters back to !
+      for (let i = 0; i < 8; i++) {
+        await act(async () => {
+          setup.mockInput.pressBackspace();
+        });
+        await flush(setup);
+      }
+
+      frame = setup.captureCharFrame();
+      expect(frame).toContain("filter: !");
+      // Bare ! keeps all files visible
+      expect(frame).toContain("README.md");
+      expect(frame).toContain("docs/README.md");
+      expect(frame).toContain("src/main.ts");
+
+      // Backspace the ! back to placeholder
+      await act(async () => {
+        setup.mockInput.pressBackspace();
+      });
+      await flush(setup);
+      frame = setup.captureCharFrame();
+      expect(frame).toContain("filter: text; !text excludes");
+
+      // Test \!foo: escaped leading bang searches for literal leading bang
+      await act(async () => {
+        await setup.mockInput.typeText("\\!foo");
+      });
+      await flush(setup);
+      frame = setup.captureCharFrame();
+      expect(frame).toContain("filter: \\!foo");
+      expect(frame).toContain("src/!foo.ts");
+      expect(frame).not.toContain("src/main.ts");
+      expect(frame).not.toContain("README.md");
+
+      // Escape clears text back to placeholder
+      await act(async () => {
+        await setup.mockInput.pressEscape();
+      });
+      frame = await waitForFrame(setup, (f) => f.includes("filter: text; !text excludes"));
+      expect(frame).toContain("filter: text; !text excludes");
+      expect(frame).toContain("README.md");
+      expect(frame).toContain("src/!foo.ts");
+
+      // Test !!foo: exclusion of literal leading bang
+      await act(async () => {
+        await setup.mockInput.typeText("!!foo");
+      });
+      await flush(setup);
+      frame = setup.captureCharFrame();
+      expect(frame).toContain("filter: !!foo");
+      expect(frame).not.toContain("src/!foo.ts");
+      expect(frame).toContain("README.md");
+      expect(frame).toContain("src/main.ts");
+
+      // Type !. which excludes all files containing "."
+      await act(async () => {
+        await setup.mockInput.pressEscape();
+      });
+      await waitForFrame(setup, (f) => f.includes("filter: text; !text excludes"));
+      await act(async () => {
+        await setup.mockInput.typeText("!.");
+      });
+      await flush(setup);
+
+      frame = setup.captureCharFrame();
+      expect(frame).toContain("filter: !.");
+      expect(frame).toContain("No files match the current filter.");
+
+      // First Escape clears the text
+      await act(async () => {
+        await setup.mockInput.pressEscape();
+      });
+      frame = await waitForFrame(setup, (f) => f.includes("filter: text; !text excludes"));
+      expect(frame).toContain("filter: text; !text excludes");
+      expect(frame).toContain("README.md");
+      expect(frame).toContain("docs/README.md");
+      expect(frame).toContain("src/main.ts");
+
+      // Second Escape closes the filter prompt
+      await act(async () => {
+        await setup.mockInput.pressEscape();
+      });
+      frame = await waitForFrame(setup, (f) => !f.includes("filter:"));
+      expect(frame).not.toContain("filter:");
+      expect(frame).not.toContain("filter=");
+      expect(frame).toContain("README.md");
+      expect(frame).toContain("src/main.ts");
+      expect(getLatestSnapshot()?.selectedFileId).toBe("main");
+    } finally {
+      await act(async () => {
+        setup.renderer.destroy();
+      });
+    }
+  });
+
+  test("HelpDialog keyboard scrolling navigates content without mutating review navigation", async () => {
+    const onQuit = mock();
+    const { getLatestSnapshot, hostClient } = createMockHostClient();
+    const bootstrap = createTestReadmeBootstrap();
+    const setup = await testRender(
+      <AppHost bootstrap={bootstrap} onQuit={onQuit} hostClient={hostClient} />,
+      {
+        width: 80,
+        height: 24,
+      },
+    );
+
+    try {
+      await flush(setup);
+      const initialSnapshot = getLatestSnapshot();
+      expect(initialSnapshot?.selectedFileId).toBe("readme");
+      expect(initialSnapshot?.selectedHunkIndex).toBe(0);
+
+      // Open help dialog with ?
+      await act(async () => {
+        await setup.mockInput.pressKey("?");
+      });
+      await flush(setup);
+
+      let frame = setup.captureCharFrame();
+      expect(frame).toContain("Controls help");
+
+      // Initially at top (scrollTop 0), below-fold review actions are not on screen yet
+      expect(frame).not.toContain("reload the review");
+
+      /** Collect all mounted ScrollBoxRenderable nodes in the test tree. */
+      function findTestAllScrollRenderables(
+        node: any,
+        out: ScrollBoxRenderable[] = [],
+      ): ScrollBoxRenderable[] {
+        if (!node) return out;
+        if (node instanceof ScrollBoxRenderable) {
+          out.push(node);
+        }
+        for (const child of node.getChildren?.() ?? []) {
+          findTestAllScrollRenderables(child, out);
+        }
+        return out;
+      }
+
+      const preScrollBoxes = findTestAllScrollRenderables(setup.renderer.root);
+      expect(preScrollBoxes.every((sb) => sb.scrollTop === 0)).toBe(true);
+
+      // Press ArrowDown, PageDown, and End: focused HelpDialog scrollbox receives events
+      for (const key of ["ARROW_DOWN", "\x1b[6~", "END"]) {
+        await act(async () => {
+          setup.mockInput.pressKey(key);
+        });
+        await flush(setup);
+      }
+
+      frame = setup.captureCharFrame();
+      // Bottom review actions are now visible after scrolling
+      expect(frame).toContain("Review");
+      expect(frame).toContain("toggle files/filter focus");
+      expect(frame).toContain("reload the review");
+
+      // Help dialog scrollbox has advanced while underlying review scrollbox remains at 0
+      const postScrollBoxes = findTestAllScrollRenderables(setup.renderer.root);
+      const helpScrollBox = postScrollBoxes.find((sb) => sb.scrollTop > 0);
+      expect(helpScrollBox).toBeDefined();
+      expect(helpScrollBox!.scrollTop).toBeGreaterThan(0);
+      const reviewScrollBoxes = postScrollBoxes.filter((sb) => sb !== helpScrollBox);
+      expect(reviewScrollBoxes.every((sb) => sb.scrollTop === 0)).toBe(true);
+
+      // Press HOME to return help to top: underlying review scroll position remains untouched at 0
+      await act(async () => {
+        setup.mockInput.pressKey("HOME");
+      });
+      await flush(setup);
+      expect(helpScrollBox!.scrollTop).toBe(0);
+      expect(reviewScrollBoxes.every((sb) => sb.scrollTop === 0)).toBe(true);
+
+      // Press END to return help to bottom
+      await act(async () => {
+        setup.mockInput.pressKey("END");
+      });
+      await flush(setup);
+      expect(helpScrollBox!.scrollTop).toBeGreaterThan(0);
+      expect(reviewScrollBoxes.every((sb) => sb.scrollTop === 0)).toBe(true);
+
+      // Underlying review selection was not mutated by HelpDialog scroll keys
+      expect(getLatestSnapshot()).toMatchObject(initialSnapshot!);
+
+      // Pressing 'q' dispatches mapped hunk.app.quit without closing help
+      await act(async () => {
+        setup.mockInput.pressKey("q");
+      });
+      await flush(setup);
+      frame = setup.captureCharFrame();
+      expect(frame).toContain("Controls help");
+      expect(onQuit).toHaveBeenCalled();
+
+      // Press Escape to dismiss help
+      await act(async () => {
+        setup.mockInput.pressEscape();
+      });
+      frame = await waitForFrame(setup, (f) => !f.includes("Controls help"));
+      expect(frame).not.toContain("Controls help");
+      // Review is intact and active
+      expect(frame).toContain("README.md");
+      expect(frame).toContain("src/main.ts");
+      expect(getLatestSnapshot()).toMatchObject(initialSnapshot!);
+    } finally {
+      await act(async () => {
+        setup.renderer.destroy();
+      });
+    }
+  });
+
+  test("HelpDialog honors remapped Quit on End without stealing native scroll", async () => {
+    const onQuit = mock();
+    const { getLatestSnapshot, hostClient } = createMockHostClient();
+    const bootstrap = createTestReadmeBootstrap();
+    bootstrap.keybindings = { "hunk.app.quit": "end" };
+    const setup = await testRender(
+      <AppHost bootstrap={bootstrap} onQuit={onQuit} hostClient={hostClient} />,
+      {
+        width: 80,
+        height: 24,
+      },
+    );
+
+    try {
+      await flush(setup);
+      const initialSnapshot = getLatestSnapshot();
+      expect(initialSnapshot?.selectedFileId).toBe("readme");
+
+      // Open help dialog with ?
+      await act(async () => {
+        await setup.mockInput.pressKey("?");
+      });
+      await flush(setup);
+
+      let frame = setup.captureCharFrame();
+      expect(frame).toContain("Controls help");
+      // End chord was reassigned from jumpToBottom so jumpToBottom only shows G
+      expect(frame).toContain("G                        jump to end");
+
+      // Pressing End dispatches mapped hunk.app.quit rather than being swallowed as HelpDialog scroll
+      await act(async () => {
+        setup.mockInput.pressKey("END");
+      });
+      await flush(setup);
+
+      expect(onQuit).toHaveBeenCalledTimes(1);
+      // Underlying review selection remains intact
+      expect(getLatestSnapshot()).toMatchObject(initialSnapshot!);
     } finally {
       await act(async () => {
         setup.renderer.destroy();

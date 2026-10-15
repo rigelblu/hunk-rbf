@@ -193,6 +193,80 @@ export const REVIEW_NAVIGATION_FIXTURES: readonly ReviewNavigationFixture[] = [
     },
   },
   {
+    id: "selection-with-filter-exclusion",
+    findings: ["B4"],
+    description:
+      "An exclusion filter (!alpha) hides alpha while keeping beta visible; a hidden selection is kept, and navigation walks only visible files.",
+    build: () => [twoHunkFile("alpha"), twoHunkFile("beta")],
+    filter: "!alpha",
+    moves: [
+      { scope: "hunk", delta: 1, from: { file: "vanished", hunkIndex: 0 } },
+      { scope: "file", delta: 1, from: { file: 0, hunkIndex: 0 } },
+    ],
+    selections: [
+      { file: 0, hunkIndex: 1 },
+      { file: "vanished", hunkIndex: 3 },
+      { file: null, hunkIndex: 0 },
+      { file: 1, hunkIndex: 9 },
+    ],
+    expected: {
+      moves: [{ to: { file: 1, hunkIndex: 1 }, reveal: HUNK_REVEAL }, { to: null }],
+      normalizedSelections: [
+        { file: 0, hunkIndex: 1 },
+        { file: 1, hunkIndex: 0 },
+        { file: 1, hunkIndex: 0 },
+        { file: 1, hunkIndex: 1 },
+      ],
+      revealTargets: [[...TWO_HUNK_REVEAL_TARGETS], [...TWO_HUNK_REVEAL_TARGETS]],
+    },
+  },
+  {
+    id: "selection-with-bare-bang-filter",
+    findings: ["B4"],
+    description: "A bare ! filter keeps all files visible without excluding anything.",
+    build: () => [twoHunkFile("alpha"), twoHunkFile("beta")],
+    filter: "!",
+    moves: [{ scope: "file", delta: 1, from: { file: 0, hunkIndex: 0 } }],
+    selections: [
+      { file: 0, hunkIndex: 0 },
+      { file: 1, hunkIndex: 0 },
+    ],
+    expected: {
+      moves: [{ to: { file: 1, hunkIndex: 0 }, reveal: FILE_TOP_REVEAL }],
+      normalizedSelections: [
+        { file: 0, hunkIndex: 0 },
+        { file: 1, hunkIndex: 0 },
+      ],
+      revealTargets: [[...TWO_HUNK_REVEAL_TARGETS], [...TWO_HUNK_REVEAL_TARGETS]],
+    },
+  },
+  {
+    id: "selection-with-escaped-bang-filter",
+    findings: ["B4"],
+    description:
+      "A filter with leading \\! matches literal leading ! and filters out files without it.",
+    build: () => [twoHunkFile("alpha"), twoHunkFile("!bang")],
+    filter: "\\!bang",
+    moves: [
+      { scope: "hunk", delta: 1, from: { file: "vanished", hunkIndex: 0 } },
+      { scope: "file", delta: 1, from: { file: 0, hunkIndex: 0 } },
+    ],
+    selections: [
+      { file: 0, hunkIndex: 0 },
+      { file: "vanished", hunkIndex: 0 },
+      { file: 1, hunkIndex: 0 },
+    ],
+    expected: {
+      moves: [{ to: { file: 1, hunkIndex: 1 }, reveal: HUNK_REVEAL }, { to: null }],
+      normalizedSelections: [
+        { file: 0, hunkIndex: 0 },
+        { file: 1, hunkIndex: 0 },
+        { file: 1, hunkIndex: 0 },
+      ],
+      revealTargets: [[...TWO_HUNK_REVEAL_TARGETS], [...TWO_HUNK_REVEAL_TARGETS]],
+    },
+  },
+  {
     id: "pure-deletion-reveal-target",
     findings: ["B6"],
     description:

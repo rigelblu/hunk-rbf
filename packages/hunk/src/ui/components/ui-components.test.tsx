@@ -1,5 +1,5 @@
 import { describe, expect, mock, spyOn, test } from "bun:test";
-import { MouseButton, type ScrollBoxRenderable } from "@opentui/core";
+import { MouseButton, ScrollBoxRenderable } from "@opentui/core";
 import { MouseButtons } from "@opentui/core/testing";
 import { useKeyboard } from "@opentui/react";
 import { testRender } from "@opentui/react/test-utils";
@@ -3759,13 +3759,13 @@ describe("UI components", () => {
     const frame = await captureFrame(
       <HelpDialog
         commands={builtinCommandMatchProbes()}
-        terminalHeight={39}
+        terminalHeight={45}
         terminalWidth={76}
         theme={theme}
         onClose={() => {}}
       />,
       76,
-      39,
+      45,
     );
 
     const expectedRows = [
@@ -3879,13 +3879,13 @@ describe("UI components", () => {
     const frame = await captureFrame(
       <HelpDialog
         commands={builtinCommandMatchProbes(keys)}
-        terminalHeight={39}
+        terminalHeight={45}
         terminalWidth={76}
         theme={theme}
         onClose={() => {}}
       />,
       76,
-      39,
+      45,
     );
 
     expect(frame).toContain("Ctrl+X");

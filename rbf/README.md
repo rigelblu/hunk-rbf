@@ -162,3 +162,15 @@ Interactive history uses two rows normally. Workspace names fit beside author/ti
 ### Workspace-name visibility
 
 Use **View → Show workspace names** in history to hide or restore recorded workspace labels. It starts enabled. The current `(@)`, bookmarks and tags retain their existing visibility; **Show decorations** controls all labels. Hiding names removes a row they alone required; graph joins and other labels retain their space. When you save view preferences on quit, Hunk writes the top-level `history_workspace_names = false` or `true` setting. A repository with one workspace still omits its name.
+
+# 🔵⋯ Filter review files with inclusion and exclusion
+
+During interactive review, press **Tab** to focus the file filter. The filter matches case-insensitively across normalized current file paths, previous paths (for renamed files), and agent summaries.
+
+- **Inclusion (default):** Type text to show only matching files, for example `README.md`.
+- **Exclusion (`!`):** Prefix with `!` to hide matching files, for example `!README.md`.
+- **Substring matching:** Matching is literal substring matching on the joined text, so `!README.md` also excludes `README.md.bak` or files whose agent summaries mention `README.md`. Wildcards (`*`, `?`) and spaces are treated as literal text. This is simple substring filtering, not JJ filesets or glob syntax.
+- **Lone `!`:** A bare `!` leaves all files visible so you can start typing an exclusion without hiding the entire review stream.
+- **Literal leading `!`:** Prefix with a single backslash (`\!`) to search for text starting with a literal `!`, such as `\!foo`.
+- **Excluding literal `!`:** Type `!!foo` to exclude files matching literal `!foo`.
+- **Two-step Escape:** Press **Escape** once while focused in the filter to clear the search text; press **Escape** a second time to leave the filter and return keyboard ownership to review navigation.

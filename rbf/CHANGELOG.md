@@ -6,7 +6,13 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 
 # 🔵⋯ [Unreleased]
 
+## 🟠⋯ 🚨 Breaking Changes for End Users
+
+- 2026-10-15 - feat (BREAKING) | search for a literal leading `!` with `\!` after `!` becomes the exclusion operator (#hk-99)
+
 ## 🟠⋯ Added for End Users
+
+- 2026-10-15 - feat | exclude matching files from a review with `!text` in the Tab filter (#hk-99)
 
 ## 🟠⋯ Added for Technical Users
 

@@ -692,7 +692,7 @@ describe("extension prompts", () => {
       });
       await flushUntil(
         setup,
-        () => setup.captureCharFrame().includes("filter: type to filter files"),
+        () => setup.captureCharFrame().includes("filter: text; !text excludes"),
         "the filter prompt to open",
       );
       await act(async () => {
