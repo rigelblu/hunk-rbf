@@ -81,39 +81,40 @@ inserts without applying it. While a custom revset is active history draws no gr
 
 History-specific commands:
 
-| Command id                          | Does                         | Default keys                 |
-| ----------------------------------- | ---------------------------- | ---------------------------- |
-| `hunk.history.openSelection`        | Open the selected commit(s)  | `enter`                      |
-| `hunk.history.copyRevision`         | Copy the focused commit id   | `y`                          |
-| `hunk.history.refresh`              | Refresh repository history   | `r`                          |
-| `hunk.history.previousCommit`       | Move to the previous commit  | `up`, `k`                    |
-| `hunk.history.nextCommit`           | Move to the next commit      | `down`, `j`                  |
-| `hunk.history.startVisualSelection` | Start visual selection       | `v`                          |
-| `hunk.history.clearSelection`       | Clear the review range       | `escape`                     |
-| `hunk.history.extendPrevious`       | Extend selection upward      | `shift+up`, `K`              |
-| `hunk.history.extendNext`           | Extend selection downward    | `shift+down`, `J`            |
-| `hunk.history.pageUp`               | Move up one page             | `pageup`, `b`, `shift+space` |
-| `hunk.history.pageDown`             | Move down one page           | `pagedown`, `space`, `f`     |
-| `hunk.history.halfPageUp`           | Move up half a page          | `u`, `ctrl+u`                |
-| `hunk.history.halfPageDown`         | Move down half a page        | `d`, `ctrl+d`                |
-| `hunk.history.jumpToFirst`          | Jump to the first commit     | `home`, `g`                  |
-| `hunk.history.jumpToLast`           | Jump to the last commit      | `end`, `G`                   |
-| `hunk.history.search`               | Search history               | `/`                          |
-| `hunk.history.nextMatch`            | Select the next match        | `n`                          |
-| `hunk.history.previousMatch`        | Select the previous match    | `N`                          |
-| `hunk.history.editRevset`           | Edit the history revset      | `L`                          |
-| `hunk.history.toggleGraph`          | Toggle graph presentation    | _(none)_                     |
-| `hunk.history.toggleUnicode`        | Toggle Unicode graph lines   | _(none)_                     |
-| `hunk.history.toggleAuthor`         | Toggle author metadata       | _(none)_                     |
-| `hunk.history.toggleDate`           | Toggle date metadata         | _(none)_                     |
-| `hunk.history.toggleWorkspaceNames` | Toggle workspace names       | _(none)_                     |
-| `hunk.history.toggleDecorations`    | Toggle ref decorations       | _(none)_                     |
-| `hunk.history.squash`               | Choose squash sources        | `S`                          |
-| `hunk.history.rebase`               | Choose rebase sources        | `R`                          |
-| `hunk.history.operationResult`      | Open the last action result  | _(none)_                     |
-| `hunk.history.openFirstParent`      | Compare with first parent    | _(none)_                     |
-| `hunk.history.openParent`           | Choose a parent to compare   | _(none)_                     |
-| `hunk.history.showAbout`            | Show application information | _(none)_                     |
+| Command id                             | Does                                    | Default keys                 |
+| -------------------------------------- | --------------------------------------- | ---------------------------- |
+| `hunk.history.openSelection`           | Open the selected commit(s)             | `enter`                      |
+| `hunk.history.copyRevision`            | Copy the focused commit id              | `y`                          |
+| `hunk.history.refresh`                 | Refresh repository history              | `r`                          |
+| `hunk.history.previousCommit`          | Move to the previous commit             | `up`, `k`                    |
+| `hunk.history.nextCommit`              | Move to the next commit                 | `down`, `j`                  |
+| `hunk.history.toggleRevisionSelection` | Select or unselect the focused revision | `m`                          |
+| `hunk.history.clearRevisionSelection`  | Clear selected revisions                | `M`                          |
+| `hunk.history.startVisualSelection`    | Start a review range                    | `v`                          |
+| `hunk.history.clearSelection`          | Clear the review range                  | `escape`                     |
+| `hunk.history.extendPrevious`          | Extend review range upward              | `shift+up`, `K`              |
+| `hunk.history.extendNext`              | Extend review range downward            | `shift+down`, `J`            |
+| `hunk.history.pageUp`                  | Move up one page                        | `pageup`, `b`, `shift+space` |
+| `hunk.history.pageDown`                | Move down one page                      | `pagedown`, `space`, `f`     |
+| `hunk.history.halfPageUp`              | Move up half a page                     | `u`, `ctrl+u`                |
+| `hunk.history.halfPageDown`            | Move down half a page                   | `d`, `ctrl+d`                |
+| `hunk.history.jumpToFirst`             | Jump to the first commit                | `home`, `g`                  |
+| `hunk.history.jumpToLast`              | Jump to the last commit                 | `end`, `G`                   |
+| `hunk.history.search`                  | Search history                          | `/`                          |
+| `hunk.history.nextMatch`               | Select the next match                   | `n`                          |
+| `hunk.history.previousMatch`           | Select the previous match               | `N`                          |
+| `hunk.history.editRevset`              | Edit the history revset                 | `L`                          |
+| `hunk.history.toggleGraph`             | Toggle graph presentation               | _(none)_                     |
+| `hunk.history.toggleUnicode`           | Toggle Unicode graph lines              | _(none)_                     |
+| `hunk.history.toggleAuthor`            | Toggle author metadata                  | _(none)_                     |
+| `hunk.history.toggleDate`              | Toggle date metadata                    | _(none)_                     |
+| `hunk.history.toggleDecorations`       | Toggle ref decorations                  | _(none)_                     |
+| `hunk.history.squash`                  | Squash selected or focused revisions    | `S`                          |
+| `hunk.history.rebase`                  | Choose rebase sources                   | `R`                          |
+| `hunk.history.operationResult`         | Open the last action result             | _(none)_                     |
+| `hunk.history.openFirstParent`         | Compare with first parent               | _(none)_                     |
+| `hunk.history.openParent`              | Choose a parent to compare              | _(none)_                     |
+| `hunk.history.showAbout`               | Show application information            | _(none)_                     |
 
 Review and shared commands:
 
@@ -214,6 +215,10 @@ cannot trap the keyboard.
 `.hunk/config.toml`. Which keys do what is a property of your keyboard and your
 habits, so a checkout you review cannot rearrange them.
 
-History operation selection starts from Commit > Squash revision… or Rebase revision…. In that source phase, Space or a primary checkmark click selects/unselects a revision without moving the highlight. I (or i) inspects only the highlighted diff and returns to the same selection; Enter Continue locks an explicit single source and advances to destination choice. PageUp/PageDown and history navigation remain available. Lowercase r opens mark recovery when needed; otherwise it refreshes history. File > Refresh history is available while selecting sources. Selecting no sources or multiple sources withholds Continue.
+Ordinary history uses m to select/unselect the focused revision and M to clear selected revisions; Navigate exposes the same actions. Focus, explicit revision selection, and the v/Shift review range remain separate. Space pages and Enter opens the highlighted revision or review range.
 
-Ordinary history keeps Space paging and Enter highlighted/range review, with no operation checkmarks or x binding. Source membership remains visible through destination choice and confirmation cancellation, then clears when the operation ends. During destination choice, source and range edits are locked. Confirmation starts focused on Cancel; Tab/Shift-Tab choose Cancel, Apply or Details, Enter activates the focused choice, and Escape returns to the destination. Details has no dedicated letter. Rebase offers Onto (o), After (A), Before (B), and the s abandon-if-empty toggle. The result reports actual readback and is available again under File > Operation result….
+Commit > Squash revision… (S) captures the resolved explicit selection once, or the settled highlighted revision when there is no selection or review range, then opens destination choice directly. Checking, failed, or unresolved selection refuses the whole capture. A review range alone is not a Squash source. Selected Into is excluded from the effective sources before provider capability checks. Enter Squash runs the existing provider command when the destination is ready; Escape cancels. Squash has no source picker, Continue, Inspect, or separate confirmation. Selection survives cancellation and completion; after history refresh, actual readback removes only revision IDs proved removed. Surviving selected revisions, including Into, remain selected.
+
+Commit > Rebase revision… (R) retains editable source selection: Space or a primary checkmark click toggles membership, I (or i) inspects the highlighted diff and returns to that selection, and Enter Continue locks a single source before destination choice. PageUp/PageDown and history navigation remain available. Lowercase r opens mark recovery when needed; otherwise it refreshes history. File > Refresh history is available during source selection. Rebase's operation membership clears when its visit ends; destination choice locks edits. Confirmation starts focused on Cancel; Tab/Shift-Tab choose Cancel, Apply or Details, Enter activates the focused choice, and Escape returns to the destination. Rebase offers Onto (o), After (A), Before (B), and the s abandon-if-empty toggle.
+
+Operation results report actual readback and are available again under File > Operation result…. Clean Squash success shows a persistent nonblocking source-count/destination notice: ordinary history keys work immediately, and Esc Dismiss consumes only dismissal. File > Operation result… retains the full actual effects and exact recovery command. Refusals and attention results stay inline, with o Error output for failure diagnostics and r Retry refresh when needed, including a reopened result. Jujutsu owns final-description handling and opens its configured editor only when its native command requires it.

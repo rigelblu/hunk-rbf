@@ -498,7 +498,7 @@ test("opens an extended history selection as one inclusive comparison", async ()
     await setup.renderOnce();
     await act(async () => setup.mockInput.typeText("J"));
     await setup.renderOnce();
-    expect(setup.captureCharFrame()).toContain("2 in review range");
+    expect(setup.captureCharFrame()).toContain("Review range: 2");
     await act(async () => setup.mockInput.pressEnter());
     await settle(setup);
     expect(requests).toHaveLength(1);
@@ -1079,7 +1079,7 @@ test("operation inspection borrows singleton review and returns to the same mark
   );
   try {
     await settle(setup);
-    await act(async () => setup.mockInput.pressKey("S"));
+    await act(async () => setup.mockInput.pressKey("R"));
     await settle(setup);
     await act(async () => history.controller.select(1, 15, { extend: true }));
     await settle(setup);
@@ -1091,7 +1091,7 @@ test("operation inspection borrows singleton review and returns to the same mark
     await act(async () => setup.mockInput.pressKey("q"));
     await settle(setup);
     const after = history.controller.getSnapshot();
-    expect(setup.captureCharFrame()).toContain("Choose squash sources");
+    expect(setup.captureCharFrame()).toContain("Choose rebase sources");
     expect(setup.captureCharFrame()).toContain("I Inspect");
     expect(after.marks).toEqual(before.marks);
     expect(after.selected).toBe(before.selected);
@@ -1128,13 +1128,13 @@ test("failed inspection preparation resumes editable source selection without cl
   );
   try {
     await settle(setup);
-    await act(async () => setup.mockInput.pressKey("S"));
+    await act(async () => setup.mockInput.pressKey("R"));
     await settle(setup);
     await act(async () => setup.mockInput.pressArrow("down"));
     await settle(setup);
     await act(async () => setup.mockInput.pressKey("i"));
     await settle(setup);
-    expect(setup.captureCharFrame()).toContain("Choose squash sources");
+    expect(setup.captureCharFrame()).toContain("Choose rebase sources");
     expect(history.controller.getSnapshot().marks).toHaveLength(1);
     await act(async () => setup.mockInput.pressKey(" "));
     await settle(setup);
@@ -1181,7 +1181,7 @@ test("raw interrupt during inspection planning yields to host cancellation and a
   );
   try {
     await settle(setup);
-    await act(async () => setup.mockInput.pressKey("S"));
+    await act(async () => setup.mockInput.pressKey("R"));
     await settle(setup);
     await act(async () => setup.mockInput.pressKey("I"));
     await settle(setup);

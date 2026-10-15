@@ -11,6 +11,8 @@ import type {
   ExtensionVcsHistoryReviewAction,
   ExtensionVcsHistoryReviewOptions,
   ExtensionVcsMutationCapability,
+  ExtensionVcsMutationInvocation,
+  ExtensionVcsMutationProcessOutcome,
   ExtensionVcsMutationPreparation,
   ExtensionVcsMutationRequest,
   ExtensionVcsMutationResult,
@@ -32,7 +34,14 @@ export interface HistoryMutationRuntime {
     signal?: AbortSignal,
   ): Promise<ExtensionVcsMutationPreparation>;
   /** Runs a confirmed preparation once. Aborting `signal` stops the command; the result is still read back. */
-  apply(handleId: string, signal: AbortSignal): Promise<ExtensionVcsMutationResult>;
+  apply(
+    handleId: string,
+    signal: AbortSignal,
+    runHandedOver?: (
+      invocation: ExtensionVcsMutationInvocation,
+      signal: AbortSignal,
+    ) => Promise<ExtensionVcsMutationProcessOutcome>,
+  ): Promise<ExtensionVcsMutationResult>;
   dispose(handleId: string): Promise<void>;
 }
 

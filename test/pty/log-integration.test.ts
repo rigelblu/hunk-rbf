@@ -43,7 +43,7 @@ async function returnToHistory(session: Session) {
     session,
     "q",
     (text) =>
-      text.includes("Git history") && (text.includes("Enter open") || /\[[ x]\]/.test(text)),
+      text.includes("Git history") && (text.includes("Enter Open") || /\[[ x]\]/.test(text)),
     15_000,
   );
 }
@@ -281,9 +281,9 @@ describe("interactive hunk log", () => {
         .split("\n")
         .findIndex((line) => line.includes("First history commit"));
       session.writeRaw("v");
-      await session.waitForText(/1 in review range/, { timeout: 5_000 });
+      await session.waitForText(/Review range: 1/, { timeout: 5_000 });
       session.writeRaw("j");
-      await session.waitForText(/2 in review range/, { timeout: 5_000 });
+      await session.waitForText(/Review range: 2/, { timeout: 5_000 });
       const review = await harness.pressAndWaitForText(session, "enter", /rootOnly = true/, {
         timeout: 15_000,
       });
@@ -291,20 +291,20 @@ describe("interactive hunk log", () => {
       expect(review).toContain("Second history commit");
       expect(review).toContain("First history commit");
       expect(review).toMatch(/history · .* ago\s+[0-9a-f]{8} ⧉/);
-      await harness.pressAndWaitForText(session, "q", /2 in review range/, { timeout: 15_000 });
+      await harness.pressAndWaitForText(session, "q", /Review range: 2/, { timeout: 15_000 });
 
       // Escape collapses visual mode before direct Shift selection starts another range.
       await harness.pressAndWaitForSnapshot(
         session,
         "escape",
-        (text) => !text.includes("in review range"),
+        (text) => !text.includes("Review range:"),
         5_000,
       );
       session.writeRaw("k");
 
       // SGR mouse modifier bit 4 forwards Shift+click through capable terminals.
       session.writeRaw(`\x1b[<4;50;${rootRowIndex + 1}M\x1b[<4;50;${rootRowIndex + 1}m`);
-      await session.waitForText(/2 in review range/, { timeout: 5_000 });
+      await session.waitForText(/Review range: 2/, { timeout: 5_000 });
       await session.press("q");
     } finally {
       session.close();
@@ -326,7 +326,7 @@ describe("interactive hunk log", () => {
       });
       expect(history).toContain("First history commit");
       expect(history).toContain("File  View  Navigate  Commit  Help");
-      expect(history).toContain("Enter open");
+      expect(history).toContain("Enter Open");
 
       // Mouse and keyboard share the same menu model and actions.
       session.writeRaw("\x1b[<0;2;1M\x1b[<0;2;1m");
@@ -365,10 +365,10 @@ describe("interactive hunk log", () => {
       const returned = await harness.pressAndWaitForSnapshot(
         session,
         "q",
-        (text) => text.includes("Second history commit") && text.includes("Enter open"),
+        (text) => text.includes("Second history commit") && text.includes("Enter Open"),
         15_000,
       );
-      expect(returned).toContain("Enter open");
+      expect(returned).toContain("Enter Open");
       expect(session.getRawOutput().slice(returnOutputStart)).not.toContain("\x1b[?1049l");
 
       // The adjacent icon copies without opening the review.
@@ -485,14 +485,14 @@ describe("interactive hunk log", () => {
 
     try {
       const remapped = await session.waitForText(/Second history commit/, { timeout: 15_000 });
-      expect(remapped).toContain("x select");
-      expect(remapped).not.toContain("v select");
+      expect(remapped).toContain("x Review range");
+      expect(remapped).not.toContain("v Review range");
       session.writeRaw("x");
-      await session.waitForText(/1 in review range/, { timeout: 5_000 });
+      await session.waitForText(/Review range: 1/, { timeout: 5_000 });
       await harness.pressAndWaitForSnapshot(
         session,
         "escape",
-        (text) => !text.includes("in review range"),
+        (text) => !text.includes("Review range:"),
       );
       await session.press("down");
       await harness.pressAndWaitForText(session, "enter", /historyValue = 'second'/, {
@@ -570,7 +570,7 @@ describe("interactive hunk log", () => {
       session.writeRaw("1q");
       await harness.waitForSnapshot(
         session,
-        (text) => text.includes("Git history") && text.includes("Enter open"),
+        (text) => text.includes("Git history") && text.includes("Enter Open"),
         15_000,
       );
 
@@ -615,7 +615,7 @@ describe("interactive hunk log", () => {
       expect(wide).toContain("history ·");
       expect(wide).toContain("○─ Commits on Sep 6, 2026");
       expect(wide).toContain("Commits on Sep 5, 2026");
-      expect(wide).toMatch(/Commits on Sep 6, 2026\n\s*│\s*\n\s*> +│\s+Second history commit/);
+      expect(wide).toMatch(/Commits on Sep 6, 2026\n\s*│\s*\n\s+│\s+Second history commit/);
       expect(wide).not.toContain("Responsive description");
       expect(rightmostColumnOf(wide, displayId)).toBeGreaterThan(95);
 
@@ -652,7 +652,7 @@ describe("interactive hunk log", () => {
         .find((line) => line.includes("Second history com"));
       expect(narrow).toContain("history ·");
       expect(narrowCommitLine).toContain(displayId);
-      expect(narrowCommitLine?.trimStart()).toStartWith(">     │");
+      expect(narrowCommitLine?.trimStart()).toStartWith("│");
       expect(rightmostColumnOf(narrow, displayId)).toBeGreaterThan(27);
       await session.press("q");
     } finally {
@@ -713,7 +713,8 @@ describe("interactive hunk log", () => {
       args: ["log", "--color", "never", "--no-extensions"],
       cwd,
       cols: 90,
-      rows: 18,
+      // Leave room for three dated cards beside ordinary selection controls.
+      rows: 20,
     });
     try {
       await session.waitForText(/Second history commit/, { timeout: 15_000 });
@@ -743,7 +744,8 @@ describe("interactive hunk log", () => {
       args: ["log", "--color", "never", "--no-extensions"],
       cwd,
       cols: 90,
-      rows: 18,
+      // Leave room for three dated cards beside ordinary selection controls.
+      rows: 20,
     });
     try {
       const initial = await session.waitForText(/Second history commit/, { timeout: 15_000 });
@@ -806,7 +808,8 @@ describe("interactive hunk log", () => {
       args: ["log", "--color", "never", "--no-extensions"],
       cwd,
       cols: 90,
-      rows: 18,
+      // Leave room for three dated cards beside ordinary selection controls.
+      rows: 20,
     });
     try {
       await session.waitForText(/Second history commit/, { timeout: 15_000 });
@@ -848,7 +851,8 @@ describe("interactive hunk log", () => {
       args: ["log", "--color", "never", "--no-extensions"],
       cwd,
       cols: 90,
-      rows: 18,
+      // Leave room for three dated cards beside ordinary selection controls.
+      rows: 20,
     });
     try {
       const initial = await session.waitForText(/Second history commit/, { timeout: 15_000 });
@@ -898,7 +902,8 @@ describe("interactive hunk log", () => {
       args: ["log", "--color", "never", "--no-extensions"],
       cwd,
       cols: 90,
-      rows: 18,
+      // Leave room for three dated cards beside ordinary selection controls.
+      rows: 20,
     });
     try {
       await session.waitForText(/Second history commit/, { timeout: 15_000 });
@@ -1015,13 +1020,13 @@ groupedRefreshTest("keeps the physical reading row after JJ authored-day rewrite
     args: ["log", "--vcs", "jj", "--all", "--color", "never", "--no-extensions"],
     cwd,
     cols: 90,
-    // Three more rows than before: the JJ history screen now shows its revset, mode and a gap.
-    rows: 29,
+    // Preserve the original body budget: query chrome plus the new selection action row.
+    rows: 30,
   });
   try {
     await session.waitForText(/Dated entry 49/, { timeout: 15_000 });
     for (let index = 0; index < 8; index += 1) await session.press("down");
-    session.resize({ cols: 90, rows: 46 });
+    session.resize({ cols: 90, rows: 47 });
     await session.waitIdle();
     const selectedPhysicalRow = () =>
       session.getTerminalData().lines.findIndex((line) =>
@@ -1224,13 +1229,13 @@ describe("HK-93 focused working history", () => {
         await harness.pressAndWaitForSnapshot(
           session,
           "q",
-          (text) => text.includes("Enter open") && text.includes("~ older history hidden"),
+          (text) => text.includes("Enter Open") && text.includes("~ older history hidden"),
           15_000,
         );
         session.writeRaw("v");
-        await session.waitForText(/1 in review range/, { timeout: 5_000 });
+        await session.waitForText(/Review range: 1/, { timeout: 5_000 });
         session.writeRaw("j");
-        await session.waitForText(/2 in review range/, { timeout: 5_000 });
+        await session.waitForText(/Review range: 2/, { timeout: 5_000 });
         await session.press("escape");
         await session.press("f10");
         await session.press("right");
@@ -1305,7 +1310,7 @@ describe("HK-93 focused working history", () => {
           (text) =>
             text.includes("Mainline unavailable; showing visible") &&
             text.includes("history.") &&
-            text.includes("Jujutsu · 5 commits"),
+            text.includes("No explicit selection"),
           5_000,
         );
         expect(narrow).not.toContain("~ older history hidden");
@@ -1466,7 +1471,7 @@ describe("HK-92 workspace history", () => {
       await harness.pressAndWaitForSnapshot(
         session,
         "q",
-        (text) => text.includes("Jujutsu history") && text.includes("Enter open"),
+        (text) => text.includes("Jujutsu history") && text.includes("Enter Open"),
         15_000,
       );
       await session.press("f10");
@@ -1572,7 +1577,7 @@ describe("HK-92 workspace visibility", () => {
       expect(await session.text({ immediate: true })).not.toContain("Copied");
       clickWorkspaceTestCell(session, 64, ancestorLine + 2, true);
       await session.waitIdle();
-      await session.waitForText(/2 in review range/, { timeout: 5_000 });
+      await session.waitForText(/Review range: 2/, { timeout: 5_000 });
       await session.press("escape");
       await sleep(450);
       clickWorkspaceTestCell(session, 64, ancestorLine + 2);
@@ -1625,12 +1630,12 @@ describe("ordinary history selection", () => {
       expect(range).toContain("First history commit");
       await returnToHistory(session);
       await session.press("escape");
-      expect(await session.text()).not.toContain("in review range");
+      expect(await session.text()).not.toContain("Review range:");
     } finally {
       session.close();
     }
   });
-  test("blank membership cells and Ctrl targets do not mark outside an operation; Shift still selects a review range", async () => {
+  test("graph cells focus rows without selecting revisions; Ctrl targets do not select and Shift still forms a review range", async () => {
     const cwd = createHistoryRepo();
     const session = await harness.launchHunk({
       args: ["log", "--color", "never", "--no-extensions"],
@@ -1642,21 +1647,26 @@ describe("ordinary history selection", () => {
       let text = await session.waitForText(/First history commit/, { timeout: 15_000 });
       const lines = text.replace(/^\n/, "").split("\n");
       const row = lines.findIndex((line) => line.includes("First history commit"));
-      const focus = lines.findIndex((line) => line.includes("Second history commit"));
       session.writeRaw(`\x1b[<0;4;${row + 1}M\x1b[<0;4;${row + 1}m`);
       await session.waitIdle();
       text = await session.text();
       expect(text).not.toContain("marked");
       expect(text).not.toContain("[x]");
-      expect(text.replace(/^\n/, "").split("\n")[focus]).toMatch(/>.*Second history commit/);
+      expect(await session.text({ only: { background: "#404040" } })).toContain(
+        "First history commit",
+      );
+      await session.press("up");
+      expect(await session.text({ only: { background: "#404040" } })).toContain(
+        "Second history commit",
+      );
       const idX = lines[row]!.search(/[0-9a-f]{8}\s+⧉/);
       session.writeRaw(`\x1b[<16;${idX + 1};${row + 1}M\x1b[<16;${idX + 1};${row + 1}m`);
       await session.waitIdle();
       expect(await session.text()).not.toContain("marked");
       session.writeRaw(`\x1b[<4;${idX + 1};${row + 1}M\x1b[<4;${idX + 1};${row + 1}m`);
-      await session.waitForText(/2 in review range/);
+      await session.waitForText(/Review range: 2/);
       await session.press("escape");
-      expect(await session.text()).not.toContain("in review range");
+      expect(await session.text()).not.toContain("Review range:");
     } finally {
       reopened.close();
     }
@@ -1680,7 +1690,7 @@ describe("ordinary history selection", () => {
           await session.press("escape");
           await harness.waitForSnapshot(
             session,
-            (text) => !text.includes("Operation result") && text.includes("Git · 2 commits"),
+            (text) => !text.includes("Operation result") && text.includes("No explicit selection"),
             10_000,
           );
         } finally {
@@ -1787,7 +1797,7 @@ describe("HK-19.1 revset editor", () => {
         const launch = await session.waitForText(/Launch policy · Limit: 100/, { timeout: 15_000 });
         expect(launch).toContain(`Revset: ${HK19_LAUNCH_REVSET}`);
         expect(launch).toContain("Merge current work");
-        expect(launch).toContain("L edit revset · v select · Enter open · F10 menu");
+        expect(launch).toContain("L edit revset");
         expect(launch).not.toContain("Custom revset");
 
         session.writeRaw("L");
@@ -2017,7 +2027,7 @@ describe("HK-19.1 revset editor", () => {
       try {
         await session.waitForText(/Launch policy · Limit: 100/, { timeout: 15_000 });
         session.writeRaw("v\x1b[B");
-        await session.waitForText(/2 in review range/, { timeout: 5_000 });
+        await session.waitForText(/Review range: 2/, { timeout: 5_000 });
         session.writeRaw("L");
         await session.waitForText(/Edit revset/, { timeout: 5_000 });
         session.sendKey("escape");
@@ -2026,7 +2036,7 @@ describe("HK-19.1 revset editor", () => {
           (text) => !text.includes("Edit revset"),
           5_000,
         );
-        expect(closed).toContain("2 in review range");
+        expect(closed).toContain("Review range: 2");
 
         session.writeRaw("L");
         await session.waitForText(/Edit revset/, { timeout: 5_000 });
@@ -2042,7 +2052,7 @@ describe("HK-19.1 revset editor", () => {
         const refused = await session.waitForText(/Multi-commit selection is unavailable/, {
           timeout: 5_000,
         });
-        expect(refused).not.toContain("in review range");
+        expect(refused).not.toContain("Review range:");
       } finally {
         session.close();
       }

@@ -1,5 +1,5 @@
 /** Draw the retained source/destination docks and shared mutation confirmation/result slot. */
-import type { HistoryOperationViewFlow } from "./historyOperationTypes";
+import type { HistoryOperationSnapshot, HistoryOperationViewFlow } from "./historyOperationTypes";
 import type { HistoryMutationModalFrame } from "./mutationFlow";
 import { RevisionSourcePanel } from "./RevisionSourcePanel";
 import {
@@ -18,10 +18,230 @@ import {
   mutationSafeLines,
 } from "./mutationPresentation";
 
-/** Use one visibility rule for the rendered Apply affordance and its keyboard route. */
-export function historyOperationTooSmall(frame: HistoryMutationModalFrame, rebase: boolean) {
-  return frame.terminalWidth < (rebase ? 33 : 32) || frame.terminalHeight < (rebase ? 13 : 12);
+/** Reflow a factual notice and optional dismissal without adding operation chrome. */
+export function historyResultNoticeLayout(text: string, terminalWidth: number) {
+  const width = Math.max(1, terminalWidth - 2);
+  const lines = wrapText(text, width);
+  const inline = measureTextWidth(lines.at(-1) ?? "") + measureTextWidth(" · Esc Dismiss") <= width;
+  return { lines, inline, rows: lines.length + (inline ? 0 : 1) };
 }
+
+/** Draw success while ordinary history keeps ownership of navigation and review. */
+export function HistoryResultNotice({
+  text,
+  frame,
+  dismiss,
+}: {
+  text: string;
+  frame: HistoryMutationModalFrame;
+  dismiss: () => void;
+}) {
+  const layout = historyResultNoticeLayout(text, frame.terminalWidth);
+  return (
+    <box
+      style={{
+        width: frame.terminalWidth,
+        height: layout.rows,
+        paddingLeft: 1,
+        paddingRight: 1,
+        flexDirection: "column",
+        backgroundColor: frame.theme.panel,
+      }}
+    >
+      {layout.lines.map((line, index) => (
+        <box key={index} style={{ height: 1, flexDirection: "row", flexShrink: 0 }}>
+          <text fg={frame.theme.text} style={{ flexShrink: 0 }}>
+            {line}
+          </text>
+          {layout.inline && index === layout.lines.length - 1 ? (
+            <>
+              <text fg={frame.theme.muted} style={{ flexShrink: 0 }}>
+                {" "}
+                ·{" "}
+              </text>
+              <box style={{ width: measureTextWidth("Esc Dismiss"), height: 1, flexShrink: 0 }}>
+                <DialogActionRow
+                  actions={[{ id: "dismiss", keyLabel: "Esc", label: "Dismiss", run: dismiss }]}
+                  theme={frame.theme}
+                  primaryMouseOnly
+                  compact
+                />
+              </box>
+            </>
+          ) : null}
+        </box>
+      ))}
+      {layout.inline ? null : (
+        <DialogActionRow
+          actions={[{ id: "dismiss", keyLabel: "Esc", label: "Dismiss", run: dismiss }]}
+          theme={frame.theme}
+          primaryMouseOnly
+          compact
+        />
+      )}
+    </box>
+  );
+}
+
+/** Use one visibility rule for the rendered Apply affordance and its keyboard route. */
+export function historyOperationTooSmall(
+  frame: HistoryMutationModalFrame,
+  rebase: boolean,
+  details = false,
+) {
+  return (
+    frame.terminalWidth < (details ? 24 : rebase ? 33 : 32) ||
+    frame.terminalHeight < (details ? 12 : rebase ? 13 : 12)
+  );
+}
+/** Withhold execution when the compact graph dock cannot retain targets and actions. */
+export function squashDockTooSmall(frame: HistoryMutationModalFrame) {
+  return frame.terminalWidth < 28 || frame.terminalHeight < 14;
+}
+
+/** Offer actual diagnostics only when a Squash result needs failure recovery. */
+export function squashErrorOutputAvailable(result: HistoryOperationSnapshot["result"]) {
+  return Boolean(
+    result &&
+    (result.kind === "not-run"
+      ? result.reason === "start-failed"
+      : result.verdict.outcome === "failed" ||
+        result.verdict.outcome === "unexpected" ||
+        result.change.kind === "unread"),
+  );
+}
+
+/** Keep Squash actions fixed while contextual messages scroll beside the graph. */
+export function squashDockLayout(flow: HistoryOperationViewFlow, frame: HistoryMutationModalFrame) {
+  const s = flow.getSnapshot();
+  const width = Math.max(1, frame.terminalWidth - 2);
+  const result = s.phase === "result";
+  const tooSmall = result
+    ? historyOperationTooSmall(frame, false, true)
+    : squashDockTooSmall(frame);
+  const close = () =>
+    result ? flow.closeResult(s.attempt) : void flow.cancelVisit(s.visit!, s.attempt);
+  const ready = !result && !tooSmall && flow.squashDestinationReady();
+  const sourceCount =
+    ready && s.prepared?.request.kind === "squash" ? s.prepared.request.sources.length : 0;
+  const readySummary = sourceCount
+    ? `${sourceCount} revision${sourceCount === 1 ? "" : "s"} will be squashed.`
+    : null;
+  const actions: ConfirmDialogAction[] = [
+    ...(ready
+      ? [
+          {
+            id: "squash",
+            keyLabel: "Enter",
+            label: "Squash",
+            run: () => flow.previewDestination(s.visit!, s.attempt),
+          },
+        ]
+      : []),
+    ...(result && !tooSmall && squashErrorOutputAvailable(s.result)
+      ? [
+          {
+            id: "output",
+            keyLabel: "o",
+            label: "Error output",
+            run: () => flow.updateView({ details: true, scroll: 0 }, s),
+          },
+        ]
+      : []),
+    ...(result && s.refreshFailed && !tooSmall
+      ? [
+          {
+            id: "retry",
+            keyLabel: "r",
+            label: "Retry refresh",
+            run: () => {
+              void flow.retryRefresh(s.attempt);
+            },
+          },
+        ]
+      : []),
+    { id: "cancel", keyLabel: "Esc", label: result ? "Close" : "Cancel", run: close },
+  ];
+  const actionRows = layoutDialogActionRows(actions, width, 0);
+  const destinationHint = !result && !tooSmall ? "↑↓ Destination" : null;
+  const inlineHint = Boolean(
+    destinationHint &&
+    actionRows.length === 1 &&
+    measureTextWidth(destinationHint) +
+      3 +
+      actions.reduce((n, action) => n + measureTextWidth(`${action.keyLabel} ${action.label}`), 0) +
+      Math.max(0, actions.length - 1) * 3 <=
+      width,
+  );
+  const chromeRows =
+    (result ? 2 : 0) + actionRows.length + (destinationHint && !inlineHint ? 1 : 0);
+  const refusal = flow.destinationRefusal(frame.highlighted);
+  const messages = tooSmall
+    ? ["Resize the terminal to continue."]
+    : [
+        ...(result
+          ? mutationResultLines(s.result, s.prepared, false, { compact: true })
+          : s.phase === "preparing"
+            ? s.squashCheckingVisible
+              ? ["Checking squash…"]
+              : []
+            : s.reason
+              ? [s.reason]
+              : refusal
+                ? [refusal]
+                : []),
+        ...(result && s.reason ? [s.reason] : []),
+        ...(readySummary ? [readySummary] : []),
+        ...(!result && s.phase !== "preparing"
+          ? (s.prepared?.projection.warnings ?? []).map((warning) => `Warning: ${warning}`)
+          : []),
+        ...(!result && s.phase !== "preparing"
+          ? (s.prepared?.projection.notes ?? []).filter(
+              (note) =>
+                note !== "The source revision is removed." &&
+                !/^\d+ other revisions? will be rebased\.$/.test(note),
+            )
+          : []),
+        ...(s.providerText && s.providerText !== s.reason ? [s.providerText] : []),
+        ...(result && !s.result && !s.reason ? ["No operation has run in this Hunk session."] : []),
+        ...(s.refreshFailed
+          ? ["History refresh failed. Retry refresh before another action."]
+          : []),
+      ];
+  const all = mutationSafeLines(messages).flatMap((line) => wrapText(line, width));
+  // Leave room for existing chrome and one complete focused history card.
+  const budget = Math.max(
+    1,
+    frame.terminalHeight - 8 - chromeRows - (frame.historyHeaderRows ?? 0),
+  );
+  const overflow = all.length > budget;
+  const bodyRows = overflow ? Math.max(1, budget - 1) : all.length;
+  const maxScroll = Math.max(0, all.length - bodyRows);
+  const top = Math.min(Math.max(0, s.scroll), maxScroll);
+  const lines = all.slice(top, top + bodyRows);
+  if (overflow)
+    lines.push(
+      fitText(
+        `${width >= 38 ? "PgUp/PgDn Messages" : "PgUp/PgDn"} · ${top + 1}–${Math.min(all.length, top + bodyRows)}/${all.length}`,
+        width,
+        "…",
+      ),
+    );
+  return {
+    lines,
+    actions,
+    actionRows,
+    rows: lines.length + chromeRows,
+    destinationHint,
+    inlineHint,
+    tooSmall,
+    overflow,
+    bodyRows,
+    top,
+    maxScroll,
+  };
+}
+
 /** Keep destination header/actions in one row where they fit and reflow them at narrow widths. */
 export function destinationLayout(
   flow: HistoryOperationViewFlow,
@@ -101,8 +321,10 @@ export function planHistoryOperationOverlay(
   frame: HistoryMutationModalFrame,
 ) {
   const s = flow.getSnapshot();
-  const confirming = s.phase === "confirmation" && s.prepared;
-  const modalWidth = Math.min(88, Math.max(1, frame.terminalWidth - 4));
+  const confirming =
+    s.prepared &&
+    (s.phase === "confirmation" || (s.operation === "squash" && s.phase === "destination"));
+  const modalWidth = Math.min(88, Math.max(1, frame.terminalWidth - (s.fullResult ? 2 : 4)));
   const innerWidth = Math.max(1, modalWidth - 4);
   const raw = [
     ...(s.reason ? mutationSafeLines([s.reason]) : []),
@@ -118,9 +340,10 @@ export function planHistoryOperationOverlay(
   ];
   const lines = raw.flatMap((line) => wrapText(line, innerWidth));
   const toggle = confirming && s.prepared!.request.kind === "rebase";
-  const tooSmall = historyOperationTooSmall(frame, Boolean(toggle));
+  const tooSmall = historyOperationTooSmall(frame, Boolean(toggle), s.details);
   const cancel = () => {
-    if (s.details) flow.updateView({ details: false, scroll: 0 }, s);
+    if (s.fullResult) flow.closeResult(s.attempt);
+    else if (s.details) flow.updateView({ details: false, scroll: 0 }, s);
     else if (s.visit) void flow.cancelConfirmation(s.visit, s.attempt);
     else flow.closeResult(s.attempt);
   };
@@ -138,7 +361,23 @@ export function planHistoryOperationOverlay(
   });
   const actions =
     s.details || tooSmall
-      ? [action("back", s.details ? "Back" : "Cancel", 0, cancel)]
+      ? s.fullResult
+        ? [
+            ...(s.refreshFailed
+              ? [
+                  {
+                    id: "retry",
+                    keyLabel: "r",
+                    label: "Retry refresh",
+                    run: () => {
+                      void flow.retryRefresh(s.attempt);
+                    },
+                  },
+                ]
+              : []),
+            { id: "close", keyLabel: "Esc", label: "Close", run: cancel },
+          ]
+        : [action("back", s.details ? "Back" : "Cancel", 0, cancel)]
       : confirming
         ? [
             action("cancel", "Cancel", 0, cancel),
@@ -161,9 +400,9 @@ export function planHistoryOperationOverlay(
     1,
     frame.terminalHeight -
       2 -
-      confirmDialogHeight(0) -
+      confirmDialogHeight(0, s.fullResult) -
       (toggle ? 1 : 0) -
-      1 -
+      (s.fullResult ? 0 : 1) -
       (actionRows.length - 1),
   );
   // Reserve a visible cue before clipping, so omitted consequences are discoverable before Apply.
@@ -209,6 +448,77 @@ export function HistoryOperationView({
         theme={theme}
       />
     );
+  if (
+    s.operation === "squash" &&
+    ["destination", "preparing", "result"].includes(s.phase) &&
+    !s.details
+  ) {
+    const layout = squashDockLayout(flow, frame);
+    return (
+      <box
+        style={{
+          width: frame.terminalWidth,
+          height: layout.rows,
+          paddingLeft: 1,
+          paddingRight: 1,
+          flexDirection: "column",
+          backgroundColor: theme.panel,
+        }}
+        onMouseScroll={(event) => {
+          event.stopPropagation();
+          const direction = event.scroll?.direction;
+          if (layout.overflow && (direction === "up" || direction === "down"))
+            flow.updateView(
+              {
+                scroll: Math.min(
+                  layout.maxScroll,
+                  Math.max(0, layout.top + (direction === "up" ? -1 : 1)),
+                ),
+              },
+              s,
+            );
+        }}
+      >
+        {s.phase === "result" ? (
+          <>
+            <text fg={theme.text} style={{ height: 1, flexShrink: 0 }}>
+              Squash
+            </text>
+            <box style={{ height: 1, flexShrink: 0 }} />
+          </>
+        ) : null}
+        {layout.lines.map((line, index) => (
+          <text key={index} fg={theme.text} style={{ height: 1, flexShrink: 0 }}>
+            {fitText(line, width, "…")}
+          </text>
+        ))}
+        {layout.destinationHint && !layout.inlineHint ? (
+          <text fg={theme.muted} style={{ height: 1, flexShrink: 0 }}>
+            {layout.destinationHint}
+          </text>
+        ) : null}
+        {layout.actionRows.map((actions, index) => (
+          <box key={index} style={{ height: 1, flexShrink: 0, flexDirection: "row" }}>
+            {layout.inlineHint && index === 0 ? (
+              <text fg={theme.muted} style={{ flexShrink: 0 }}>
+                {layout.destinationHint} ·{" "}
+              </text>
+            ) : null}
+            <box
+              style={{
+                width: layout.inlineHint
+                  ? width - measureTextWidth(layout.destinationHint!) - 3
+                  : width,
+                height: 1,
+              }}
+            >
+              <DialogActionRow actions={actions} theme={theme} primaryMouseOnly compact />
+            </box>
+          </box>
+        ))}
+      </box>
+    );
+  }
   if (s.phase === "destination" && !s.details) {
     const layout = destinationLayout(flow, frame);
     const source = s.sources[0]!;
@@ -280,16 +590,19 @@ export function HistoryOperationView({
             : "Preparing action…"}
       </text>
     );
-  const confirming = s.phase === "confirmation" && s.prepared;
-  const modalWidth = Math.min(88, Math.max(1, frame.terminalWidth - 4));
+  const confirming =
+    s.prepared &&
+    (s.phase === "confirmation" || (s.operation === "squash" && s.phase === "destination"));
+  const modalWidth = Math.min(88, Math.max(1, frame.terminalWidth - (s.fullResult ? 2 : 4)));
   const innerWidth = Math.max(1, modalWidth - 4);
   const rebase = s.phase === "confirmation" && s.prepared?.request.kind === "rebase";
   const cancelSmall = () => {
-    if (s.details) flow.updateView({ details: false, scroll: 0 }, s);
+    if (s.fullResult) flow.closeResult(s.attempt);
+    else if (s.details) flow.updateView({ details: false, scroll: 0 }, s);
     else if (s.visit) void flow.cancelConfirmation(s.visit, s.attempt);
     else flow.closeResult(s.attempt);
   };
-  if (historyOperationTooSmall(frame, Boolean(rebase))) {
+  if (historyOperationTooSmall(frame, Boolean(rebase), s.details)) {
     const message = wrapText(
       "Terminal is too small to show this action. Resize to continue.",
       innerWidth,
@@ -350,18 +663,24 @@ export function HistoryOperationView({
   } = planHistoryOperationOverlay(flow, frame);
   return (
     <ConfirmDialog
+      compact={s.fullResult}
       title={
         tooSmall
           ? "Action"
-          : s.details
-            ? "Action details"
-            : confirming
-              ? `Confirm ${s.operation}`
-              : "Operation result"
+          : s.fullResult
+            ? "Operation result"
+            : s.details
+              ? s.operation === "squash"
+                ? "Squash error output"
+                : "Action details"
+              : confirming
+                ? `Confirm ${s.operation}`
+                : "Operation result"
       }
       width={modalWidth}
       height={confirmDialogHeight(
-        bodyRows + (toggle ? 1 : 0) + cueRows + 1 + actionRows.length - 1,
+        bodyRows + (toggle ? 1 : 0) + cueRows + (s.fullResult ? 0 : 1) + actionRows.length - 1,
+        s.fullResult,
       )}
       terminalWidth={frame.terminalWidth}
       terminalHeight={frame.terminalHeight}
@@ -407,17 +726,19 @@ export function HistoryOperationView({
           primaryMouseOnly
         />
       ) : null}
-      <text style={{ height: 1 }} fg={theme.muted}>
-        {fitText(
-          overflow && !cueRows
-            ? scrollHint
-            : s.details
-              ? "Enter Back · Esc Back"
-              : `Tab Choose · Enter Select · Esc ${confirming ? "Cancel" : "Close"}`,
-          innerWidth,
-          "…",
-        )}
-      </text>
+      {s.fullResult ? null : (
+        <text style={{ height: 1 }} fg={theme.muted}>
+          {fitText(
+            overflow && !cueRows
+              ? scrollHint
+              : s.details
+                ? "Enter Back · Esc Back"
+                : `Tab Choose · Enter Select · Esc ${confirming ? "Cancel" : "Close"}`,
+            innerWidth,
+            "…",
+          )}
+        </text>
+      )}
     </ConfirmDialog>
   );
 }

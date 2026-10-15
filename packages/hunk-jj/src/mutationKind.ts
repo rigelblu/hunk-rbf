@@ -37,6 +37,8 @@ export interface JjMutationPlan {
   args: readonly JjMutationArgument[];
   /** dry-run: the runner runs `args` with `--no-integrate-operation` and reads the change. facts-only: no dry run, because the command needs the user's input. */
   preview: "dry-run" | "facts-only";
+  /** Substitute noninteractive arguments only for the non-integrating content preview. */
+  previewArgs?: readonly JjMutationArgument[];
   /** The command needs the terminal. The runner hands it over for the whole command. */
   interactive: boolean;
   /** The composed description, when the kind writes one. */

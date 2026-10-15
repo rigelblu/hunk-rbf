@@ -2562,3 +2562,24 @@ test("operation endpoint highlighting retains range and current geometry without
     await controller.close();
   }
 });
+
+test("actual removed pre-refresh identities cannot survive as logical replacements", async () => {
+  const { runtime, setHistory } = createTestRuntime([
+    { revisionId: "A", logicalId: "a" },
+    { revisionId: "B", logicalId: "b" },
+  ]);
+  const controller = new LogController(runtime);
+  try {
+    await controller.loadMore();
+    controller.toggleMark(0);
+    controller.toggleMark(1);
+    setHistory([
+      { revisionId: "A2", logicalId: "a" },
+      { revisionId: "B2", logicalId: "b" },
+    ]);
+    expect(await controller.refreshAfterMutation(() => true, ["A"])).toBe(true);
+    expect(controller.getSnapshot().marks.map((m) => m.mark.revisionId)).toEqual(["B2"]);
+  } finally {
+    await controller.close();
+  }
+});

@@ -785,8 +785,11 @@ async function prepareMutation(
     }
 
     const { args, addresses, commandWord } = await resolveArguments(session, plan, facts);
+    const previewArgs = plan.previewArgs
+      ? (await resolveArguments(session, { ...plan, args: plan.previewArgs }, facts)).args
+      : args;
     const dryRun =
-      plan.preview === "dry-run" ? await runDryRun(session, facts, args, commandWord) : null;
+      plan.preview === "dry-run" ? await runDryRun(session, facts, previewArgs, commandWord) : null;
     // The dry run recorded files the pending read called clean: a file was saved in between, or
     // jj reworded the line the read depends on. Either way the confirmation would not name them.
     if (

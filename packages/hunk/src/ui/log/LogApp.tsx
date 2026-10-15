@@ -1,4 +1,10 @@
-import { MouseButton, type KeyEvent, type MouseEvent as TuiMouseEvent } from "@opentui/core";
+import { HistoryResultNotice, historyResultNoticeLayout } from "./HistoryOperationView";
+import {
+  MouseButton,
+  TextAttributes,
+  type KeyEvent,
+  type MouseEvent as TuiMouseEvent,
+} from "@opentui/core";
 import {
   flushSync,
   useKeyboard,
@@ -31,6 +37,9 @@ import {
   type ViewPreferenceQuitScheduler,
 } from "../hooks/useViewPreferenceQuitController";
 import { fitText, measureTextWidth, wrapText } from "../lib/text";
+import { blendHex } from "../lib/color";
+import { DialogActionRow } from "../components/chrome/ConfirmDialog";
+import { planHistorySelectionFooter } from "./historySelectionFooter";
 import { handleViewPreferenceQuitPromptKey } from "../lib/viewPreferenceQuitKeys";
 import type { ThemeController } from "../theme/controller";
 import type { PreviousInputs } from "../session/previousInputs";
@@ -57,8 +66,12 @@ import {
   revisionMarksVisibleCount,
 } from "./RevisionMarksDialog";
 import { ParentSelectorDialog } from "./ParentSelectorDialog";
-import { monochromeLogTheme, resolveInteractiveLogPalette } from "./colorPolicy";
-import { splitHistoryTitle } from "../history/title";
+import {
+  monochromeLogTheme,
+  resolveInteractiveLogPalette,
+  resolveSquashRolePalette,
+} from "./colorPolicy";
+import { formatHistoryTitle, splitHistoryTitle } from "../history/title";
 import { resolveHistoryTitlePalette } from "../history/titlePalette";
 import { formatHistoryDay } from "./formatting";
 import { commitEntryHeight, LOG_DAY_HEADER_HEIGHT, planLogViewportGeometry } from "./geometry";
@@ -89,7 +102,7 @@ import type { HistoryMutationModalFrame } from "./mutationFlow";
 import { RevisionSourceMark } from "./RevisionSourcePanel";
 import { historyScopeText } from "../history/staticProjection";
 
-/** Cells for the focus `>` and review-range `|` markers at the start of every revision row. */
+/** Reserve the review-range rail and Rebase-only focus marker before revision rows. */
 const LOG_FOCUS_CELLS_WIDTH = 2;
 /** Cells for operation membership, between the focus cells and graph. */
 const LOG_REVISION_MARK_WIDTH = 4;
@@ -181,6 +194,7 @@ export function LogApp({
     count: number;
   } | null>(null);
   const lastClick = useRef({ index: -1, at: 0 });
+  const selectionMenuIdentity = useRef<string | null>(null);
   // Lock synchronously before requesting review preparation so coalesced input cannot
   // open two child reviews. Quit remains available while the host settles pending work.
   const reviewPending = useRef(false);
@@ -212,16 +226,33 @@ export function LogApp({
     snapshot.rows.some((row) => Boolean(row.cutoffLanes?.length)),
   );
   const queryView = planHistoryQueryView(snapshot.query, terminal);
-  const scopeLines =
+  let scopeLines =
     scopeText && !queryView.replacesScopeLine
       ? wrapText(scopeText, Math.max(1, terminal.width - 2))
       : [];
+  const inactiveHistoryCommandNames = useMemo(() => {
+    const names = new Set(APP_COMMAND_NAMES);
+    for (const registered of buildSessionCommands(runtime.extensionSession.current.registry)) {
+      names.add(`${registered.extensionId}.${registered.command.id}`);
+    }
+    return names;
+  }, [runtime.extensionSession]);
+  const historyKeymap = useMemo(
+    () =>
+      resolveCommandKeys({
+        defaults: historyCommandKeyDefaults(),
+        inactiveCommandNames: inactiveHistoryCommandNames,
+        userBindings: runtime.keybindings,
+      }),
+    [inactiveHistoryCommandNames, runtime.keybindings],
+  );
   const operationFrame = (): HistoryMutationModalFrame => {
     const visit = operations.getSnapshot().visit;
     return {
       theme,
       terminalWidth: renderer.width,
       terminalHeight: renderer.height,
+      historyHeaderRows: queryRows + historyContextLines.length,
       highlighted: controller.getSelectedRow()?.commit ?? null,
       inspectHighlighted: () => {
         void requestInspectHighlighted(visit);
@@ -233,15 +264,114 @@ export function LogApp({
   };
   const operationDocked = operation.modal?.presentation === "docked" && !operation.suspended;
   const replacesStatus =
-    operationDocked && operation.phase !== "destination" && !statusLineState.prompt;
+    operationDocked &&
+    (operation.phase !== "destination" || operation.operation === "squash") &&
+    !statusLineState.prompt;
+  const resultNotice = !operation.modal ? operation.resultNotice : null;
+  const resultNoticeRows = resultNotice
+    ? historyResultNoticeLayout(resultNotice, terminal.width).rows
+    : 0;
+  const selectionFooter =
+    !operation.modal && !statusLineState.prompt
+      ? planHistorySelectionFooter(
+          snapshot,
+          terminal.width,
+          historyKeymap.keys,
+          (id) => executeCommand(id),
+          () => menu.openMenu("file"),
+          () => setMarksDialogIndex(0),
+          snapshot.selectionAnchor !== null || snapshot.visualSelectionActive
+            ? (selection?.count ?? 0)
+            : null,
+          {
+            provider: runtime.providerName,
+            editableQuery: Boolean(snapshot.query?.editable),
+          },
+        )
+      : null;
+  const squashContext =
+    operationDocked &&
+    operation.operation === "squash" &&
+    (operation.phase === "destination" || operation.phase === "preparing") &&
+    !operation.details;
+  const historyContextLines = squashContext
+    ? ["Squash"]
+    : selectionFooter
+      ? wrapText(selectionFooter.status, Math.max(1, terminal.width - 2))
+      : [];
+  // Reuse the query's trailing breathing row for context instead of adding another blank row.
+  const queryTop = queryView.top.filter(
+    (row, index) =>
+      !(historyContextLines.length && row.kind === "blank" && index === queryView.top.length - 1),
+  );
+  const queryRows = historyQueryViewRows(queryView) - (queryView.top.length - queryTop.length);
   const operationRows = operationDocked ? (operation.modal?.rows?.(operationFrame()) ?? 0) : 0;
+  const selectionStatusLines: string[] = [];
+  if (selectionFooter && (snapshot.search || transientNotice || snapshot.notice)) {
+    const room = Math.max(
+      0,
+      terminal.height -
+        scopeLines.length -
+        queryRows -
+        selectionFooter.actionRows.length -
+        resultNoticeRows -
+        historyContextLines.length -
+        2 -
+        5,
+    );
+    const notice = [
+      ...(snapshot.search
+        ? [
+            fitText(
+              `/${sanitizeTerminalLine(snapshot.search)}`,
+              Math.max(1, terminal.width - 2),
+              "…",
+            ),
+          ]
+        : []),
+      ...(transientNotice || snapshot.notice
+        ? wrapText(transientNotice || snapshot.notice, Math.max(1, terminal.width - 2))
+        : []),
+    ];
+    const visible = notice.slice(0, room);
+    if (visible.length && notice.length > visible.length)
+      visible[visible.length - 1] = fitText(
+        notice.slice(visible.length - 1).join(" "),
+        terminal.width - 2,
+        "…",
+      );
+    selectionStatusLines.push(...visible);
+  }
+  if (resultNotice) {
+    // Yield repeated launch context before required actions or the complete focused entry.
+    const scopeBudget = Math.max(
+      0,
+      terminal.height -
+        queryRows -
+        operationRows -
+        resultNoticeRows -
+        (selectionFooter?.actionRows.length ?? 0) -
+        selectionStatusLines.length -
+        historyContextLines.length -
+        5,
+    );
+    scopeLines = scopeLines.slice(0, scopeBudget);
+  }
+  const markColumnWidth =
+    operation.visit && operation.operation === "rebase"
+      ? LOG_MARK_COLUMN_WIDTH
+      : LOG_FOCUS_CELLS_WIDTH;
   const responsiveLayout = resolveLogResponsiveLayout(
     terminal.width,
     terminal.height -
       scopeLines.length -
-      historyQueryViewRows(queryView) -
-      operationRows +
-      (replacesStatus ? 1 : 0),
+      queryRows -
+      operationRows -
+      resultNoticeRows -
+      (selectionFooter?.actionRows.length ?? 0) -
+      selectionStatusLines.length -
+      historyContextLines.length +
+      (replacesStatus || selectionFooter ? 1 : 0),
   );
   const viewportBodyHeight = responsiveLayout.bodyHeight;
   const currentViewPreferences = useMemo(
@@ -596,22 +726,6 @@ export function LogApp({
     )
       event.preventDefault();
   });
-  const inactiveHistoryCommandNames = useMemo(() => {
-    const names = new Set(APP_COMMAND_NAMES);
-    for (const registered of buildSessionCommands(runtime.extensionSession.current.registry)) {
-      names.add(`${registered.extensionId}.${registered.command.id}`);
-    }
-    return names;
-  }, [runtime.extensionSession]);
-  const historyKeymap = useMemo(
-    () =>
-      resolveCommandKeys({
-        defaults: historyCommandKeyDefaults(),
-        inactiveCommandNames: inactiveHistoryCommandNames,
-        userBindings: runtime.keybindings,
-      }),
-    [inactiveHistoryCommandNames, runtime.keybindings],
-  );
   /** Open the host prompt on the status line; Enter selects the next match of the typed query. */
   const beginSearch = () => {
     void statusLineStore
@@ -649,7 +763,23 @@ export function LogApp({
       void operations.beginSources("rebase");
     },
     "hunk.history.operationResult": () => operations.openResult(),
-    "hunk.history.clearSelection": () => void controller.clearSelection(),
+    "hunk.history.clearSelection": () => void controller.clearReviewRange(),
+    "hunk.history.toggleRevisionSelection": () => {
+      const expected =
+        menu.getActiveMenuId() === "navigate"
+          ? { revisionId: selectionMenuIdentity.current }
+          : undefined;
+      void controller
+        .queueRevisionSelection(expected)
+        .then((result) => {
+          if (result === "unavailable")
+            setTransientNotice("Revision changed; selection unchanged.");
+        })
+        .catch(() => setTransientNotice("Revision changed; selection unchanged."));
+    },
+    "hunk.history.clearRevisionSelection": () => {
+      controller.clearRevisionMarks();
+    },
     "hunk.history.previousCommit": () =>
       void controller.move(-1, viewportBodyHeight, {
         extend:
@@ -755,6 +885,9 @@ export function LogApp({
         : []),
     ],
     navigate: [
+      commandItem("hunk.history.toggleRevisionSelection"),
+      commandItem("hunk.history.clearRevisionSelection"),
+      { kind: "separator" },
       commandItem("hunk.history.previousCommit"),
       commandItem("hunk.history.nextCommit"),
       commandItem("hunk.history.startVisualSelection"),
@@ -784,7 +917,21 @@ export function LogApp({
     ],
     help: [commandItem("hunk.app.toggleHelp"), commandItem("hunk.history.showAbout")],
   };
-  const menu = useMenuController(menus);
+  const menu = useMenuController(menus, (id) => {
+    selectionMenuIdentity.current =
+      id === "navigate" ? (controller.getSelectedRow()?.commit.revisionId ?? null) : null;
+  });
+  let menuLeft = 1;
+  const historyMenuSpecs =
+    terminal.width >= 42
+      ? menu.menuSpecs
+      : menu.menuSpecs
+          .filter((spec) => spec.id !== "view")
+          .map((spec) => {
+            const compact = { ...spec, left: menuLeft, width: measureTextWidth(spec.label) + 1 };
+            menuLeft += compact.width;
+            return compact;
+          });
 
   const activeInteraction = Boolean(
     operation.visit ||
@@ -1066,8 +1213,37 @@ export function LogApp({
       consume();
       return;
     }
+    // Foreground prompts/menus own Escape first; consume notice dismissal before range clearing.
+    const noticeState = operations.getSnapshot();
+    if (
+      noticeState.resultNotice &&
+      !noticeState.modal &&
+      name === "escape" &&
+      !key.ctrl &&
+      !key.option &&
+      !key.meta &&
+      !key.super &&
+      !key.hyper &&
+      !key.shift &&
+      key.eventType !== "release" &&
+      key.eventType !== "repeat" &&
+      !key.repeated
+    ) {
+      operations.dismissResultNotice(noticeState.attempt);
+      consume();
+      return;
+    }
     const activeModal = operations.getSnapshot().modal;
     if (activeModal && activeModal.handleKey(key, operationFrame())) {
+      consume();
+      return;
+    }
+    if (
+      !operation.visit &&
+      name === "r" &&
+      snapshot.marks.some((mark) => mark.kind === "unresolved")
+    ) {
+      setMarksDialogIndex(0);
       consume();
       return;
     }
@@ -1131,6 +1307,14 @@ export function LogApp({
       priority: -1,
     });
   }
+  /** Scroll history from its rows or breathing space in very short terminals. */
+  const scrollHistory = (event: TuiMouseEvent) => {
+    menu.closeMenu();
+    const direction = event.scroll?.direction;
+    const delta = direction === "up" ? -3 : direction === "down" ? 3 : 0;
+    if (delta && !controller.scrollEntry(delta, viewportBodyHeight))
+      controller.move(delta, viewportBodyHeight);
+  };
   return (
     <box
       style={{
@@ -1142,7 +1326,8 @@ export function LogApp({
     >
       <MenuBar
         activeMenuId={menu.activeMenuId}
-        menuSpecs={menu.menuSpecs}
+        menuSpecs={historyMenuSpecs}
+        compact={terminal.width < 42}
         terminalWidth={terminal.width}
         theme={theme}
         topTitle={`${sanitizeTerminalLine(basename(runtime.repoRoot))} · ${sanitizeTerminalLine(runtime.providerName)} history`}
@@ -1151,18 +1336,18 @@ export function LogApp({
         }}
         onToggleMenu={menu.toggleMenu}
       />
-      <box style={{ width: "100%", height: 1 }} />
-      {queryView.top.length ? (
+
+      {queryTop.length ? (
         <box
           style={{
-            height: queryView.top.length,
+            height: queryTop.length,
             width: "100%",
             flexDirection: "column",
             paddingLeft: 1,
             paddingRight: 1,
           }}
         >
-          {queryView.top.map((row, index) =>
+          {queryTop.map((row, index) =>
             row.kind === "blank" ? (
               <box key={index} style={{ width: "100%", height: 1 }} />
             ) : (
@@ -1173,6 +1358,24 @@ export function LogApp({
           )}
         </box>
       ) : null}
+      {historyContextLines.length ? (
+        <box
+          style={{
+            width: "100%",
+            height: historyContextLines.length,
+            paddingLeft: 1,
+            paddingRight: 1,
+            flexDirection: "column",
+          }}
+        >
+          {historyContextLines.map((line, index) => (
+            <text key={index} fg={squashContext ? theme.text : theme.muted} style={{ height: 1 }}>
+              {squashContext ? <b>{line}</b> : line}
+            </text>
+          ))}
+        </box>
+      ) : null}
+      <box style={{ width: "100%", height: 1 }} onMouseScroll={scrollHistory} />
       <box
         style={{
           width: "100%",
@@ -1182,13 +1385,7 @@ export function LogApp({
           paddingRight: 1,
         }}
         onMouseUp={() => menu.closeMenu()}
-        onMouseScroll={(event: TuiMouseEvent) => {
-          menu.closeMenu();
-          const direction = event.scroll?.direction;
-          const delta = direction === "up" ? -3 : direction === "down" ? 3 : 0;
-          if (delta && !controller.scrollEntry(delta, viewportBodyHeight))
-            controller.move(delta, viewportBodyHeight);
-        }}
+        onMouseScroll={scrollHistory}
       >
         {openingCommit ? (
           <box
@@ -1227,39 +1424,48 @@ export function LogApp({
               row,
               presentation: snapshot.presentation,
               layout: responsiveLayout,
-              width: terminal.width - 4,
+              width: terminal.width - markColumnWidth + LOG_FOCUS_CELLS_WIDTH,
               now: relativeTimeNow,
             });
             const operationMark =
-              operation.phase === "destination"
+              operation.phase === "destination" ||
+              (operation.operation === "squash" && operation.phase === "preparing")
                 ? operation.modal?.rowMark?.(row.commit, operationFrame())
                 : null;
-            const titlePalette = resolveHistoryTitlePalette(
-              theme,
-              selected ? theme.selectedHunk : theme.background,
-              useColor,
+            const persistentSelected = snapshot.marks.some(
+              (mark) => mark.kind === "resolved" && mark.revisionId === row.commit.revisionId,
             );
-            /** Preserve the existing revision/summary action only on its own rendered cells. */
-            const handleRevisionMouseUp = (event: TuiMouseEvent) => {
-              event.stopPropagation();
-              clearTransientNotice();
-              if (event.modifiers.shift) {
-                lastClick.current = { index: -1, at: 0 };
-                void controller.select(index, viewportBodyHeight, { extend: true });
-                return;
-              }
-              const copyIconStart =
-                1 +
-                projected.graphWidth +
-                projected.leftWidth +
-                projected.columnGap +
-                projected.rightWidth -
-                measureTextWidth(projected.copyIcon);
-              void controller.select(index, viewportBodyHeight).then(() => {
-                if (event.x >= copyIconStart) copySelected(row);
-                else void openSelected();
-              });
-            };
+            const sourceSelected = operationMark?.tags.includes("from");
+            const rowBackground =
+              index === snapshot.selected
+                ? theme.selectedHunk
+                : useColor && (persistentSelected || sourceSelected)
+                  ? blendHex(theme.selectedHunk, theme.background, 0.4)
+                  : selected
+                    ? blendHex(theme.selectedHunk, theme.background, 0.2)
+                    : theme.background;
+            const squashRole =
+              operation.operation === "squash"
+                ? operationMark?.tags.find((tag) => tag === "from" || tag === "into")
+                : undefined;
+            const membership =
+              squashRole === "from"
+                ? "From"
+                : squashRole === "into"
+                  ? "Into"
+                  : !operation.visit && persistentSelected
+                    ? "Selected"
+                    : "";
+            const title = membership
+              ? formatHistoryTitle(
+                  row.commit,
+                  Math.max(0, projected.leftWidth - measureTextWidth(membership) - 1),
+                )
+              : projected.title;
+            const rolePalette = squashRole
+              ? resolveSquashRolePalette(theme, squashRole, rowBackground, useColor)
+              : undefined;
+            const titlePalette = resolveHistoryTitlePalette(theme, rowBackground, useColor);
             return (
               <box
                 key={row.commit.revisionId}
@@ -1304,7 +1510,7 @@ export function LogApp({
                       height: projected.textRowCount,
                       width: "100%",
                       flexDirection: "row",
-                      backgroundColor: selected ? theme.selectedHunk : theme.background,
+                      backgroundColor: rowBackground,
                     }}
                     onMouseUp={(event: TuiMouseEvent) => {
                       clearTransientNotice();
@@ -1348,27 +1554,29 @@ export function LogApp({
                     >
                       <text
                         fg={theme.accent}
-                      >{`${index === snapshot.selected ? ">" : " "}${selected && (snapshot.selectionAnchor !== null || snapshot.visualSelectionActive) ? "|" : " "}`}</text>
+                      >{`${operation.operation === "rebase" && operation.visit && index === snapshot.selected ? ">" : " "}${selected && (snapshot.selectionAnchor !== null || snapshot.visualSelectionActive) ? "|" : " "}`}</text>
                     </box>
-                    <RevisionSourceMark
-                      selected={operations.indicator(row.commit.revisionId) === "✓"}
-                      editable={
-                        operation.phase === "sources" &&
-                        !operation.suspended &&
-                        !menu.activeMenuId &&
-                        marksDialogIndex === null &&
-                        !statusLineState.prompt
-                      }
-                      height={responsiveLayout.rowHeight}
-                      theme={theme}
-                      onMouseGesture={() => {
-                        lastClick.current = { index: -1, at: 0 };
-                      }}
-                      onToggle={() => {
-                        const visit = operation.visit;
-                        if (visit) operations.toggleSource(visit, row.commit.revisionId);
-                      }}
-                    />
+                    {operation.visit && operation.operation === "rebase" ? (
+                      <RevisionSourceMark
+                        selected={operations.indicator(row.commit.revisionId) === "✓"}
+                        editable={
+                          operation.phase === "sources" &&
+                          !operation.suspended &&
+                          !menu.activeMenuId &&
+                          marksDialogIndex === null &&
+                          !statusLineState.prompt
+                        }
+                        height={responsiveLayout.rowHeight}
+                        theme={theme}
+                        onMouseGesture={() => {
+                          lastClick.current = { index: -1, at: 0 };
+                        }}
+                        onToggle={() => {
+                          const visit = operation.visit;
+                          if (visit) operations.toggleSource(visit, row.commit.revisionId);
+                        }}
+                      />
+                    ) : null}
                     {projected.graphWidth ? (
                       <box
                         style={{
@@ -1391,16 +1599,30 @@ export function LogApp({
                         flexDirection: "column",
                       }}
                     >
-                      <box style={{ width: projected.textWidth, height: 1, flexDirection: "row" }}>
-                        <box style={{ width: projected.leftWidth, height: 1 }}>
-                          <text fg={theme.text}>
-                            {splitHistoryTitle(row.commit, projected.title).map(
-                              (span, spanIndex) => (
-                                <span key={spanIndex} fg={titlePalette[span.role]}>
-                                  {span.text}
-                                </span>
-                              ),
-                            )}
+                      <box style={{ width: projected.textWidth, height: 2, flexDirection: "row" }}>
+                        <box
+                          style={{
+                            width: projected.leftWidth,
+                            height: 2,
+                            flexDirection: "column",
+                          }}
+                        >
+                          <text fg={theme.text} style={{ height: 1 }}>
+                            {membership ? (
+                              <>
+                                <span
+                                  fg={rolePalette?.fg ?? theme.text}
+                                  attributes={TextAttributes.BOLD}
+                                >
+                                  {membership}
+                                </span>{" "}
+                              </>
+                            ) : null}
+                            {splitHistoryTitle(row.commit, title).map((span, spanIndex) => (
+                              <span key={spanIndex} fg={titlePalette[span.role]}>
+                                {span.text}
+                              </span>
+                            ))}
                           </text>
                         </box>
                         {projected.columnGap ? (
@@ -1436,7 +1658,7 @@ export function LogApp({
                             }
                             const copyIconStart =
                               1 +
-                              LOG_MARK_COLUMN_WIDTH +
+                              markColumnWidth +
                               projected.graphWidth +
                               projected.leftWidth +
                               projected.columnGap +
@@ -1492,7 +1714,9 @@ export function LogApp({
                         {fitText(
                           [
                             projected.refLine,
-                            ...(operationMark?.tags.map((tag) => `[${tag}]`) ?? []),
+                            ...(operationMark?.tags
+                              .filter((tag) => tag !== squashRole)
+                              .map((tag) => `[${tag}]`) ?? []),
                           ]
                             .filter(Boolean)
                             .join(" ") || " ",
@@ -1508,7 +1732,7 @@ export function LogApp({
                     style={{
                       width: "100%",
                       flexDirection: "column",
-                      paddingLeft: LOG_MARK_COLUMN_WIDTH,
+                      paddingLeft: markColumnWidth,
                     }}
                   >
                     {projected.cutoffs.map((line, cut) => (
@@ -1559,7 +1783,33 @@ export function LogApp({
         </box>
       ) : null}
       {operationDocked ? operation.modal!.render(operationFrame()) : null}
-      {replacesStatus ? null : (
+      {resultNotice ? (
+        <HistoryResultNotice
+          text={resultNotice}
+          frame={operationFrame()}
+          dismiss={() => operations.dismissResultNotice(operation.attempt)}
+        />
+      ) : null}
+      {replacesStatus ? null : selectionFooter ? (
+        <box
+          style={{
+            width: "100%",
+            height: selectionStatusLines.length + selectionFooter.actionRows.length,
+            paddingLeft: 1,
+            paddingRight: 1,
+            flexDirection: "column",
+          }}
+        >
+          {selectionStatusLines.map((line, index) => (
+            <text key={index} fg={theme.muted} style={{ height: 1 }}>
+              {line}
+            </text>
+          ))}
+          {selectionFooter.actionRows.map((actions, index) => (
+            <DialogActionRow key={index} actions={actions} theme={theme} primaryMouseOnly compact />
+          ))}
+        </box>
+      ) : (
         <StatusLine
           badge={null}
           snapshot={{
@@ -1606,7 +1856,9 @@ export function LogApp({
           activeMenuId={menu.activeMenuId}
           activeMenuEntries={menu.activeMenuEntries}
           activeMenuItemIndex={menu.activeMenuItemIndex}
-          activeMenuSpec={menu.activeMenuSpec}
+          activeMenuSpec={
+            historyMenuSpecs.find((spec) => spec.id === menu.activeMenuId) ?? menu.activeMenuSpec
+          }
           activeMenuWidth={menu.activeMenuWidth}
           terminalHeight={terminal.height}
           terminalWidth={terminal.width}

@@ -198,7 +198,7 @@ describe("squashKind.plan", () => {
     expect(squashKind.revisions(request)).toEqual([request.sources[0], request.destination]);
   });
 
-  test("plans a dry run that names both revisions and passes the composed description", () => {
+  test("previews a provisional description while leaving final editing to JJ", () => {
     const request = createTestRequest();
     expect(squashKind.plan({ request, facts: createTestFacts() })).toEqual({
       args: [
@@ -207,15 +207,22 @@ describe("squashKind.plan", () => {
         { revision: request.sources[0] },
         "--into",
         { revision: request.destination },
+      ],
+      previewArgs: [
+        "squash",
+        "--from",
+        { revision: request.sources[0] },
+        "--into",
+        { revision: request.destination },
         "--message=Destination\n\nSource\n",
       ],
       preview: "dry-run",
-      interactive: false,
+      interactive: true,
       description: "Destination\n\nSource\n",
     });
   });
 
-  test("passes an empty description explicitly so no editor opens", () => {
+  test("uses an empty provisional description without forcing the final message", () => {
     const source = createTestRevision({ description: "" });
     const destination = createTestDestination({ description: "" });
     const plan = squashKind.plan({
@@ -223,7 +230,10 @@ describe("squashKind.plan", () => {
       facts: createTestFacts(source, destination),
     });
     if (isJjMutationRefusal(plan)) throw new Error(plan.refused);
-    expect(plan.args.at(-1)).toBe("--message=");
+    expect(plan.previewArgs?.at(-1)).toBe("--message=");
+    expect(plan.args.some((arg) => typeof arg === "string" && arg.startsWith("--message"))).toBe(
+      false,
+    );
     expect(plan.description).toBe("");
   });
 
@@ -273,11 +283,11 @@ describe("squashKind.project", () => {
       warnings: [],
       named: [
         {
-          label: "Source",
+          label: "From",
           revision: { revisionId: source.revisionId, logicalId: "sourcechangeid" },
         },
         {
-          label: "Destination",
+          label: "Into",
           revision: { revisionId: destination.revisionId, logicalId: "destchangeid" },
         },
       ],
@@ -721,4 +731,25 @@ describe("squashKind.judge", () => {
     );
     for (const text of texts) expect(text).not.toMatch(/undo|revert|clean/i);
   });
+});
+
+test("Squash accepts an intentional editor description without a mismatch warning", () => {
+  const source = createTestRevision();
+  const destination = createTestDestination();
+  const change = createTestChange(source, destination);
+  change.revisions[1]!.after[0] = {
+    ...change.revisions[1]!.after[0]!,
+    description: "Chosen in editor\n",
+  };
+  const verdict = squashKind.judge({
+    request: createTestRequest(source, destination),
+    facts: createTestFacts(source, destination),
+    plan: { ...PLAN, interactive: true },
+    process: createTestProcess(),
+    preview: null,
+    change,
+  });
+  expect(verdict.outcome).toBe("completed");
+  expect(verdict.warnings).toEqual([]);
+  expect(verdict.selectAfter?.revisionId).toBe(change.revisions[1]!.after[0]!.revisionId);
 });

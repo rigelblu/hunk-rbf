@@ -1,7 +1,7 @@
 /**
  * Keep source selection, destination choice and one confirmed history change in the session.
- * Inspection temporarily borrows review without ending the visit. Confirmation cancellation
- * reopens the destination; terminal cancellation and settled execution clear only marks.
+ * Rebase inspection temporarily borrows review without ending the visit. Squash captures
+ * persistent selection once and keeps surviving intent through cancellation and actual readback.
  * The provider runtime owns processes, freshness and readback; the log controller owns rows,
  * ranges and reading position. Every callback carries its visit and preparation generation.
  */
@@ -33,6 +33,9 @@ import {
 import {
   HistoryOperationView,
   destinationLayout,
+  squashDockLayout,
+  squashErrorOutputAvailable,
+  squashDockTooSmall,
   historyOperationTooSmall,
   planHistoryOperationOverlay,
 } from "./HistoryOperationView";
@@ -48,6 +51,10 @@ export type {
   HistoryInspectionToken,
   HistoryOperationSnapshot,
 } from "./historyOperationTypes";
+
+import { cleanSquashResultNotice } from "./mutationPresentation";
+
+const SQUASH_CHECKING_DELAY_MS = 400;
 
 /** Retain one operation visit even when its log surface unmounts for inspection. */
 export class HistoryMutationFlowController
@@ -70,8 +77,12 @@ export class HistoryMutationFlowController
   private cleanupReason = "";
   private lastResult: ExtensionVcsMutationResult | null = null;
   private lastPrepared: ExtensionVcsMutationPrepared | null = null;
+  private pendingRemovedIds: readonly string[] = [];
   private snapshot: HistoryOperationSnapshot;
   private readonly ownedModal: HistoryMutationModal;
+  private readonly stopController: () => void;
+  private squashCandidate: string | null = null;
+  private checkingTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly controller: LogController,
@@ -86,30 +97,41 @@ export class HistoryMutationFlowController
       presentation: "docked",
       render: (frame) => createElement(HistoryOperationView, { flow: this, frame }),
       rows: (frame) =>
-        this.snapshot.phase === "sources"
-          ? revisionSourcePanelLayout({
-              operationLabel: this.snapshot.operation!,
-              width: frame.terminalWidth,
-              state: this.sourceState(),
-              actions: this.sourceActions(frame),
-            }).rows
-          : this.snapshot.phase === "destination"
-            ? destinationLayout(this, frame).rows
-            : 1,
+        this.snapshot.operation === "squash" &&
+        ["destination", "preparing", "result"].includes(this.snapshot.phase)
+          ? squashDockLayout(this, frame).rows
+          : this.snapshot.phase === "sources"
+            ? revisionSourcePanelLayout({
+                operationLabel: this.snapshot.operation!,
+                width: frame.terminalWidth,
+                state: this.sourceState(),
+                actions: this.sourceActions(frame),
+              }).rows
+            : this.snapshot.phase === "destination"
+              ? destinationLayout(this, frame).rows
+              : 1,
       statusLine: (frame) =>
         this.snapshot.phase === "destination"
           ? (this.destinationRefusal(frame.highlighted) ?? "Choose the destination, then preview.")
           : "",
       rowMark: (commit, frame) => ({
-        tags: [
-          ...(this.snapshot.sources.some((source) => source.revisionId === commit.revisionId)
-            ? ["source"]
-            : []),
-          ...(frame.highlighted?.revisionId === commit.revisionId &&
-          !this.snapshot.sources.some((source) => source.revisionId === commit.revisionId)
-            ? ["destination"]
-            : []),
-        ],
+        tags: !this.snapshot.visit
+          ? []
+          : [
+              ...(this.snapshot.sources.some((source) => source.revisionId === commit.revisionId) &&
+              !(
+                this.snapshot.operation === "squash" &&
+                this.snapshot.sources.length > 1 &&
+                frame.highlighted?.revisionId === commit.revisionId
+              )
+                ? [this.snapshot.operation === "squash" ? "from" : "source"]
+                : []),
+              ...(frame.highlighted?.revisionId === commit.revisionId &&
+              (!this.snapshot.sources.some((source) => source.revisionId === commit.revisionId) ||
+                (this.snapshot.operation === "squash" && this.snapshot.sources.length > 1))
+                ? [this.snapshot.operation === "squash" ? "into" : "destination"]
+                : []),
+            ],
         muted:
           frame.highlighted?.revisionId === commit.revisionId &&
           Boolean(this.destinationRefusal(commit)),
@@ -122,6 +144,7 @@ export class HistoryMutationFlowController
       attempt: 0,
       operation: null,
       suspended: false,
+      squashCheckingVisible: false,
       sources: [],
       placement: "onto",
       prepared: null,
@@ -130,11 +153,14 @@ export class HistoryMutationFlowController
       reason: "",
       providerText: "",
       details: false,
+      fullResult: false,
+      resultNotice: null,
       focus: 0,
       scroll: 0,
       refreshFailed: false,
       modal: null,
     });
+    this.stopController = controller.subscribe(() => this.scheduleSquashPreview());
   }
 
   readonly getSnapshot = () => this.snapshot;
@@ -144,9 +170,51 @@ export class HistoryMutationFlowController
       this.listeners.delete(listener);
     };
   };
-  /** Publish a stable snapshot before listeners can reenter the flow. */
+  /** Limit delayed feedback to a live Squash check of the highlighted destination. */
+  private isPendingSquash(s: HistoryOperationSnapshot) {
+    return (
+      !this.closed &&
+      !this.ending &&
+      s.operation === "squash" &&
+      s.phase === "preparing" &&
+      s.visit !== null &&
+      (!s.request ||
+        (s.request.kind === "squash" &&
+          s.request.destination.revisionId === this.controller.getSelectedRow()?.commit.revisionId))
+    );
+  }
+  /** Publish immediately; delay only busy copy, never preparation or readiness. */
   private publish(update: Partial<HistoryOperationSnapshot>) {
-    this.snapshot = Object.freeze({ ...this.snapshot, ...update });
+    const previous = this.snapshot;
+    const next = { ...previous, ...update };
+    const pending = this.isPendingSquash(next);
+    const samePreparation =
+      previous.phase === "preparing" &&
+      previous.visit === next.visit &&
+      previous.attempt === next.attempt &&
+      previous.request === next.request;
+    if (!pending || !samePreparation) {
+      if (this.checkingTimer !== null) clearTimeout(this.checkingTimer);
+      this.checkingTimer = null;
+      next.squashCheckingVisible = false;
+      if (pending) {
+        const { visit, attempt, request } = next;
+        const timer = setTimeout(() => {
+          if (this.checkingTimer !== timer) return;
+          this.checkingTimer = null;
+          const current = this.snapshot;
+          if (
+            current.visit === visit &&
+            current.attempt === attempt &&
+            current.request === request &&
+            this.isPendingSquash(current)
+          )
+            this.publish({ squashCheckingVisible: true });
+        }, SQUASH_CHECKING_DELAY_MS);
+        this.checkingTimer = timer;
+      }
+    }
+    this.snapshot = Object.freeze(next);
     const listeners = Array.from(this.listeners);
     for (const listener of listeners) listener();
   }
@@ -155,9 +223,11 @@ export class HistoryMutationFlowController
     const phase = update.phase ?? this.snapshot.phase;
     const overlay =
       phase === "confirmation" ||
-      phase === "result" ||
-      (phase === "destination" && (update.details ?? this.snapshot.details));
+      (phase === "result" && this.snapshot.operation !== "squash") ||
+      ((phase === "destination" || phase === "result") &&
+        (update.details ?? this.snapshot.details));
     this.publish({
+      ...(phase !== "result" ? { resultNotice: null, fullResult: false } : {}),
       ...update,
       modal: Object.freeze({ ...this.ownedModal, presentation: overlay ? "overlay" : "docked" }),
     });
@@ -195,7 +265,10 @@ export class HistoryMutationFlowController
     this.work = task;
     void task
       .finally(() => {
-        if (this.work === task) this.work = null;
+        if (this.work === task) {
+          this.work = null;
+          if (!this.closed) this.publish({});
+        }
       })
       .catch(() => undefined);
     return task;
@@ -279,7 +352,7 @@ export class HistoryMutationFlowController
     return this.sources.indicator(revisionId);
   }
 
-  /** Start an available operation on the settled highlight and explicitly seed its membership. */
+  /** Capture exact Squash intent once, or open Rebase's editable source selection. */
   async beginSources(operation: HistoryOperationKind): Promise<boolean> {
     if (
       this.closed ||
@@ -323,7 +396,50 @@ export class HistoryMutationFlowController
     await this.track(async () => {
       try {
         await this.controller.settleNavigation();
+        await this.controller.settleRevisionSelection();
         if (!this.isCurrent(visit, attempt)) return;
+        this.invocation = this.controller.getSelectedRow()?.commit ?? null;
+        let captured: readonly ExtensionVcsHistoryCommit[] = [];
+        if (operation === "squash") {
+          const targets = this.controller.getOperationTargets();
+          const range = this.controller.getSnapshot();
+          const refusal =
+            targets.kind === "blocked"
+              ? targets.reason === "checking"
+                ? "Refreshing history… Selection is still checking."
+                : targets.reason === "refresh-failed"
+                  ? "History refresh failed. Refresh before using this selection."
+                  : "Review unresolved selections or clear them before Squash."
+              : targets.kind === "empty"
+                ? "No revision is highlighted."
+                : targets.source === "highlight" &&
+                    (range.selectionAnchor !== null || range.visualSelectionActive)
+                  ? "A review range is not an operation source. Clear the review range first."
+                  : null;
+          if (refusal || targets.kind !== "ready") {
+            this.finish(visit);
+            this.show({
+              phase: "result",
+              reason: refusal ?? "No revision is selected.",
+              result: null,
+            });
+            return;
+          }
+          const rows = this.controller.getSnapshot().rows;
+          const commits = targets.revisionIds.map(
+            (id) => rows.find((row) => row.commit.revisionId === id)?.commit,
+          );
+          if (!commits.length || commits.some((commit) => !commit || commit.isImmutable)) {
+            this.finish(visit);
+            this.show({
+              phase: "result",
+              reason: "A selected source is unavailable or immutable.",
+              result: null,
+            });
+            return;
+          }
+          captured = Object.freeze(commits.map((commit) => Object.freeze({ ...commit! })));
+        }
         const available = await this.runtime?.availability(abort.signal);
         if (!this.isCurrent(visit, attempt)) return;
         if (
@@ -340,6 +456,13 @@ export class HistoryMutationFlowController
                 : "This provider does not offer this action.",
             result: null,
           });
+          return;
+        }
+        if (operation === "squash") {
+          this.squashCandidate = null;
+          this.show({ phase: "destination", sources: captured, reason: "" });
+          entered = true;
+          this.scheduleSquashPreview();
           return;
         }
         const range = this.controller.getSelection();
@@ -404,11 +527,13 @@ export class HistoryMutationFlowController
         return;
       }
       this.sources.lock(visit);
+      this.squashCandidate = null;
       this.show({
         phase: "destination",
         sources: Object.freeze([Object.freeze({ ...commits[0] })]),
         reason: "",
       });
+      this.scheduleSquashPreview();
     });
   }
   /** Serialize inspection with source edits so accepted Space cannot disappear behind suspension. */
@@ -416,6 +541,80 @@ export class HistoryMutationFlowController
     this.enqueue(visit, async () => {
       const token = this.beginInspection(visit);
       if (token) await inspect(token);
+    });
+  }
+  /** Enable Squash only for the prepared exact candidate currently highlighted in history. */
+  squashDestinationReady(): boolean {
+    const s = this.snapshot;
+    const current = this.controller.getSelectedRow()?.commit;
+    return (
+      s.operation === "squash" &&
+      s.phase === "destination" &&
+      !this.work &&
+      !this.ending &&
+      !this.closed &&
+      !s.details &&
+      Boolean(s.prepared) &&
+      s.prepared?.request.kind === "squash" &&
+      s.prepared.request.destination.revisionId === current?.revisionId &&
+      !this.destinationRefusal(current ?? null)
+    );
+  }
+  /** Prepare content effects as the candidate changes, disposing every obsolete ready handle. */
+  private scheduleSquashPreview(force = false) {
+    const s = this.snapshot;
+    if (
+      !s.visit ||
+      s.sources.length < 1 ||
+      s.operation !== "squash" ||
+      s.details ||
+      this.ending ||
+      this.closed ||
+      !["destination", "preparing"].includes(s.phase)
+    )
+      return;
+    const current = this.controller.getSelectedRow()?.commit;
+    const candidate = current?.revisionId ?? "";
+    if (!force && candidate === this.squashCandidate) return;
+    this.squashCandidate = candidate;
+    // Invalidate old feedback as soon as navigation changes the candidate, before disposal settles.
+    this.publish({ squashCheckingVisible: false });
+    if (s.phase === "preparing") this.abort?.abort();
+    this.enqueue(s.visit, async () => {
+      await this.work;
+      if (
+        this.squashCandidate !== candidate ||
+        this.snapshot.visit !== s.visit ||
+        this.ending ||
+        this.closed ||
+        !["destination", "preparing"].includes(this.snapshot.phase)
+      )
+        return;
+      const prepared = this.snapshot.prepared;
+      if (prepared && !(await this.disposeHandle(prepared.handleId))) {
+        this.reopen(this.cleanupReason);
+        return;
+      }
+      const live = this.controller.getSelectedRow()?.commit;
+      const refusal = this.destinationRefusal(live ?? null);
+      if (refusal || live?.revisionId !== candidate) {
+        this.show({
+          phase: "destination",
+          prepared: null,
+          reason: refusal ?? "The destination changed.",
+        });
+        return;
+      }
+      this.start({
+        kind: "squash",
+        sources: this.snapshot.sources
+          .filter((source) => source.revisionId !== live!.revisionId)
+          .map(toHistoryMutationRevisionRef) as [
+          ReturnType<typeof toHistoryMutationRevisionRef>,
+          ...ReturnType<typeof toHistoryMutationRevisionRef>[],
+        ],
+        destination: toHistoryMutationRevisionRef(live!),
+      });
     });
   }
   /** Queue placement changes with destination progression under the rendered visit. */
@@ -456,7 +655,10 @@ export class HistoryMutationFlowController
   /** Name destination eligibility without changing provider authority over the actual preview. */
   destinationRefusal(commit: ExtensionVcsHistoryCommit | null): string | null {
     if (!commit) return "No revision is highlighted.";
-    if (this.snapshot.sources.some((source) => source.revisionId === commit.revisionId))
+    if (
+      this.snapshot.sources.some((source) => source.revisionId === commit.revisionId) &&
+      (this.snapshot.operation !== "squash" || this.snapshot.sources.length === 1)
+    )
       return "This is the source. Pick another revision as the destination.";
     if (
       commit.isImmutable &&
@@ -467,6 +669,14 @@ export class HistoryMutationFlowController
   }
   /** Preview the live destination after navigation settles; no stale row/index enters argv. */
   previewDestination(visit: symbol, attempt = this.snapshot.attempt) {
+    if (this.snapshot.operation === "squash") {
+      this.enqueue(visit, () => {
+        if (this.snapshot.attempt !== attempt) return;
+        if (this.squashDestinationReady()) this.apply(visit, attempt);
+        else this.scheduleSquashPreview(true);
+      });
+      return;
+    }
     this.enqueue(visit, () => {
       if (this.snapshot.phase !== "destination" || this.snapshot.attempt !== attempt) return;
       const commit = this.controller.getSelectedRow()?.commit ?? null;
@@ -530,8 +740,19 @@ export class HistoryMutationFlowController
       return;
     }
     if (preparation.kind === "ready") {
+      if (
+        preparation.prepared.request.kind === "squash" &&
+        preparation.prepared.request.destination.revisionId !==
+          this.controller.getSelectedRow()?.commit.revisionId
+      ) {
+        await this.disposeHandle(preparation.prepared.handleId);
+        this.show({ phase: "destination", prepared: null });
+        this.squashCandidate = null;
+        this.scheduleSquashPreview();
+        return;
+      }
       this.show({
-        phase: "confirmation",
+        phase: preparation.prepared.request.kind === "squash" ? "destination" : "confirmation",
         prepared: preparation.prepared,
         request: preparation.prepared.request,
         details: false,
@@ -620,7 +841,7 @@ export class HistoryMutationFlowController
   apply(visit: symbol, attempt: number) {
     if (
       !this.isCurrent(visit, attempt) ||
-      this.snapshot.phase !== "confirmation" ||
+      !(this.snapshot.phase === "confirmation" || this.squashDestinationReady()) ||
       !this.snapshot.prepared ||
       this.work
     )
@@ -630,6 +851,7 @@ export class HistoryMutationFlowController
     this.abort = abort;
     this.show({ phase: "applying", prepared: null, details: false });
     void this.track(async () => {
+      let disposed = false;
       try {
         const result = await this.runtime!.apply(prepared.handleId, abort.signal);
         this.lastResult = result;
@@ -641,7 +863,13 @@ export class HistoryMutationFlowController
           const nextAttempt = this.snapshot.attempt + 1;
           if (this.isCurrent(visit, attempt)) this.publish({ attempt: nextAttempt });
           await this.acceptPreparation(visit, nextAttempt, result.refreshed);
-          if (this.isCurrent(visit, nextAttempt)) this.publish({ reason: result.detail });
+          if (this.isCurrent(visit, nextAttempt))
+            this.publish({
+              reason:
+                this.snapshot.operation === "squash"
+                  ? "History or files changed. Review the updated squash, then press Enter again."
+                  : result.detail,
+            });
           return;
         }
         if (result.kind === "not-run" && result.reason !== "start-failed") {
@@ -653,24 +881,41 @@ export class HistoryMutationFlowController
             );
           return;
         }
+        this.pendingRemovedIds =
+          this.snapshot.operation === "squash" &&
+          result.kind === "ran" &&
+          result.change.kind === "read"
+            ? result.change.value.revisions
+                .filter((change) => change.after.length === 0)
+                .flatMap((change) => change.before.map((revision) => revision.revisionId))
+            : [];
         const refreshed =
           result.kind === "ran"
-            ? await this.controller.refreshAfterMutation(() => !this.closed)
+            ? await this.controller.refreshAfterMutation(() => !this.closed, this.pendingRemovedIds)
             : true;
+        if (refreshed) this.pendingRemovedIds = [];
         if (result.kind === "ran" && refreshed && result.verdict.selectAfter)
           this.highlight(result.verdict.selectAfter);
+        // Cleanup is part of settlement: never offer ordinary browsing while it can still fail.
+        const cleaned = await this.disposeHandle(prepared.handleId);
+        disposed = true;
         this.finish(visit);
-        if (!this.closed && !this.ending)
-          this.show({
-            phase: "result",
+        if (!this.closed && !this.ending) {
+          const notice = refreshed && cleaned ? cleanSquashResultNotice(result, prepared) : null;
+          const update = {
             result,
             prepared,
-            reason: "",
-            refreshFailed: !refreshed,
+            reason: cleaned ? "" : this.cleanupReason,
+            refreshFailed: !refreshed || !cleaned,
             focus: 0,
             scroll: 0,
             details: false,
-          });
+            fullResult: false,
+            resultNotice: notice,
+          };
+          if (notice) this.publish({ ...update, phase: "idle", modal: null });
+          else this.show({ ...update, phase: "result" });
+        }
       } catch (error) {
         // No successful outcome can be invented after an unreadable provider settlement.
         this.finish(visit);
@@ -684,7 +929,7 @@ export class HistoryMutationFlowController
             scroll: 0,
           });
       } finally {
-        if (!(await this.disposeHandle(prepared.handleId)) && !this.closed)
+        if (!disposed && !(await this.disposeHandle(prepared.handleId)) && !this.closed)
           this.publish({ reason: this.cleanupReason, refreshFailed: true });
       }
     });
@@ -753,8 +998,11 @@ export class HistoryMutationFlowController
   }
   /** Shut down before history/runtime/session teardown, including inspection-owned routes. */
   async shutdown() {
+    if (this.checkingTimer !== null) clearTimeout(this.checkingTimer);
+    this.checkingTimer = null;
     const visit = this.snapshot.visit;
     this.closed = true;
+    this.stopController();
     if (visit) await this.cancelVisit(visit);
     else await this.work?.catch(() => undefined);
     await this.retryCleanup();
@@ -771,16 +1019,28 @@ export class HistoryMutationFlowController
       attempt: this.snapshot.attempt + 1,
       result: this.lastResult,
       prepared: this.lastPrepared,
+      operation:
+        this.lastPrepared?.request.kind === "squash"
+          ? "squash"
+          : this.lastPrepared?.request.kind === "rebase"
+            ? "rebase"
+            : null,
       reason: this.lastResult ? "" : "No operation has run in this Hunk session.",
-      details: false,
+      details: this.lastPrepared?.request.kind === "squash",
+      fullResult: this.lastPrepared?.request.kind === "squash",
       focus: 0,
       scroll: 0,
     });
   }
+  /** Dismiss only the notice generation that supplied this callback. */
+  dismissResultNotice(attempt = this.snapshot.attempt) {
+    if (!this.closed && this.snapshot.attempt === attempt && this.snapshot.resultNotice)
+      this.publish({ resultNotice: null });
+  }
   /** Close the result without erasing the saved actual outcome. */
   closeResult(attempt = this.snapshot.attempt) {
     if (this.snapshot.phase === "result" && this.snapshot.attempt === attempt)
-      this.publish({ phase: "idle", modal: null, details: false });
+      this.publish({ phase: "idle", modal: null, details: false, fullResult: false });
   }
   /** Retry a failed post-run refresh without replaying the mutation. */
   async retryRefresh(attempt = this.snapshot.attempt) {
@@ -798,7 +1058,9 @@ export class HistoryMutationFlowController
       }
       const refreshed = await this.controller.refreshAfterMutation(
         () => !this.closed && this.snapshot.attempt === attempt,
+        this.pendingRemovedIds,
       );
+      if (refreshed) this.pendingRemovedIds = [];
       this.publish({ reason: "", refreshFailed: !refreshed });
     });
   }
@@ -851,6 +1113,12 @@ export class HistoryMutationFlowController
         expected.phase !== this.snapshot.phase)
     )
       return;
+    if (
+      update.details &&
+      this.snapshot.operation === "squash" &&
+      !squashErrorOutputAvailable(this.snapshot.result)
+    )
+      return;
     this.show(update);
   }
   /** Dispatch phase input; dock navigation passes through, modal input remains modal. */
@@ -867,8 +1135,42 @@ export class HistoryMutationFlowController
     if (key.eventType === "release") return s.modal?.presentation === "overlay";
     const repeat = key.eventType === "repeat" || key.repeated;
     const plain = !key.ctrl && !key.meta && !key.option && !key.super && !key.hyper;
+    if (
+      s.operation === "squash" &&
+      !s.details &&
+      ["destination", "preparing", "result"].includes(s.phase) &&
+      plain
+    ) {
+      const layout = squashDockLayout(this, frame);
+      if (layout.overflow && ["pageup", "pagedown"].includes(key.name)) {
+        this.updateView(
+          {
+            scroll: Math.min(
+              layout.maxScroll,
+              Math.max(0, layout.top + (key.name === "pageup" ? -1 : 1) * layout.bodyRows),
+            ),
+          },
+          s,
+        );
+        return true;
+      }
+    }
+    if (s.operation === "squash" && s.phase === "result" && !s.details) {
+      if (!plain || repeat) return true;
+      if (
+        key.name === "o" &&
+        squashErrorOutputAvailable(s.result) &&
+        !squashDockLayout(this, frame).tooSmall
+      )
+        this.updateView({ details: true, scroll: 0 }, s);
+      else if (key.name === "escape" || key.name === "enter" || key.name === "return")
+        this.closeResult(s.attempt);
+      else if (key.name === "r" && s.refreshFailed) void this.retryRefresh(s.attempt);
+      return true;
+    }
     if (s.phase === "destination" && !s.details) {
       if (!plain) return false;
+      if (s.operation === "squash" && (key.name === "d" || key.name === "tab")) return true;
       const name =
         key.shift && key.name === "a"
           ? "A"
@@ -883,9 +1185,12 @@ export class HistoryMutationFlowController
         else if (name === "tab" && s.providerText)
           this.updateView({ focus: (s.focus + (key.shift ? 2 : 1)) % 3 });
         else if (name === "return" || name === "enter") {
-          if (s.focus === 2 && s.providerText) this.updateView({ details: true, scroll: 0 });
-          else if (s.focus === 1 && s.providerText) void this.cancelVisit(s.visit!);
-          else this.previewDestination(s.visit!, s.attempt);
+          if (s.operation !== "squash" && s.focus === 2 && s.providerText)
+            this.updateView({ details: true, scroll: 0 });
+          else if (s.operation !== "squash" && s.focus === 1 && s.providerText)
+            void this.cancelVisit(s.visit!);
+          else if (s.operation !== "squash" || !squashDockTooSmall(frame))
+            this.previewDestination(s.visit!, s.attempt);
         } else if (s.operation === "rebase")
           this.choosePlacement(
             s.visit!,
@@ -897,22 +1202,36 @@ export class HistoryMutationFlowController
       return false;
     }
     if (s.phase === "preparing" || s.phase === "applying") {
+      if (
+        s.operation === "squash" &&
+        s.phase === "preparing" &&
+        plain &&
+        ["up", "down", "j", "k", "pageup", "pagedown", "home", "end"].includes(key.name)
+      )
+        return false;
       if (plain && key.name === "escape" && !repeat) void this.cancelVisit(s.visit!);
       return true;
     }
     if (s.phase === "confirmation" || s.phase === "result" || s.details) {
       if (!plain || repeat) return true;
-      const tooSmall = historyOperationTooSmall(frame, s.prepared?.request.kind === "rebase");
+      const tooSmall = historyOperationTooSmall(
+        frame,
+        s.prepared?.request.kind === "rebase",
+        s.details,
+      );
       if (tooSmall) {
         if (key.name === "escape" || key.name === "enter" || key.name === "return") {
-          if (s.details) this.updateView({ details: false, scroll: 0 });
+          if (s.fullResult) this.closeResult(s.attempt);
+          else if (s.details) this.updateView({ details: false, scroll: 0 });
           else if (s.visit) void this.cancelConfirmation(s.visit, s.attempt);
           else this.closeResult();
         }
         return true;
       }
-      if (key.name === "escape") {
-        if (s.details) this.updateView({ details: false, scroll: 0 });
+      if (s.fullResult && key.name === "r" && s.refreshFailed) void this.retryRefresh(s.attempt);
+      else if (key.name === "escape") {
+        if (s.fullResult) this.closeResult(s.attempt);
+        else if (s.details) this.updateView({ details: false, scroll: 0 });
         else if (s.visit) void this.cancelConfirmation(s.visit, s.attempt);
         else this.closeResult();
       } else if (key.name === "tab" && !s.details)
@@ -924,7 +1243,8 @@ export class HistoryMutationFlowController
             (s.phase === "confirmation" ? 3 : s.refreshFailed ? 3 : 2),
         });
       else if (key.name === "return" || key.name === "enter") {
-        if (s.details) this.updateView({ details: false, scroll: 0 });
+        if (s.fullResult) this.closeResult(s.attempt);
+        else if (s.details) this.updateView({ details: false, scroll: 0 });
         else if (s.focus === 0) {
           if (s.visit) void this.cancelConfirmation(s.visit, s.attempt);
           else this.closeResult();

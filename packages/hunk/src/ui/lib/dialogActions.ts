@@ -13,17 +13,22 @@ export interface ConfirmDialogAction {
 export function layoutDialogActionRows(
   actions: readonly ConfirmDialogAction[],
   width: number,
+  padding = 1,
 ): ConfirmDialogAction[][] {
   const rows: ConfirmDialogAction[][] = [];
   let used = 0;
   for (const action of actions) {
-    const keyLabel = fitText(action.keyLabel, Math.max(0, width - 3));
+    const keyLabel = fitText(action.keyLabel, Math.max(0, width - 1 - 2 * padding));
     const fitted = {
       ...action,
       keyLabel,
-      label: fitText(action.label, Math.max(0, width - measureTextWidth(keyLabel) - 3), "…"),
+      label: fitText(
+        action.label,
+        Math.max(0, width - measureTextWidth(keyLabel) - 1 - 2 * padding),
+        "…",
+      ),
     };
-    const cells = measureTextWidth(`${fitted.keyLabel} ${fitted.label}`) + 2;
+    const cells = measureTextWidth(`${fitted.keyLabel} ${fitted.label}`) + 2 * padding;
     if (!rows.length || used + 3 + cells > width) {
       rows.push([fitted]);
       used = cells;

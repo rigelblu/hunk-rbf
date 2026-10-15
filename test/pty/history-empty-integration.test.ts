@@ -114,7 +114,8 @@ describe("PTY known-empty JJ history", () => {
         args: ["log", "--vcs", "jj", "--all", "--no-extensions"],
         cwd,
         cols: 40,
-        rows: 18,
+        // Retain all three cards beside the new ordinary selection controls.
+        rows: 22,
         env: { XDG_CONFIG_HOME: configHome },
       });
       try {

@@ -341,3 +341,28 @@ describe("runCapturedMutationCommand", () => {
     expect(Date.now() - started).toBeLessThan(3000);
   });
 });
+
+test("handed-over executor owns the human wait without the captured-command deadline", async () => {
+  let finalSignal: AbortSignal | undefined;
+  const capability = createTestCapability({
+    apply: async (_handle, execution, context) => {
+      finalSignal = context.signal;
+      const process = await execution.run({ ...CAPTURED, terminal: "handed-over" });
+      return { kind: "not-run", reason: "start-failed", text: process.text };
+    },
+  });
+  const coordinator = createHistoryMutationCoordinator({
+    capability,
+    cwd: "/repo",
+    applyTimeoutMs: 5,
+  });
+  let runs = 0;
+  const result = await coordinator.apply("h", new AbortController().signal, async () => {
+    runs++;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(finalSignal?.aborted).toBe(false);
+    return createTestOutcome({ terminal: "handed-over", text: "editor returned" });
+  });
+  expect(runs).toBe(1);
+  expect(result).toMatchObject({ text: "editor returned" });
+});

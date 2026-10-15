@@ -26,6 +26,8 @@ export interface HistoryOperationSnapshot {
   readonly attempt: number;
   readonly operation: HistoryOperationKind | null;
   readonly suspended: boolean;
+  /** Reveal only the current Squash preparation after its short feedback delay. */
+  readonly squashCheckingVisible: boolean;
   readonly sources: readonly ExtensionVcsHistoryCommit[];
   readonly placement: "onto" | "after" | "before";
   readonly prepared: ExtensionVcsMutationPrepared | null;
@@ -34,6 +36,10 @@ export interface HistoryOperationSnapshot {
   readonly reason: string;
   readonly providerText: string;
   readonly details: boolean;
+  /** Distinguish the on-demand receipt from nested failure output. */
+  readonly fullResult: boolean;
+  /** Retain dismissible success presentation without holding the modal slot. */
+  readonly resultNotice: string | null;
   readonly focus: number;
   readonly scroll: number;
   readonly refreshFailed: boolean;
@@ -47,6 +53,7 @@ export interface HistoryOperationViewFlow {
   sourceActions(frame: HistoryMutationModalFrame): RevisionSourcePanelActions;
   destinationRefusal(commit: ExtensionVcsHistoryCommit | null): string | null;
   previewDestination(visit: symbol, attempt?: number): void;
+  squashDestinationReady(): boolean;
   choosePlacement(visit: symbol, placement: "onto" | "after" | "before", attempt?: number): void;
   cancelVisit(visit: symbol, attempt?: number): Promise<void>;
   cancelConfirmation(visit: symbol, attempt: number): Promise<void>;

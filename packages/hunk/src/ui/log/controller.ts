@@ -74,6 +74,8 @@ export type LogQueryRequest = { kind: "apply"; expression: string } | { kind: "r
 
 export interface LogSnapshot {
   marks: readonly RevisionMarkResolution[];
+  /** Ordinary selection inputs waiting for their accepted navigation/identity boundary. */
+  pendingMarkEdits?: number;
   markStatus: RevisionMarkStatus;
   rows: readonly HistoryGraphRow[];
   selected: number;
@@ -142,6 +144,8 @@ export class LogController {
   private selectionGeneration = 0;
   private closed = false;
   private markGeneration = 0;
+  private markEditGeneration = 0;
+  private markEditQueue: Promise<void> = Promise.resolve();
   private operationGeneration = 0;
   /** Traversal input the rows on screen were read under; a new mark records it with the scope. */
   private acceptedTraversalKey: string;
@@ -458,6 +462,52 @@ export class LogController {
     return true;
   }
 
+  /** Queue ordinary selection against the accepted identity, with Clear invalidating late edits. */
+  queueRevisionSelection(expected?: { revisionId: string | null }) {
+    const epoch = this.markEditGeneration;
+    const navigation = this.selectionGeneration;
+    const revisionId = expected
+      ? expected.revisionId
+      : this.snapshot.rows[this.navigationTarget ?? this.snapshot.selected]?.commit.revisionId;
+    this.publish({ pendingMarkEdits: (this.snapshot.pendingMarkEdits ?? 0) + 1 });
+    const task = this.markEditQueue
+      .then(async (): Promise<"changed" | "cancelled" | "unavailable"> => {
+        await this.settleNavigation();
+        if (this.closed || epoch !== this.markEditGeneration) return "cancelled";
+        if (
+          this.snapshot.markStatus !== "ready" ||
+          this.snapshot.marks.some((mark) => mark.kind === "unresolved")
+        )
+          return "unavailable";
+        const identity =
+          revisionId === undefined && navigation === this.selectionGeneration
+            ? this.getSelectedRow()?.commit.revisionId
+            : revisionId;
+        const index = this.snapshot.rows.findIndex((row) => row.commit.revisionId === identity);
+        return index >= 0 && this.toggleMark(index) ? "changed" : "unavailable";
+      })
+      .finally(() => {
+        if (!this.closed && epoch === this.markEditGeneration)
+          this.publish({
+            pendingMarkEdits: Math.max(0, (this.snapshot.pendingMarkEdits ?? 0) - 1),
+          });
+      });
+    this.markEditQueue = task.then(
+      () => undefined,
+      () => undefined,
+    );
+    return task;
+  }
+
+  /** Drain already accepted ordinary selection before capturing an operation's fixed sources. */
+  async settleRevisionSelection() {
+    while (true) {
+      const queue = this.markEditQueue;
+      await queue;
+      if (queue === this.markEditQueue) return;
+    }
+  }
+
   /** Remove only unresolved intent, retaining valid marks and reading position. */
   removeUnresolvedMarks() {
     if (this.snapshot.markStatus === "checking") return false;
@@ -499,10 +549,13 @@ export class LogController {
 
   /** Clear mark intent without changing review ranges, queued navigation or reading position. */
   clearRevisionMarks() {
-    if (this.closed || this.snapshot.marks.length === 0) return false;
+    if (this.closed) return false;
+    this.markEditGeneration += 1;
+    if (this.snapshot.marks.length === 0 && !this.snapshot.pendingMarkEdits) return false;
     this.markGeneration += 1;
     this.publish({
       marks: Object.freeze([]),
+      pendingMarkEdits: 0,
       markStatus: this.snapshot.markStatus === "checking" ? "checking" : "ready",
     });
     return true;
@@ -510,12 +563,32 @@ export class LogController {
 
   /** Return a detached immutable operation snapshot, independently of review endpoints. */
   getOperationTargets(options: { allowHighlightedFallback?: boolean } = {}) {
+    if (this.snapshot.pendingMarkEdits)
+      return Object.freeze({
+        kind: "blocked" as const,
+        reason: "checking" as const,
+        unresolved: Object.freeze([]),
+      });
     return historyOperationTargets({
       ...this.snapshot,
       status: this.snapshot.markStatus,
       generation: this.operationGeneration,
       allowHighlightedFallback: options.allowHighlightedFallback,
     });
+  }
+
+  /** Clear only the review range, preserving independent revision intent and focus. */
+  clearReviewRange() {
+    if (
+      this.closed ||
+      (this.snapshot.selectionAnchor === null && !this.snapshot.visualSelectionActive)
+    )
+      return false;
+    this.selectionGeneration += 1;
+    this.navigationTarget = null;
+    this.setNavigationPromise(null);
+    this.publish({ selectionAnchor: null, visualSelectionActive: false });
+    return true;
   }
 
   /** Clear marks and any range without moving the focus or reading position. */
@@ -746,9 +819,12 @@ export class LogController {
   }
 
   /** Refresh the provider cursor while reconciling selection by immutable or logical identity. */
-  async refresh(shouldApply: () => boolean = () => true) {
+  async refresh(
+    shouldApply: () => boolean = () => true,
+    removedRevisionIds: readonly string[] = [],
+  ) {
     if (this.refreshPromise) return this.refreshPromise;
-    const refreshing = this.performRefresh(shouldApply);
+    const refreshing = this.performRefresh(shouldApply, new Set(removedRevisionIds));
     this.refreshPromise = refreshing;
     try {
       return await refreshing;
@@ -763,9 +839,12 @@ export class LogController {
    * `refresh` joins a read already in flight, and that read may have started
    * before a history change recorded its operation. This waits it out first.
    */
-  async refreshAfterMutation(shouldApply: () => boolean = () => true) {
+  async refreshAfterMutation(
+    shouldApply: () => boolean = () => true,
+    removedRevisionIds: readonly string[] = [],
+  ) {
     if (this.refreshPromise) await this.refreshPromise.catch(() => undefined);
-    return this.refresh(shouldApply);
+    return this.refresh(shouldApply, removedRevisionIds);
   }
 
   /** Close an unaccepted candidate once, including when quit races its read. */
@@ -778,7 +857,10 @@ export class LogController {
   }
 
   /** Stage replacement pages privately while active paging and newer navigation continue. */
-  private async performRefresh(shouldApply: () => boolean): Promise<boolean> {
+  private async performRefresh(
+    shouldApply: () => boolean,
+    removedRevisionIds: ReadonlySet<string>,
+  ): Promise<boolean> {
     if (this.closed) return false;
     if (!shouldApply()) {
       if (this.snapshot.marks.length) this.publish({ markStatus: "refresh-failed" });
@@ -833,10 +915,14 @@ export class LogController {
         if (needsPage) continue;
         // Each mark compares these rows with where its own revision was last seen, so a mark
         // left behind by a moved bound or a changed traversal stays unchecked on later refreshes.
-        const marks = reconcileRevisionMarks(markIntents, rows, {
+        const reconciled = reconcileRevisionMarks(markIntents, rows, {
           seenUnder: revisionMarkSeenUnder(traversalKey, replacement.scope),
           complete: historyDone && revisionMarkLogicalFallbackEligible(this.acceptedInput),
         });
+        // Pair each reconciled result with its original intent: logical fallback may rename it.
+        const marks = Object.freeze(
+          reconciled.filter((_, index) => !removedRevisionIds.has(markIntents[index]!.revisionId)),
+        );
         const selectedIndex = findHistoryRowIndex(rows, selectedIdentity);
         const anchorIndex = findHistoryRowIndex(rows, anchorIdentity);
         const selected = selectedIndex >= 0 ? selectedIndex : Math.max(0, anchorIndex);

@@ -1,6 +1,6 @@
 import type { AppCommand } from "../../lib/appCommands";
 import { buildHelpSections, type HelpSection } from "../../lib/helpContent";
-import { fitText, padText } from "../../lib/text";
+import { fitText, padText, measureTextWidth, wrapText } from "../../lib/text";
 import type { AppTheme } from "../../themes";
 import { ModalFrame } from "./ModalFrame";
 
@@ -30,8 +30,8 @@ export function HelpDialog({
   const width = Math.max(1, Math.min(74, Math.max(56, terminalWidth - 8), terminalWidth - 2));
   const bodyWidth = Math.max(1, width - 4);
   const rows = sections.flatMap((section) => section.rows);
-  const longestKeys = Math.max(0, ...rows.map((row) => row.keys.length));
-  const longestDescription = Math.max(0, ...rows.map((row) => row.description.length));
+  const longestKeys = Math.max(0, ...rows.map((row) => measureTextWidth(row.keys)));
+  const longestDescription = Math.max(0, ...rows.map((row) => measureTextWidth(row.description)));
   // Key text is user-controlled once bindings are, so the column is measured
   // rather than guessed — but descriptions are given the room they need first,
   // since a truncated key is still recognizable and a truncated sentence is not.
@@ -43,10 +43,24 @@ export function HelpDialog({
     ),
   );
   const descriptionWidth = Math.max(0, bodyWidth - keyWidth);
+  const planned = sections.map((section) => ({
+    ...section,
+    rows: section.rows.map((row) => ({
+      ...row,
+      wrapped:
+        measureTextWidth(row.keys) > keyWidth ||
+        measureTextWidth(row.description) > descriptionWidth
+          ? wrapText(`${row.keys}  ${row.description}`, bodyWidth)
+          : null,
+    })),
+  }));
   const sectionSpacerRowCount = Math.max(0, sections.length - 1);
   const contentRowCount =
-    sections.reduce((rowCount, section) => rowCount + 1 + section.rows.length, 0) +
-    sectionSpacerRowCount;
+    planned.reduce(
+      (rowCount, section) =>
+        rowCount + 1 + section.rows.reduce((sum, row) => sum + (row.wrapped?.length ?? 1), 0),
+      0,
+    ) + sectionSpacerRowCount;
   // ModalFrame contributes the border rows, title row, padding, and one blank spacer row.
   const modalFrameChromeRowCount = 6;
   const requiredModalHeight = contentRowCount + modalFrameChromeRowCount;
@@ -54,7 +68,7 @@ export function HelpDialog({
   const shouldScroll = modalHeight < requiredModalHeight;
   const content = (
     <box style={{ width: "100%", flexDirection: "column" }}>
-      {sections.map((section, sectionIndex) => (
+      {planned.map((section, sectionIndex) => (
         <box key={section.title} style={{ width: "100%", flexDirection: "column" }}>
           <box style={{ width: "100%", height: 1 }}>
             <text fg={theme.badgeNeutral}>{section.title}</text>
@@ -62,10 +76,24 @@ export function HelpDialog({
           {section.rows.map((row) => (
             <box
               key={`${section.title}:${row.description}`}
-              style={{ width: "100%", height: 1, flexDirection: "row" }}
+              style={{
+                width: "100%",
+                height: row.wrapped?.length ?? 1,
+                flexDirection: row.wrapped ? "column" : "row",
+              }}
             >
-              <text fg={theme.accent}>{padText(fitText(row.keys, keyWidth), keyWidth)}</text>
-              <text fg={theme.muted}>{fitText(row.description, descriptionWidth)}</text>
+              {row.wrapped ? (
+                row.wrapped.map((line, index) => (
+                  <text key={index} fg={theme.text} style={{ height: 1 }}>
+                    {line}
+                  </text>
+                ))
+              ) : (
+                <>
+                  <text fg={theme.accent}>{padText(fitText(row.keys, keyWidth), keyWidth)}</text>
+                  <text fg={theme.muted}>{row.description}</text>
+                </>
+              )}
             </box>
           ))}
           {sectionIndex < sections.length - 1 ? <box style={{ width: "100%", height: 1 }} /> : null}

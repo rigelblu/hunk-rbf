@@ -45,13 +45,18 @@ export function isHistoryCommandEnabled(id: HistoryCommandId, snapshot: LogSnaps
     id === "hunk.history.startVisualSelection"
   )
     return Boolean(selected);
+  if (id === "hunk.history.clearRevisionSelection")
+    return snapshot.marks.length > 0 || Boolean(snapshot.pendingMarkEdits);
+  if (id === "hunk.history.toggleRevisionSelection")
+    return (
+      Boolean(selected) &&
+      snapshot.markStatus === "ready" &&
+      !snapshot.pendingMarkEdits &&
+      !snapshot.marks.some((mark) => mark.kind === "unresolved")
+    );
   if (id === "hunk.history.editRevset") return snapshot.query?.editable === true;
   if (id === "hunk.history.clearSelection")
-    return (
-      snapshot.marks.length > 0 ||
-      snapshot.selectionAnchor !== null ||
-      snapshot.visualSelectionActive
-    );
+    return snapshot.selectionAnchor !== null || snapshot.visualSelectionActive;
   if (
     id === "hunk.history.previousCommit" ||
     id === "hunk.history.extendPrevious" ||
@@ -88,6 +93,8 @@ export function historyOperationCommandAllowed(
   if (
     [
       "hunk.history.clearSelection",
+      "hunk.history.toggleRevisionSelection",
+      "hunk.history.clearRevisionSelection",
       "hunk.history.editRevset",
       "hunk.history.openSelection",
       "hunk.history.openFirstParent",
@@ -127,7 +134,15 @@ export function buildHistoryCommands({
             : getSnapshot().marks.length > 0
               ? "Open highlighted revision"
               : entry.title
-          : entry.title,
+          : entry.id === "hunk.history.toggleRevisionSelection"
+            ? getSnapshot().marks.some(
+                (mark) =>
+                  mark.kind === "resolved" &&
+                  mark.revisionId === getSnapshot().rows[getSnapshot().selected]?.commit.revisionId,
+              )
+              ? "Unselect revision"
+              : "Select revision"
+            : entry.title,
       keys,
       keyLabels: keys.map(formatKeyChord),
       defaultKeys: entry.defaultKeys,
@@ -190,7 +205,16 @@ export function buildHistoryHelpSections(
     sections.unshift({
       title: "Destination",
       rows: [
-        { keys: "Enter", description: "preview the highlighted destination" },
+        {
+          keys: "Enter",
+          description:
+            operation?.operation === "squash"
+              ? "squash into the ready highlighted destination"
+              : "preview the highlighted destination",
+        },
+        ...(operation?.operation === "squash"
+          ? [{ keys: "PgUp / PgDn", description: "scroll messages when they overflow" }]
+          : []),
         { keys: "Esc", description: "cancel this action" },
         ...(operation?.operation === "rebase"
           ? [{ keys: "o / A / B", description: "choose onto, after or before" }]

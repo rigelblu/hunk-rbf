@@ -1,15 +1,15 @@
 /**
  * Runs the history view's mutations against one provider, one at a time.
  *
- * The history view asks to prepare a change, the user confirms it, and Apply
+ * The history view prepares a change, and an explicit Squash or Apply gesture
  * runs it. This module sits between the two: it gives the provider the
  * repository to work in, runs the provider's command when Apply is confirmed,
  * and refuses a second mutation while one is still running in this process.
  * It also bounds how long a preparation may read the repository.
  *
  * The provider owns what the command is and what its result means. The history
- * view owns every dialog. Handing the terminal to an interactive command is a
- * later slice; until then such a command is reported as not started.
+ * view owns its presentation. The session supplies terminal handoff for interactive commands;
+ * headless callers without that executor receive a truthful not-started result.
  */
 import type {
   ExtensionVcsMutationCapability,
@@ -22,7 +22,7 @@ import type {
 
 /** How long a preparation may read the repository before it is refused. */
 export const HISTORY_MUTATION_PREPARE_TIMEOUT_MS = 30_000;
-/** How long one Apply may take in all, so a command that never returns cannot leave Hunk busy for good. */
+/** Bound captured execution and final checks; human editing runs until the user exits or the host aborts. */
 export const HISTORY_MUTATION_APPLY_TIMEOUT_MS = 300_000;
 const TERMINATION_GRACE_MS = 250;
 
@@ -53,7 +53,14 @@ export interface HistoryMutationCoordinator {
     request: ExtensionVcsMutationRequest,
     signal?: AbortSignal,
   ): Promise<ExtensionVcsMutationPreparation>;
-  apply(handleId: string, signal: AbortSignal): Promise<ExtensionVcsMutationResult>;
+  apply(
+    handleId: string,
+    signal: AbortSignal,
+    runHandedOver?: (
+      invocation: ExtensionVcsMutationInvocation,
+      signal: AbortSignal,
+    ) => Promise<ExtensionVcsMutationProcessOutcome>,
+  ): Promise<ExtensionVcsMutationResult>;
   dispose(handleId: string): Promise<void>;
 }
 
@@ -183,7 +190,21 @@ export function createHistoryMutationCoordinator({
       });
       try {
         const preparation = await Promise.race([preparing, timedOut]);
-        if (preparation !== "timed-out") return preparation;
+        if (preparation !== "timed-out") {
+          if (
+            process.platform === "win32" &&
+            preparation.kind === "ready" &&
+            preparation.prepared.isInteractive
+          ) {
+            await capability.dispose(preparation.prepared.handleId);
+            return {
+              kind: "refused",
+              reason:
+                "Interactive history commands need Windows process-job support before Hunk can run them.",
+            };
+          }
+          return preparation;
+        }
         // The bound holds even when the provider ignores the signal. `cancelled` is only for a cancel
         // the user asked for, so a read that ran too long is a refusal.
         abort.abort();
@@ -203,7 +224,7 @@ export function createHistoryMutationCoordinator({
       }
     },
 
-    async apply(handleId: string, signal: AbortSignal): Promise<ExtensionVcsMutationResult> {
+    async apply(handleId, signal, runHandedOver): Promise<ExtensionVcsMutationResult> {
       if (isApplying) throw new Error(HISTORY_MUTATION_BUSY_REASON);
       isApplying = true;
       let hasRun = false;
@@ -220,6 +241,11 @@ export function createHistoryMutationCoordinator({
               if (hasRun) throw new Error("A history change may run its command only once.");
               hasRun = true;
               if (invocation.terminal === "handed-over") {
+                if (runHandedOver && !deadline.signal.aborted && !signal.aborted) {
+                  // A human editor has no idle deadline; final checks and readback remain bounded.
+                  clearTimeout(timer);
+                  return runHandedOver(invocation, signal);
+                }
                 return {
                   started: false,
                   exitCode: null,

@@ -11,9 +11,12 @@ export function MenuBar({
   topTitle,
   onHoverMenu,
   onToggleMenu,
+  compact = false,
 }: {
   activeMenuId: MenuId | null;
   menuSpecs: MenuSpec[];
+  /** Use one leading cell per label when a surface supplies compact menu bounds. */
+  compact?: boolean;
   terminalWidth: number;
   theme: AppTheme;
   topTitle: string;
@@ -74,7 +77,9 @@ export function MenuBar({
               onMouseUp={() => onToggleMenu(menu.id)}
               onMouseOver={() => onHoverMenu(menu.id)}
             >
-              <text fg={active ? theme.text : theme.muted}>{` ${menu.label} `}</text>
+              <text
+                fg={active ? theme.text : theme.muted}
+              >{` ${menu.label}${compact ? "" : " "}`}</text>
             </box>
           );
         })}

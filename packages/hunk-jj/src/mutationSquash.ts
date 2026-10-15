@@ -1,9 +1,10 @@
 /**
  * Plans, words and judges squashing one revision into a chosen destination.
  *
- * The command is `jj squash --from <source> --into <destination> --message=<description>`:
+ * The command is `jj squash --from <source> --into <destination>`:
  * the whole source moves into the destination, the emptied source is removed, and its
- * descendants are rebased. Hunk composes the description and passes it, so no editor opens.
+ * descendants are rebased. JJ opens its configured editor when it needs a combined description. A separate non-integrating
+ * preview supplies a provisional message so previewing never opens an editor.
  * Bookmarks are left to jj, which keeps a removed source's bookmarks on the source's parents.
  * Squash takes one source for now; the request carries a list so a later slice can widen it.
  */
@@ -25,8 +26,8 @@ const JJ_NOTHING_CHANGED = "Nothing changed.";
 const ROOT_COMMIT_ID_PATTERN = /^0+$/;
 
 /**
- * Composes the description the destination keeps after a squash, the way Jujutsu combines two
- * descriptions when it is given no message.
+ * Composes a provisional description for the non-integrating content preview.
+ * The actual command leaves description editing to Jujutsu and the configured editor.
  *
  * A side that has text but no final newline gets one first, as Jujutsu stores it. When one side
  * is the empty string the result is the other side. Otherwise the result is the destination's
@@ -77,8 +78,8 @@ function nameRevisions(
   destination: ExtensionVcsMutationRevision,
 ): ExtensionVcsMutationNamedRevision[] {
   return [
-    { label: "Source", revision: refOf(source) },
-    { label: "Destination", revision: refOf(destination) },
+    { label: "From", revision: refOf(source) },
+    { label: "Into", revision: refOf(destination) },
   ];
 }
 
@@ -248,19 +249,19 @@ export const squashKind: JjMutationKind<"squash"> = {
       return { refused: "A revision cannot be squashed into itself." };
     // Immutability, the root included, is decided by jj's dry run, so the refusal carries jj's own reason and hint.
     const description = composeSquashDescription(destination.description, source.description);
+    const args = [
+      "squash",
+      "--from",
+      { revision: request.sources[0] },
+      "--into",
+      { revision: request.destination },
+    ];
     return {
-      args: [
-        "squash",
-        "--from",
-        { revision: request.sources[0] },
-        "--into",
-        { revision: request.destination },
-        // An explicit message, even an empty one, keeps Jujutsu from opening an editor. One
-        // argument, so a description that starts with a hyphen is never read as a flag.
-        `--message=${description}`,
-      ],
+      args,
+      // Only the non-integrating preview uses a provisional description. JJ owns final editing.
+      previewArgs: [...args, `--message=${description}`],
       preview: "dry-run",
-      interactive: false,
+      interactive: true,
       description,
     };
   },
@@ -398,7 +399,7 @@ export const squashKind: JjMutationKind<"squash"> = {
       completed.warnings.push(
         "Hunk cannot tell which version of the destination JJ rewrote. Check it in the history.",
       );
-    else if (linesAddedByJj(rewritten.description, description) === null)
+    else if (!plan.interactive && linesAddedByJj(rewritten.description, description) === null)
       completed.warnings.push(
         "The destination's description is not the one shown at confirmation. Read it in the history.",
       );

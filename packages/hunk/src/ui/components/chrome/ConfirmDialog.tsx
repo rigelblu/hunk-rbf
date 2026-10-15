@@ -21,9 +21,12 @@ export function DialogActionRow({
   actions,
   theme,
   primaryMouseOnly = false,
+  compact = false,
 }: {
   actions: ConfirmDialogAction[];
   theme: AppTheme;
+  /** Omit action padding when the containing footer supplies its own. */
+  compact?: boolean;
   /** Let source controls ignore secondary clicks without changing existing dialogs. */
   primaryMouseOnly?: boolean;
 }) {
@@ -40,8 +43,8 @@ export function DialogActionRow({
             <box
               style={{
                 flexDirection: "row",
-                paddingLeft: 1,
-                paddingRight: 1,
+                paddingLeft: compact ? 0 : 1,
+                paddingRight: compact ? 0 : 1,
                 backgroundColor: hovered ? theme.accentMuted : undefined,
               }}
               onMouseOver={() => setHoveredActionKey(actionId)}

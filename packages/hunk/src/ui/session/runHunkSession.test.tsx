@@ -321,3 +321,79 @@ describe("runHunkSession", () => {
     expect(events).toEqual(["worker"]);
   });
 });
+
+test("temporary native SIGINT claim yields to editor while SIGTERM still requests awaited quit", async () => {
+  const events: string[] = [];
+  const { deps } = createTestDeps(events);
+  const signals = new Map<NodeJS.Signals, () => void>();
+  deps.onSignal = (signal, listener) => signals.set(signal, listener);
+  let context: Parameters<Parameters<typeof runHunkSession>[0]["render"]>[0] | undefined;
+  const running = runHunkSession(
+    {
+      stdin,
+      stdout,
+      useMouse: true,
+      signals: ["SIGINT", "SIGTERM"],
+      render: (next) => {
+        context = next;
+        return null;
+      },
+    },
+    deps,
+  );
+  await Promise.resolve();
+  const withdraw = context!.claimInterrupt(() => true, true);
+  signals.get("SIGINT")!();
+  expect(context!.externalQuitSignal.aborted).toBe(false);
+  signals.get("SIGTERM")!();
+  expect(context!.externalQuitSignal.aborted).toBe(true);
+  expect(events).toEqual(["render"]);
+  withdraw();
+  context!.finish();
+  await running;
+});
+
+test("native SIGINT survives repeated editor claims and requests awaited quit after withdrawal", async () => {
+  const events: string[] = [];
+  const { deps } = createTestDeps(events);
+  // Use production process registration; emit only invokes listeners and never sends an OS signal.
+  delete deps.onSignal;
+  delete deps.offSignal;
+  const listenersBefore = process.listenerCount("SIGINT");
+  let context: Parameters<Parameters<typeof runHunkSession>[0]["render"]>[0] | undefined;
+  const running = runHunkSession(
+    {
+      stdin,
+      stdout,
+      useMouse: true,
+      signals: ["SIGINT"],
+      render: (next) => {
+        context = next;
+        return null;
+      },
+    },
+    deps,
+  );
+  await Promise.resolve();
+  let claimed = 0;
+  const withdraw = context!.claimInterrupt(() => {
+    claimed += 1;
+    return true;
+  }, true);
+  try {
+    process.emit("SIGINT");
+    process.emit("SIGINT");
+    expect(claimed).toBe(2);
+    expect(context!.externalQuitSignal.aborted).toBe(false);
+    expect(process.listenerCount("SIGINT")).toBe(listenersBefore + 1);
+    withdraw();
+    process.emit("SIGINT");
+    expect(context!.externalQuitSignal.aborted).toBe(true);
+    expect(events).toEqual(["render"]);
+  } finally {
+    withdraw();
+    context!.finish();
+    await running;
+  }
+  expect(process.listenerCount("SIGINT")).toBe(listenersBefore);
+});

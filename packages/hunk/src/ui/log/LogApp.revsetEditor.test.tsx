@@ -220,7 +220,7 @@ test("a provider that cannot edit its query shows and does nothing new", async (
     expect(frame).not.toContain("Edit revset");
     expect(frame).not.toContain("Revset:");
     expect(frame).not.toContain("Launch policy");
-    expect(frame).not.toContain("edit revset");
+    expect(frame).not.toContain("Edit revset");
   } finally {
     await fixture.close();
   }
@@ -232,7 +232,7 @@ test("history shows the complete revset, mode and limit, and the key hint", asyn
     const frame = await flush(fixture.setup);
     expect(frame).toContain(`Revset: ${LAUNCH}`);
     expect(frame).toContain("Launch policy · Limit: 100");
-    expect(frame).toContain("L edit revset · v select · Enter open · F10 menu");
+    expect(frame).toContain("L edit revset");
     expect(frame).not.toContain("Custom revset");
   } finally {
     await fixture.close();
@@ -436,11 +436,11 @@ test("Escape closes the editor before it clears a selection, and the selection s
   try {
     await fixture.press("v");
     await fixture.press("ARROW_DOWN");
-    expect(await flush(fixture.setup)).toContain("2 in review range");
+    expect(await flush(fixture.setup)).toContain("Review range: 2");
     await fixture.press("L");
     const frame = await fixture.press("ESCAPE");
     expect(frame).not.toContain("Edit revset");
-    expect(frame).toContain("2 in review range");
+    expect(frame).toContain("Review range: 2");
   } finally {
     await fixture.close();
   }
@@ -1016,7 +1016,7 @@ describe("editor rules each pinned by a test", () => {
       keybindings: { "hunk.history.editRevset": "e" },
     });
     try {
-      expect(await flush(remapped.setup)).toContain("e edit revset · v select");
+      expect(await flush(remapped.setup)).toContain("e edit revset");
       expect(await remapped.press("L")).not.toContain("Edit revset");
       expect(await remapped.press("e")).toContain("Edit revset");
     } finally {
@@ -1027,7 +1027,7 @@ describe("editor rules each pinned by a test", () => {
     });
     try {
       const frame = await flush(unbound.setup);
-      expect(frame).not.toContain("edit revset");
+      expect(frame).not.toContain("Edit revset");
       expect(await unbound.press("L")).not.toContain("Edit revset");
       // The View menu still names the action and opens the editor.
       await unbound.press("F10");
@@ -1346,4 +1346,21 @@ describe("the draft and its caret survive what the editor cannot show", () => {
       await fixture.close();
     }
   });
+});
+
+test("editable-query selection keeps its revset hint outside the complete 80-column action row", async () => {
+  const fixture = await createTestEditorHistory({ width: 80, height: 24 });
+  try {
+    const frame = await fixture.press("m");
+    expect(frame).toContain("1 selected");
+    expect(frame).toContain("L edit revset");
+    const actionRows = frame.split("\n").filter((line) => line.includes("m Unselect"));
+    expect(actionRows).toHaveLength(1);
+    expect(actionRows[0]).toContain(
+      "M Clear selected revisions · S Squash · Enter Open · F10 Menu",
+    );
+    expect(actionRows[0]).not.toContain("edit revset");
+  } finally {
+    await fixture.close();
+  }
 });

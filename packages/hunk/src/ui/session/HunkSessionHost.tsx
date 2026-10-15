@@ -26,6 +26,8 @@ import type { InteractiveHistoryRuntime } from "../history/types";
 import type { ViewPreferenceQuitScheduler } from "../hooks/useViewPreferenceQuitController";
 import { interactiveLogUsesColor } from "../log/colorPolicy";
 import { LogApp, type LogAppOutcome } from "../log/LogApp";
+import { runHandedOverMutationProcess } from "../../app/mutationTerminalProcess";
+import { runHistoryMutationInTerminal } from "../lib/runHistoryMutationInTerminal";
 import {
   HistoryMutationFlowController,
   type HistoryInspectionToken,
@@ -168,7 +170,21 @@ export function HunkSessionHost({
   const renderer = useRenderer();
   const [mutationFlow] = useState(() =>
     initialRoute.kind === "history"
-      ? new HistoryMutationFlowController(initialRoute.controller, initialRoute.runtime.mutations)
+      ? new HistoryMutationFlowController(
+          initialRoute.controller,
+          initialRoute.runtime.mutations && {
+            ...initialRoute.runtime.mutations,
+            apply: (handleId, signal) =>
+              initialRoute.runtime.mutations!.apply(handleId, signal, (invocation, abort) =>
+                runHistoryMutationInTerminal(invocation, abort, {
+                  renderer,
+                  run: runHandedOverMutationProcess,
+                  claimInterrupt,
+                  onRestoreFailure: () => requestQuit(1),
+                }),
+              ),
+          },
+        )
       : null,
   );
   const prepareReview = deps.prepareReview ?? prepareEmbeddedHistoryReview;

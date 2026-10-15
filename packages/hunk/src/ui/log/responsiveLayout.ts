@@ -106,14 +106,14 @@ export function projectResponsiveLogRow({
   const safeId = sanitizeTerminalLine(row.commit.displayId).replaceAll("\t", " ");
   const maxIdWidth = Math.max(
     1,
-    Math.min(measureTextWidth(safeId), Math.floor(contentWidth * 0.35)),
+    Math.min(measureTextWidth(safeId), Math.max(8, Math.floor(contentWidth * 0.35))),
   );
   const displayId = fitText(safeId, maxIdWidth, "…");
   const copyIcon = presentation.unicode ? "⧉" : "c";
   const idActionWidth = measureTextWidth(displayId) + 1 + measureTextWidth(copyIcon);
   const rightWidth = idActionWidth;
   const minimumGraphWidth = presentation.graph
-    ? 0
+    ? Math.min(4, Math.max(0, contentWidth - rightWidth - 10))
     : Math.min(3, Math.max(0, contentWidth - rightWidth - 1));
   const minimumLeftWidth = Math.min(12, Math.max(1, contentWidth - rightWidth - minimumGraphWidth));
   const desiredGap = contentWidth > rightWidth + minimumLeftWidth + minimumGraphWidth ? 2 : 0;

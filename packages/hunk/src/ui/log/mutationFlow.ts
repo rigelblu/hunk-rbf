@@ -39,6 +39,8 @@ export interface HistoryMutationStartOptions {
 
 /** What the flow hands a modal each time it renders, so it follows a live appearance change. */
 export interface HistoryMutationModalFrame {
+  /** Reserve the mounted query/task rows before budgeting lower messages and focused history. */
+  historyHeaderRows?: number;
   theme: AppTheme;
   terminalWidth: number;
   terminalHeight: number;

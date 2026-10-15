@@ -51,11 +51,6 @@ async function launchShortTestHistory(cwd: string) {
   return session;
 }
 
-/** Match the selection marker on one commit's row after the terminal grows again. */
-function selectedCommit(subject: string) {
-  return new RegExp(`^ > .*${subject}`, "m");
-}
-
 afterEach(async () => {
   await harness.cleanup();
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
@@ -69,10 +64,11 @@ describe("history in a terminal shorter than one entry", () => {
       session.resize({ cols: 80, rows: 14 });
       const grown = await harness.waitForSnapshot(
         session,
-        (text) => /^ > .*Commit \d\d/m.test(text),
+        (text) => text.includes("Commit 05"),
         10_000,
       );
-      expect(grown).toMatch(selectedCommit("Commit 05"));
+      expect(grown).not.toContain("> ");
+      expect(await session.text({ only: { background: "#404040" } })).toContain("Commit 05");
     } finally {
       session.close();
     }
@@ -86,10 +82,11 @@ describe("history in a terminal shorter than one entry", () => {
       session.resize({ cols: 80, rows: 14 });
       const grown = await harness.waitForSnapshot(
         session,
-        (text) => /^ > .*Commit \d\d/m.test(text),
+        (text) => text.includes("Commit 07"),
         10_000,
       );
-      expect(grown).toMatch(selectedCommit("Commit 07"));
+      expect(grown).not.toContain("> ");
+      expect(await session.text({ only: { background: "#404040" } })).toContain("Commit 07");
     } finally {
       session.close();
     }

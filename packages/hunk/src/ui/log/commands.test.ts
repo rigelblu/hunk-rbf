@@ -116,15 +116,15 @@ describe("history command authority", () => {
     });
     const helpRows = buildHistoryHelpSections(commands).flatMap((section) => section.rows);
     expect(helpRows).toContainEqual({ keys: "Ctrl+N", description: "next commit" });
-    expect(helpRows).toContainEqual({ keys: "v", description: "start visual selection" });
-    expect(helpRows).toContainEqual({ keys: "Esc", description: "clear selection" });
+    expect(helpRows).toContainEqual({ keys: "v", description: "start review range" });
+    expect(helpRows).toContainEqual({ keys: "Esc", description: "clear review range" });
     expect(helpRows).toContainEqual({
       keys: "PageUp / b / Shift+Space",
       description: "page up",
     });
     expect(helpRows).toContainEqual({
       keys: "Shift+Up / K",
-      description: "extend selection up",
+      description: "extend review range up",
     });
     expect(helpRows).toContainEqual({ keys: "t", description: "choose theme" });
   });
@@ -211,7 +211,7 @@ test("marks preserve paging bindings, remaps, context labels, and clear availabi
     build({ ...marked, selectionAnchor: 0 }).find((c) => c.id === "hunk.history.openSelection")
       ?.title,
   ).toBe("Open review range");
-  expect(isHistoryCommandEnabled("hunk.history.clearSelection", marked)).toBe(true);
+  expect(isHistoryCommandEnabled("hunk.history.clearSelection", marked)).toBe(false);
   expect(isHistoryCommandEnabled("hunk.history.clearSelection", snapshot())).toBe(false);
   expect(
     buildHistoryHelpSections(build(marked))
@@ -290,6 +290,15 @@ test("help describes operation keys and excludes commands locked in that phase",
       .flatMap((section) => section.rows)
       .some((row) => row.description === "extend selection down"),
   ).toBe(false);
+  const squash = buildHistoryHelpSections(commands, { phase: "destination", operation: "squash" });
+  const squashRows = squash.flatMap((section) => section.rows);
+  expect(squashRows.some((row) => row.keys === "d" || row.description.includes("details"))).toBe(
+    false,
+  );
+  expect(squashRows).toContainEqual({
+    keys: "PgUp / PgDn",
+    description: "scroll messages when they overflow",
+  });
   expect(buildHistoryHelpSections(commands)[0]?.title).toBe("Navigation");
 });
 
@@ -314,4 +323,32 @@ test("source help keeps remapped Refresh and removes a reserved Space-only pagin
   expect(rows).toContainEqual({ keys: "r", description: "review unresolved marks when available" });
   expect(rows.some((row) => row.description === "page down")).toBe(false);
   expect(rows.every((row) => row.keys.length > 0)).toBe(true);
+});
+
+test("ordinary revision selection commands have distinct remappable keys and lifecycle guards", () => {
+  expect(matchCommand(key("m"))).toBe("hunk.history.toggleRevisionSelection");
+  expect(matchCommand(key("letter", "M"))).toBe("hunk.history.clearRevisionSelection");
+  expect(matchCommand(key("z"), { "hunk.history.toggleRevisionSelection": "z" })).toBe(
+    "hunk.history.toggleRevisionSelection",
+  );
+  expect(isHistoryCommandEnabled("hunk.history.clearRevisionSelection", snapshot())).toBe(false);
+  expect(
+    isHistoryCommandEnabled("hunk.history.toggleRevisionSelection", {
+      ...snapshot(),
+      markStatus: "checking",
+    }),
+  ).toBe(false);
+  for (const phase of ["sources", "destination", "preparing", "applying"] as const) {
+    const commands = buildHistoryCommands({
+      getSnapshot: snapshot,
+      handlers: noopHandlers,
+      getOperation: () => ({ visit: Symbol("test"), phase }),
+    });
+    expect(
+      commands.find((c) => c.id === "hunk.history.toggleRevisionSelection")!.isEnabled!(),
+    ).toBe(false);
+    expect(commands.find((c) => c.id === "hunk.history.clearRevisionSelection")!.isEnabled!()).toBe(
+      false,
+    );
+  }
 });

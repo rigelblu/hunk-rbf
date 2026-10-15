@@ -10,7 +10,11 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 
 ## 🟠⋯ Added for End Users
 
-- 2026-10-14 - feat (ux) | select exact revisions with Space or checkmarks after choosing Squash or Rebase, inspect the highlighted diff with I, and preview one-source operations before Apply (#hk-27)
+- 2026-10-20 - feat (ux) | select separate history revisions with keyboard or mouse, clear them independently of a review range, and capture them directly for Squash (#hk-27)
+
+- 2026-10-15 - feat (ux) | see Squash From and Into beside the graph, write the combined description in my configured JJ editor, and return to the actual result (#hk-27)
+
+- 2026-10-14 - feat (ux) | select exact revisions with Space or checkmarks after choosing Rebase, inspect the highlighted diff with I, and preview one-source Rebase operations before Apply (#hk-27)
 - 2026-10-12 - feat (ux) | edit the complete active JJ revset in `hunk log` with `L`, reuse earlier revsets from this session, and restore launch policy with Reset; completion is not available yet (#hk-19)
 
 ## 🟠⋯ Added for Technical Users
@@ -19,6 +23,21 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 - 2026-10-12 - feat (technical) | let a history provider opt in to complete expression input and report the exact query text through extension API 32; providers without `acceptsExpression` keep today's behavior (#hk-19)
 
 ## 🟠⋯ Fixed for End Users
+
+- 2026-10-21 - fix (ux) | return to history with a short revision-count message after a clean Squash that rewrites descendants (#hk-27.2)
+
+- 2026-10-21 - fix (ux) | see how many source revisions will be squashed when the destination is ready (#hk-27.2)
+
+- 2026-10-21 - fix (ux) | keep selection status and Squash above the history graph while retaining preparation and refusal messages above the lower actions (#hk-27.2)
+
+- 2026-10-20 - fix (ux) | wait 400 ms before showing Squash preparation feedback while checking the destination immediately (#hk-27)
+
+- 2026-10-20 - fix (ux) | resume history review immediately after a clean Squash, keep concise feedback visible, and reopen exact effects and recovery on demand (#hk-27)
+
+- 2026-10-20 - fix (ux) | keep surviving selections after actual Squash readback and refresh, including a selected destination, and prevent delayed input from restoring cleared selections (#hk-27)
+
+- 2026-10-15 - fix (ux) | keep Squash actions compact, read contextual messages inline, and open full output only when recovering from a failure (#hk-27)
+- 2026-10-16 - fix (ux) | browse Squash destinations without flashing progress for checks that finish within 200 ms (#hk-27)
 
 - 2026-10-12 - fix (ux) | preserve native revset editing when opening and typing arrive together, block input at unsupported terminal sizes, and move the caret to the end when reusing a previous input (#hk-19)
 - 2026-10-11 - fix (ux) | retain history cursor ownership and the highlighted terminal row while refresh stages replacement pages (#hk-28 dependency for hk-27)
