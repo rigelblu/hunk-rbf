@@ -8,15 +8,23 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 
 ## 🟠⋯ 🚨 Breaking Changes for End Users
 
+## 🟠⋯ Added for End Users
+
+## 🟠⋯ Added for Technical Users
+
+## 🟠⋯ Fixed for End Users
+
+# 🔵⋯ v0.13.0 (2026-10-16)
+
+Local HK-99 release records; publication remains pending.
+
+## 🟠⋯ 🚨 Breaking Changes for End Users
+
 - 2026-10-15 - feat (BREAKING) | search for a literal leading `!` with `\!` after `!` becomes the exclusion operator (#hk-99)
 
 ## 🟠⋯ Added for End Users
 
 - 2026-10-15 - feat | exclude matching files from a review with `!text` in the Tab filter (#hk-99)
-
-## 🟠⋯ Added for Technical Users
-
-## 🟠⋯ Fixed for End Users
 
 # 🔵⋯ v0.12.0 (2026-10-14)
 
