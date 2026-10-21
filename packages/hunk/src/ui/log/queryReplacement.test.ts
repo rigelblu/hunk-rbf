@@ -6,7 +6,7 @@ import {
   historyQueryFailureReason,
   historyQueryPageLimit,
   HISTORY_QUERY_REASON_UNITS,
-  withoutGraphLinks,
+  directGraphLinks,
 } from "./queryReplacement";
 
 function createTestCommit(revisionId: string, parents: string[] = []): HistoryCommit {
@@ -60,21 +60,20 @@ describe("historyQueryPageLimit", () => {
   });
 });
 
-describe("withoutGraphLinks", () => {
-  test("empties graph parents but keeps real parents, and plans no link between rows", () => {
+describe("directGraphLinks", () => {
+  test("keeps only direct graph parents without changing review identities or cutoff facts", () => {
     const commits = [createTestCommit("c", ["b"]), createTestCommit("b", ["a"])];
-    const stripped = withoutGraphLinks([
-      { ...commits[0]!, graphParentRevisionIds: ["b"] },
-      commits[1]!,
+    const direct = directGraphLinks([
+      { ...commits[0]!, graphParentRevisionIds: ["b", "a"] },
+      { ...commits[1]!, graphCutoffParentRevisionIds: ["a"] },
     ]);
-    expect(stripped.map((commit) => commit.parentRevisionIds)).toEqual([["b"], ["a"]]);
-    expect(stripped.map((commit) => commit.graphParentRevisionIds)).toEqual([[], []]);
-    const linked = planHistoryPage(commits).rows;
-    const unlinked = planHistoryPage(stripped).rows;
-    expect(unlinked).not.toEqual(linked);
-    expect(linked[0]!.lanesAfter).toEqual(["b"]);
-    expect(unlinked.map((row) => row.lanesAfter)).toEqual([[], []]);
-    expect(unlinked.map((row) => row.parentLanes)).toEqual([[], []]);
+    expect(direct.map((commit) => commit.parentRevisionIds)).toEqual([["b"], ["a"]]);
+    expect(direct[0]!.graphParentRevisionIds).toEqual(["b"]);
+    expect(commits[0]!.graphParentRevisionIds).toBeUndefined();
+    const planned = planHistoryPage(direct);
+    expect(planned.rows.map((row) => row.lanesAfter)).toEqual([["b"], []]);
+    expect(planned.rows[1]!.cutoffLanes).toEqual([0]);
+    expect(planned.checkpoint.lanes).toEqual([]);
   });
 });
 

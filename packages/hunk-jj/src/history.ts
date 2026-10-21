@@ -199,8 +199,15 @@ async function prepareJjHistory(
     template: JJ_HISTORY_TEMPLATE,
     fieldsPerCommit: HISTORY_FIELDS_PER_COMMIT,
   };
-  // Expression input is its own scope: no mainline lookup, no cutoff field.
-  if (input.kind === "expression" || input.revision || input.all) return plan;
+  // Custom membership is independent of loaded pages and row caps. Pin it to the same operation
+  // as the rows, so a selected direct parent continues normally even on a later page.
+  if (input.kind === "expression") {
+    const selected = `(${input.expression}) | root()`;
+    plan.template += ` ++ parents.filter(|p| !p.contained_in(${JSON.stringify(selected)})).map(|p| p.commit_id()).join(" ") ++ "\\0"`;
+    plan.fieldsPerCommit += 1;
+    return plan;
+  }
+  if (input.revision || input.all) return plan;
   const output = await runJjHistoryQuery(
     [
       "--at-op",
@@ -553,16 +560,16 @@ function resolveHistoryRepoRoot(
   return normalizePathForOS(repoRoot);
 }
 
-/** Return whether traversal filters can omit direct parents from the emitted commit stream. */
+/** Return whether legacy filters require suppressing topology without parent-membership facts. */
 export function jjHistoryUsesBoundaryTopology(input: ExtensionVcsHistoryInput) {
-  // A custom expression can select any set, so its rows never promise their direct parents.
+  // Custom expressions classify omitted parents in the pinned template instead.
   return Boolean(
-    input.kind === "expression" ||
-    input.author !== undefined ||
-    input.grep !== undefined ||
-    input.since !== undefined ||
-    input.until !== undefined ||
-    input.pathspecs?.length,
+    input.kind !== "expression" &&
+    (input.author !== undefined ||
+      input.grep !== undefined ||
+      input.since !== undefined ||
+      input.until !== undefined ||
+      input.pathspecs?.length),
   );
 }
 

@@ -266,7 +266,7 @@ describe("planRevsetEditor frames", () => {
       "<field>",
       "Custom revset · Limit: 100",
       "",
-      "Custom revset: graph links and range review unavailable.",
+      "Custom revset: range review unavailable. ~ omitted parent",
       "",
       "Previous inputs",
       "> @-",
@@ -296,7 +296,7 @@ describe("planRevsetEditor frames", () => {
       "<field>",
       "Custom revset · Limit: 100",
       "",
-      "Custom revset: graph links and range review unavailable.",
+      "Custom revset: range review unavailable. ~ omitted parent",
       "",
       "Revset not applied: Function `missing_function` doesn't exist",
       "Caused by:  --> 1:53",
@@ -314,7 +314,7 @@ describe("planRevsetEditor frames", () => {
     const layout = planRevsetEditor(state, { width: 80, height: 32 });
     const rows = textRows(layout);
     expect(rows).toContain("Applying revset…");
-    expect(rows).toContain("Custom revset: graph links and range review unavailable.");
+    expect(rows).toContain("Custom revset: range review unavailable. ~ omitted parent");
     expect(rows.at(-1)).toBe("[F2] Apply (busy)  [F3] Reset (busy)  [Esc] Cancel");
     expect(rows.some((row) => row.startsWith("Enter") || row.includes("Previous"))).toBeFalse();
   });
@@ -437,8 +437,8 @@ describe("planRevsetEditor compact frames", () => {
       "<field>",
       "Custom revset · Limit: 100",
       "Applying revset…",
-      "Custom revset: graph links and",
-      "range review unavailable.",
+      "Custom revset: range review",
+      "unavailable. ~ omitted parent",
       "[F2] Apply (busy)",
       "[F3] Reset (busy)",
       "[Esc] Cancel",

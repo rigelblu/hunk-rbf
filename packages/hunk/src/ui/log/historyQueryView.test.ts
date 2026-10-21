@@ -110,11 +110,11 @@ describe("planHistoryQueryView", () => {
   test("a custom query adds the restriction line and drops the scope line", () => {
     const view = planHistoryQueryView(custom, { width: 80, height: 32 });
     expect(view.top[1]).toEqual({ kind: "mode", text: "Custom revset · Limit: 100" });
-    expect(view.bottom).toEqual(["Custom revset: graph links and range review unavailable."]);
+    expect(view.bottom).toEqual(["Custom revset: range review unavailable. ~ omitted parent"]);
     expect(view.replacesScopeLine).toBeTrue();
     expect(planHistoryQueryView(custom, { width: 40, height: 24 }).bottom).toEqual([
-      "Custom revset: graph links and range",
-      "review unavailable.",
+      "Custom revset: range review",
+      "unavailable. ~ omitted parent",
     ]);
   });
 

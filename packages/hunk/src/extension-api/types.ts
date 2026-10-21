@@ -810,7 +810,7 @@ export interface ExtensionVcsHistoryCommit {
    * Omit this field when graph parents are identical to `parentRevisionIds`.
    */
   graphParentRevisionIds?: string[];
-  /** Direct review parents deliberately omitted by the chosen ancestry boundary. */
+  /** Direct review parents deliberately omitted by the selected traversal or ancestry boundary. */
   graphCutoffParentRevisionIds?: string[];
   subject: string;
   /** Commit message content after the subject, preserving paragraph breaks. */

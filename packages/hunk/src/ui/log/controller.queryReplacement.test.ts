@@ -532,7 +532,7 @@ describe("LogController.replaceQuery marks, refresh and guards", () => {
     await controller.close();
   });
 
-  test("draws no graph link under an expression, whatever graph parents the provider sent", async () => {
+  test("preserves direct graph links under an expression without enabling range review", async () => {
     const { controller } = await loadedController({
       queries: {
         q: {
@@ -545,9 +545,43 @@ describe("LogController.replaceQuery marks, refresh and guards", () => {
     });
     await controller.replaceQuery({ kind: "apply", expression: "q" });
     const rows = controller.getSnapshot().rows;
-    expect(rows.map((row) => row.lanesAfter)).toEqual([[], []]);
+    expect(rows.map((row) => row.lanesAfter)).toEqual([["n2"], []]);
     // Real parent ids still drive single-revision review.
     expect(rows[0]!.commit.parentRevisionIds).toEqual(["n2"]);
+    controller.beginVisualSelection();
+    expect(controller.getSnapshot().selectionAnchor).toBeNull();
+    expect(controller.getSnapshot().notice).toContain("Multi-commit selection is unavailable");
+    await controller.close();
+  });
+
+  test("keeps custom edges across pages and refresh, rejects invented graph parents, and resets", async () => {
+    const { controller } = await loadedController({
+      queries: {
+        chain: {
+          pageSize: 1,
+          entries: [
+            { revisionId: "n1", parents: ["n2"], graphParents: ["n2", "invented"] },
+            { revisionId: "n2", parents: ["n3"] },
+            { revisionId: "n3" },
+          ],
+        },
+      },
+    });
+    await controller.replaceQuery({ kind: "apply", expression: "chain" });
+    expect(controller.getSnapshot().rows[0]!.lanesAfter).toEqual(["n2"]);
+    await controller.loadMore();
+    await controller.loadMore();
+    const edges = () => controller.getSnapshot().rows.map((row) => row.lanesAfter);
+    expect(edges()).toEqual([["n2"], ["n3"], []]);
+    expect(await controller.refresh()).toBeTrue();
+    expect(edges()).toEqual([["n2"]]);
+    await controller.loadMore();
+    await controller.loadMore();
+    expect(edges()).toEqual([["n2"], ["n3"], []]);
+    expect(controller.getSnapshot().rows[0]!.commit.parentRevisionIds).toEqual(["n2"]);
+    await controller.replaceQuery({ kind: "reset" });
+    expect(subjects(controller)).toEqual(["l1", "l2", "l3"]);
+    expect(controller.getSnapshot().query?.mode).toBe("launch");
     await controller.close();
   });
 
@@ -769,7 +803,7 @@ describe("LogController.replaceQuery rules", () => {
     await controller.close();
   });
 
-  test("strips graph links from later pages and from refresh pages, not only the first", async () => {
+  test("preserves graph links on later pages and refresh pages", async () => {
     const chain: TestEntry[] = [
       { revisionId: "n1", parents: ["n2"], graphParents: ["n2"] },
       { revisionId: "n2", parents: ["n3"], graphParents: ["n3"] },
@@ -784,11 +818,16 @@ describe("LogController.replaceQuery rules", () => {
     expect(subjects(controller)).toEqual(["n1", "n2"]);
     await controller.loadMore();
     expect(subjects(controller)).toEqual(["n1", "n2", "n3", "n4"]);
-    expect(controller.getSnapshot().rows.map((row) => row.lanesAfter)).toEqual([[], [], [], []]);
+    expect(controller.getSnapshot().rows.map((row) => row.lanesAfter)).toEqual([
+      ["n2"],
+      ["n3"],
+      ["n4"],
+      [],
+    ]);
 
     expect(await controller.refresh()).toBeTrue();
     expect(subjects(controller).length).toBeGreaterThan(0);
-    expect(controller.getSnapshot().rows.every((row) => row.lanesAfter.length === 0)).toBeTrue();
+    expect(controller.getSnapshot().rows[0]!.lanesAfter).toEqual(["n2"]);
     await controller.close();
   });
 

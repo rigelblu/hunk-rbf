@@ -641,10 +641,13 @@ for legacy input may expose `source.expression` to describe its complete query. 
 that is not a string, is over 65,536 UTF-16 units, or contains a control character or line break, or
 whose getter throws, and keeps the source open without it. A blank value is dropped too.
 
-For a source opened for expression input, Hunk ignores `source.scope` without reading it and
-ignores every commit's `graphCutoffParentRevisionIds` without reading them. A custom expression
-makes no mainline-cutoff claim. `maxCount` on expression input must be omitted or a safe integer
-of at least 0.
+For a source opened for expression input, Hunk ignores `source.scope` without reading it: a
+custom expression makes no mainline claim. It validates `graphCutoffParentRevisionIds` as
+omitted direct parents and preserves graph links between selected direct parents. Classify
+membership against the complete expression at the same snapshot as the rows, never just the
+current page or row cap. Custom graph projections cannot substitute indirect ancestors for
+real parents. Graph presentation does not enable range review. `maxCount` on expression input
+must be omitted or a safe integer of at least 0.
 
 `ExtensionVcsHistoryInput` is now a union of `ExtensionVcsLegacyHistoryInput` and
 `ExtensionVcsExpressionHistoryInput`. An `interface X extends ExtensionVcsHistoryInput` no longer
@@ -659,8 +662,8 @@ validates the metadata, then publishes it with the first accepted page or a succ
 accepted refresh. Omit scope when the source makes no boundary claim.
 
 Cutoff parents are a unique, ordered subset of the commit's real `parentRevisionIds`.
-They identify only direct edges deliberately excluded by that boundary. Keep real review
-parents intact; do not classify roots, unloaded pages, ordinary filters, limits, or clipped
+They identify only direct edges deliberately excluded by that boundary or a custom expression.
+Keep real review parents intact; do not classify roots, unloaded pages, ordinary filters, limits, or clipped
 graph lanes as cutoffs. Explicit `graphParentRevisionIds` must not include cutoff parents.
 The shared graph planner terminates each cutoff locally and keeps it out of subsequent
 page checkpoints. Sources omitting both new fields retain their existing behavior.

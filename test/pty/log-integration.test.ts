@@ -1860,6 +1860,107 @@ const HK19_ARGS = ["log", "--vcs", "jj", "--color", "never", "--no-extensions", 
 
 describe("HK-19.1 revset editor", () => {
   (Bun.which("jj") ? test : test.skip)(
+    "custom revsets connect direct parents, terminate gaps, refresh and Reset in both views",
+    async () => {
+      const { cwd, env } = createHk19PtyTestRepo();
+      const session = await harness.launchHunk({ args: HK19_ARGS, cwd, env, cols: 100, rows: 32 });
+      /** Apply one literal query through the mounted native editor. */
+      const apply = async (expression: string) => {
+        session.writeRaw(`L\x15${expression}\x1bOQ`);
+        return harness.waitForSnapshot(
+          session,
+          (text) => text.includes(`Revset: ${expression}`) && !text.includes("Edit revset"),
+          15_000,
+        );
+      };
+      /** Toggle the existing menu item rather than assuming a graph shortcut. */
+      const toggleGraph = async () => {
+        await session.press("f10");
+        await session.press("right");
+        await session.press("down");
+        await session.press("enter");
+      };
+      /** Read the ancestry continuation immediately below a visible commit's title. */
+      const continuation = (text: string, subject: string) => {
+        const lines = text.split("\n");
+        return lines[lines.findIndex((line) => line.includes(subject)) + 1]!;
+      };
+      try {
+        await session.waitForText(/Launch policy · Limit: 100/, { timeout: 15_000 });
+        const regular = await apply("feature | main | old-b");
+        expect(regular).toContain("Commits on");
+        expect(regular).toContain("~ omitted parent");
+        expect(regular).not.toContain("older history hidden");
+        await toggleGraph();
+        const connected = await harness.waitForSnapshot(
+          session,
+          (text) => text.includes("●") && !text.includes("Commits on"),
+          5_000,
+        );
+        expect(continuation(connected, "Feature current work")).toContain("│");
+        expect(continuation(connected, "Mainline boundary")).toContain("│");
+        // A query skipping main cannot pretend feature's real parent is old-b.
+        const gap = await apply("feature | old-b");
+        expect(gap).not.toContain("Mainline boundary");
+        const between = gap.split("Feature current work")[1]!.split("Hidden old B")[0]!;
+        expect(between).toMatch(/\n\s*~\s*\n/);
+        expect(gap).toContain("Custom revset: range review unavailable.");
+        await session.press("r");
+        const refreshed = await harness.waitForSnapshot(
+          session,
+          (text) => text.includes("History refreshed."),
+          15_000,
+        );
+        expect(refreshed).toContain("Hidden old B");
+        expect(refreshed).not.toContain("Mainline boundary");
+        session.writeRaw("v");
+        await session.waitForText(/Multi-commit selection is unavailable/, { timeout: 5_000 });
+        // Enter still reviews feature against its omitted real parent, main.
+        await session.press("enter");
+        const review = await session.waitForText(/export const feature = true/, {
+          timeout: 15_000,
+        });
+        expect(review).not.toContain("export const main = true");
+        await harness.pressAndWaitForSnapshot(
+          session,
+          "q",
+          (text) => text.includes("Custom revset") && text.includes("Enter Open"),
+          15_000,
+        );
+        await toggleGraph();
+        const groupedGap = await harness.waitForSnapshot(
+          session,
+          (text) => text.includes("Commits on"),
+          5_000,
+        );
+        expect(groupedGap).toMatch(/\n\s*~\s*\n/);
+        session.writeRaw("L");
+        await session.waitForText(/Edit revset/, { timeout: 5_000 });
+        session.sendKey("f3");
+        const reset = await harness.waitForSnapshot(
+          session,
+          (text) => text.includes("Launch policy · Limit: 100") && !text.includes("Edit revset"),
+          15_000,
+        );
+        expect(reset).toContain("Feature current work");
+        expect(reset).toContain("Jujutsu · 5 commits");
+        expect(reset).toContain("~ older history hidden");
+        expect(reset).not.toContain("Custom revset");
+        await toggleGraph();
+        const resetGraph = await harness.waitForSnapshot(
+          session,
+          (text) => text.includes("●") && !text.includes("Commits on"),
+          5_000,
+        );
+        expect(resetGraph).toContain("~ older history hidden");
+        expect(resetGraph).not.toContain("~ omitted parent");
+      } finally {
+        session.close();
+      }
+    },
+  );
+
+  (Bun.which("jj") ? test : test.skip)(
     "opening, Ctrl+U, text and Apply in one raw write replace the launch expression",
     async () => {
       const { cwd, env } = createHk19PtyTestRepo();
@@ -1915,7 +2016,7 @@ describe("HK-19.1 revset editor", () => {
         expect(custom).toContain("Revset: @-");
         expect(custom).toContain("Feature current work");
         expect(custom).not.toContain("Merge current work");
-        expect(custom).toContain("Custom revset: graph links and range review unavailable.");
+        expect(custom).toContain("Custom revset: range review unavailable. ~ omitted parent");
         expect(custom).toContain("Selected newest; previous not loaded.");
 
         // Reset restores launch policy and all five rows while retaining reading context.
@@ -1933,7 +2034,7 @@ describe("HK-19.1 revset editor", () => {
           15_000,
         );
         expect(reset).toContain(`Revset: ${HK19_LAUNCH_REVSET}`);
-        expect(reset).not.toContain("graph links and range review unavailable");
+        expect(reset).not.toContain("range review unavailable");
         await harness.pressAndWaitForText(session, "home", /Merge current work/);
 
         // The earlier input is offered again; Enter inserts it without applying.

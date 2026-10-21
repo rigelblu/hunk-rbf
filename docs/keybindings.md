@@ -77,7 +77,8 @@ an ordered provider-owned parent; they do not navigate the history selection to 
 With a provider that accepts revset expressions (Jujutsu), `L` or **View → Edit revset…** opens an editor for the
 complete active revset: `F2` or `Enter` applies it, `F3` restores the launch policy, `Esc` or `Ctrl-C` cancels (neither quits Hunk from the editor), and
 `Tab`/`Shift+Tab`, `Up`/`Down` or `Ctrl-N`/`Ctrl-P` highlight a revset applied earlier in the session, which `Enter` then
-inserts without applying it. While a custom revset is active history draws no graph links and refuses range selection.
+inserts without applying it. Custom revsets retain direct graph connections and mark omitted parents with `~`;
+range selection remains unavailable.
 
 History-specific commands:
 

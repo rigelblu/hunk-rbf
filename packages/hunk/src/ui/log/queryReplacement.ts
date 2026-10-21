@@ -32,11 +32,20 @@ export function historyQueryPageLimit(maxCount: number | undefined) {
 }
 
 /**
- * Drop every graph link a provider sent, so a custom query never draws a line through commits it
- * leaves out. Real parent ids stay, because they still drive single-revision review.
+ * Retain only declared direct graph parents for custom queries. A provider's projected ancestor
+ * must not become a direct edge across an omitted revision. Review parents stay unchanged.
  */
-export function withoutGraphLinks(commits: readonly HistoryCommit[]): HistoryCommit[] {
-  return commits.map((commit) => ({ ...commit, graphParentRevisionIds: [] }));
+export function directGraphLinks(commits: readonly HistoryCommit[]): HistoryCommit[] {
+  return commits.map((commit) => ({
+    ...commit,
+    ...(commit.graphParentRevisionIds !== undefined
+      ? {
+          graphParentRevisionIds: commit.graphParentRevisionIds.filter((parent) =>
+            commit.parentRevisionIds.includes(parent),
+          ),
+        }
+      : {}),
+  }));
 }
 
 /** Where focus lands once a replacement's first page is in. */

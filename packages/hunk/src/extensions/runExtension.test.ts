@@ -2149,7 +2149,7 @@ describe("HK-19.1 expression history input", () => {
     expect(source.expression).toBe("trunk()..@");
   });
 
-  test("ignores scope and cutoff parents on an expression source but keeps them on a legacy one", async () => {
+  test("ignores expression scope but retains and validates real omitted parents", async () => {
     const cutoffCommit = {
       ...hk191Commit,
       graphParentRevisionIds: [],
@@ -2174,7 +2174,7 @@ describe("HK-19.1 expression history input", () => {
       expect("scope" in source).toBe(false);
       const page = await source.read({ limit: 5 });
       expect(page.commits).toHaveLength(1);
-      expect("graphCutoffParentRevisionIds" in page.commits[0]!).toBe(false);
+      expect(page.commits[0]!.graphCutoffParentRevisionIds).toEqual(["p"]);
     }
 
     let scopeReads = 0;
@@ -2192,10 +2192,10 @@ describe("HK-19.1 expression history input", () => {
       },
     });
     const ignoring = await throwing.open({ kind: "expression", expression: "@" }, hk191Context);
-    expect((await ignoring.read({ limit: 5 })).commits).toHaveLength(1);
+    await expect(ignoring.read({ limit: 5 })).rejects.toThrow("cutoff parents must be an array");
     expect(scopeReads).toBe(0);
 
-    // A cutoff accessor that throws is never invoked for an expression source.
+    // Omission facts are validated even for expression sources.
     let cutoffReads = 0;
     const accessorCommit = {
       ...hk191Commit,
@@ -2209,8 +2209,8 @@ describe("HK-19.1 expression history input", () => {
       source: { read: async () => ({ commits: [accessorCommit], done: true }) },
     });
     const guardedSource = await guarded.open({ kind: "expression", expression: "@" }, hk191Context);
-    expect((await guardedSource.read({ limit: 5 })).commits).toHaveLength(1);
-    expect(cutoffReads).toBe(0);
+    await expect(guardedSource.read({ limit: 5 })).rejects.toThrow("cutoff getter failed");
+    expect(cutoffReads).toBe(1);
 
     const legacy = createHk191TestAdapter({
       acceptsExpression: true,

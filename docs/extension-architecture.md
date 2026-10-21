@@ -405,7 +405,9 @@ callback, and refuses expression input for a provider that omitted the flag, whi
 registration. Core gets no revset parser and
 forwards the validated input. The same boundary requires an expression source to echo its exact
 input text as immutable `source.expression`, drops a malformed `source.expression` from a legacy
-source without closing it, and ignores `source.scope` and cutoff parents for an expression source. These facts do not extend the session wire.
+source without closing it, and ignores `source.scope` for an expression source. Expression-source
+cutoff parents are validated direct parents omitted by the query; ordinary graph links retain
+direct ancestry without enabling range review. These facts do not extend the session wire.
 
 ## Public contract rules
 

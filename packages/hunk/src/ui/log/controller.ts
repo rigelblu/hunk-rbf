@@ -21,7 +21,7 @@ import {
   historyQueryPageLimit,
   HISTORY_QUERY_BLANK_MESSAGE,
   HISTORY_QUERY_NEWEST_NOTICE,
-  withoutGraphLinks,
+  directGraphLinks,
 } from "./queryReplacement";
 
 import type { LogPresentation } from "./presentation";
@@ -1082,11 +1082,11 @@ export class LogController {
   }
 
   /**
-   * Plan graph links for commits read under the accepted query. A custom expression can leave out
-   * any commit, so it draws no link whatever graph parents the provider sent.
+   * Preserve provider omission boundaries under custom queries while refusing projected
+   * ancestors that are not direct parents. Range eligibility stays in its separate input policy.
    */
-  private graphCommits(commits: Parameters<typeof withoutGraphLinks>[0]) {
-    return this.acceptedInput.kind === "expression" ? withoutGraphLinks(commits) : [...commits];
+  private graphCommits(commits: Parameters<typeof directGraphLinks>[0]) {
+    return this.acceptedInput.kind === "expression" ? directGraphLinks(commits) : [...commits];
   }
 
   /**
@@ -1143,7 +1143,7 @@ export class LogController {
 
       // Everything below is synchronous: the focus and marks it reads are the ones on screen now.
       const planned = planHistoryPage(
-        nextInput.kind === "expression" ? withoutGraphLinks(page.commits) : page.commits,
+        nextInput.kind === "expression" ? directGraphLinks(page.commits) : page.commits,
       );
       const rows = planned.rows;
       const before = this.snapshot;

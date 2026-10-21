@@ -365,11 +365,7 @@ function normalizeHistorySourceExpression(
 }
 
 /** Copy and validate one extension-provided history commit before it reaches core or UI. */
-function normalizeHistoryCommit(
-  value: unknown,
-  /** Drop cutoff parents unread: an expression source's rows never show a mainline cutoff. */
-  ignoreCutoffParents = false,
-): ExtensionVcsHistoryCommit {
+function normalizeHistoryCommit(value: unknown): ExtensionVcsHistoryCommit {
   if (!isPlainObject(value)) {
     throw new Error("VCS history returned a commit that is not an object.");
   }
@@ -378,8 +374,7 @@ function normalizeHistoryCommit(
     "displayId",
     "parentRevisionIds",
     "graphParentRevisionIds",
-    // Left out when ignored, so a throwing accessor cannot fail the page.
-    ...(ignoreCutoffParents ? [] : ["graphCutoffParentRevisionIds"]),
+    "graphCutoffParentRevisionIds",
     "subject",
     "body",
     "authorName",
@@ -440,7 +435,7 @@ function normalizeHistoryCommit(
     safeRevision(parent, "VCS history graph parent revision id"),
   );
   let graphCutoffParentRevisionIds: string[] | undefined;
-  if (!ignoreCutoffParents && snapshot.graphCutoffParentRevisionIds !== undefined) {
+  if (snapshot.graphCutoffParentRevisionIds !== undefined) {
     if (!Array.isArray(snapshot.graphCutoffParentRevisionIds))
       throw new Error("VCS history cutoff parents must be an array.");
     graphCutoffParentRevisionIds = snapshotArray(snapshot.graphCutoffParentRevisionIds, 256).map(
@@ -648,9 +643,7 @@ async function toInternalHistorySource(
         } catch {
           throw new Error("VCS history returned more commits than the requested page limit.");
         }
-        const commits = commitValues.map((commit) =>
-          normalizeHistoryCommit(commit, expectedExpression !== undefined),
-        );
+        const commits = commitValues.map((commit) => normalizeHistoryCommit(commit));
         for (const commit of commits) {
           if (acceptedIds.has(commit.revisionId)) {
             throw new Error(`VCS history returned duplicate revision ${commit.revisionId}.`);

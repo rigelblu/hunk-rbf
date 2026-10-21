@@ -842,7 +842,7 @@ describe("HK-19.1 JJ expression history", () => {
     expect(buildJjHistoryArgs({ kind: "expression", expression: "-x" })).toContain(
       "--revisions=-x",
     );
-    expect(jjHistoryUsesBoundaryTopology({ kind: "expression", expression: "@" })).toBe(true);
+    expect(jjHistoryUsesBoundaryTopology({ kind: "expression", expression: "@" })).toBe(false);
   });
 
   test("filters the error text of expression input down to position, detail and hint lines", () => {
@@ -967,7 +967,7 @@ describe("HK-19.1 JJ expression history", () => {
   });
 
   jjTest(
-    "evaluates expression input literally, with no scope, filters or cutoff parents",
+    "evaluates expression input literally, with no mainline scope and query-omitted parent cuts",
     async () => {
       const f = createHk93TestRepo();
       const parents = await readHk191TestHistory(f.repo, { kind: "expression", expression: "@-" });
@@ -978,8 +978,8 @@ describe("HK-19.1 JJ expression history", () => {
       expect(parents.expression).toBe("@-");
       expect(parents.scope).toBeUndefined();
       for (const commit of parents.commits) {
-        expect(commit.graphCutoffParentRevisionIds).toBeUndefined();
-        expect(commit.graphParentRevisionIds).toEqual([]);
+        expect(commit.graphCutoffParentRevisionIds).toEqual(commit.parentRevisionIds);
+        expect(commit.graphParentRevisionIds).toBeUndefined();
       }
       // Real parent identities survive, even for the oldest commit of an excluded range.
       expect(parents.commits[0]!.parentRevisionIds).toEqual([f.olda]);
@@ -1001,6 +1001,49 @@ describe("HK-19.1 JJ expression history", () => {
       });
       expect(limited.commits).toHaveLength(2);
       expect(limited.expression).toBe("ancestors(merge)");
+    },
+  );
+
+  jjTest(
+    "connects selected direct parents, cuts gaps and merge omissions, and continues across pages",
+    async () => {
+      const f = createHk93TestRepo();
+      const connected = await readHk191TestHistory(f.repo, {
+        kind: "expression",
+        expression: "feature | main | oldb",
+      });
+      expect(connected.commits.map((c) => c.subject)).toEqual(["feature", "main", "oldb"]);
+      expect(connected.commits.map((c) => c.graphCutoffParentRevisionIds ?? [])).toEqual([
+        [],
+        [],
+        [f.olda],
+      ]);
+      expect(connected.commits.every((c) => c.graphParentRevisionIds === undefined)).toBeTrue();
+      const gap = await readHk191TestHistory(f.repo, {
+        kind: "expression",
+        expression: "feature | oldb",
+      });
+      expect(gap.commits[0]!.parentRevisionIds).toEqual([f.main]);
+      expect(gap.commits[0]!.graphCutoffParentRevisionIds).toEqual([f.main]);
+      const mixed = await readHk191TestHistory(f.repo, {
+        kind: "expression",
+        expression: "merge | feature",
+      });
+      expect(mixed.commits[0]!.parentRevisionIds).toEqual([f.feature, f.sibling]);
+      expect(mixed.commits[0]!.graphCutoffParentRevisionIds).toEqual([f.sibling]);
+      const source = await openJjHistory(
+        { kind: "expression", expression: "feature | main | oldb", maxCount: 2 },
+        { cwd: f.repo },
+      );
+      try {
+        const first = await source.read({ limit: 1 });
+        const second = await source.read({ limit: 1 });
+        expect(first.commits[0]!.graphCutoffParentRevisionIds).toBeUndefined();
+        // oldb belongs to the query even though the display row cap excludes it.
+        expect(second.commits[0]!.graphCutoffParentRevisionIds).toBeUndefined();
+      } finally {
+        await source.close();
+      }
     },
   );
 

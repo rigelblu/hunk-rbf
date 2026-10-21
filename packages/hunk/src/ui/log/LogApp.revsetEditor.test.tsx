@@ -293,7 +293,7 @@ test("typing a revset and pressing F2 applies it: custom row, restriction, rows,
     expect(frame).not.toContain("Edit revset");
     expect(frame).toContain("Revset: @-");
     expect(frame).toContain("Custom revset · Limit: 100");
-    expect(frame).toContain("Custom revset: graph links and range review unavailable.");
+    expect(frame).toContain("Custom revset: range review unavailable. ~ omitted parent");
     expect(frame).toContain("Subject pa");
     expect(frame).not.toContain("Subject aaa");
     expect(fixture.previousInputs.list()).toEqual(["@-"]);
@@ -394,7 +394,7 @@ test("Reset restores launch policy and adds no previous input", async () => {
     expect(frame).toContain(`Revset: ${LAUNCH}`);
     expect(frame).toContain("Launch policy · Limit: 100");
     expect(frame).toContain("Subject aaa");
-    expect(frame).not.toContain("graph links and range review unavailable");
+    expect(frame).not.toContain("range review unavailable");
     expect(fixture.previousInputs.list()).toEqual(["@-"]);
   } finally {
     await fixture.close();
@@ -594,7 +594,7 @@ test("an applied revset with no revisions says so and keeps the status line quie
     expect(frame).toContain("Revset: none()");
     expect(frame).toContain("No revisions match this revset.");
     expect(frame).toContain("Jujutsu · 0 commits");
-    expect(frame).toContain("Custom revset: graph links and range review unavailable.");
+    expect(frame).toContain("Custom revset: range review unavailable. ~ omitted parent");
   } finally {
     await fixture.close();
   }
