@@ -24,6 +24,8 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 
 ## 🟠⋯ Fixed for End Users
 
+- 2026-10-21 - fix (ux) | keep large unwrapped diffs responsive during their initial render (#hk-27.2)
+
 - 2026-10-21 - fix (ux) | return to history with a short revision-count message after a clean Squash that rewrites descendants (#hk-27.2)
 
 - 2026-10-21 - fix (ux) | see how many source revisions will be squashed when the destination is ready (#hk-27.2)

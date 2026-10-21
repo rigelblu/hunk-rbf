@@ -1652,13 +1652,19 @@ describe("ordinary history selection", () => {
       text = await session.text();
       expect(text).not.toContain("marked");
       expect(text).not.toContain("[x]");
-      expect(await session.text({ only: { background: "#404040" } })).toContain(
-        "First history commit",
-      );
+      expect(
+        await session.text({
+          only: { background: "#404040" },
+          waitFor: (text) => text.includes("First history commit"),
+        }),
+      ).toContain("First history commit");
       await session.press("up");
-      expect(await session.text({ only: { background: "#404040" } })).toContain(
-        "Second history commit",
-      );
+      expect(
+        await session.text({
+          only: { background: "#404040" },
+          waitFor: (text) => text.includes("Second history commit"),
+        }),
+      ).toContain("Second history commit");
       const idX = lines[row]!.search(/[0-9a-f]{8}\s+⧉/);
       session.writeRaw(`\x1b[<16;${idX + 1};${row + 1}M\x1b[<16;${idX + 1};${row + 1}m`);
       await session.waitIdle();
