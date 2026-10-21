@@ -529,8 +529,12 @@ describe("real operation selection PTY", () => {
         expect(text).not.toContain("Enter Continue");
         await session.press("r");
         await session.waitForText(/Review marks/);
-        await session.press("pagedown");
-        await session.press("y");
+        await harness.pressAndWaitForSnapshot(session, "pagedown", (snapshot) =>
+          snapshot.includes(`> ${f.recovery[8]!}`),
+        );
+        await harness.pressAndWaitForSnapshot(session, "y", (snapshot) =>
+          snapshot.includes(`Copied ${f.recovery[8]!.slice(0, 8)}`),
+        );
         expect(session.getRawOutput()).toContain(Buffer.from(f.recovery[8]!).toString("base64"));
         await session.press("end");
         await session.waitIdle();

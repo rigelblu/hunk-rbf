@@ -417,11 +417,13 @@ describe("PTY live terminal theme", () => {
         expect(frame).toContain("terminal");
 
         // Move one choice in selector to preview another theme
-        await session.press("down");
-        await sleep(100);
+        const previewSnapshot = await harness.pressAndWaitForSnapshot(session, "down", (text) => {
+          const selected = text.split("\n").find((line) => line.includes("›  "));
+          const id = selected?.match(/›\s+([\w-]+)/)?.[1];
+          return text.includes("Theme selector") && id !== undefined && id !== "terminal";
+        });
 
-        // Capture exact preview ID from selected row
-        const previewSnapshot = await session.text({ immediate: true });
+        // Capture the exact preview ID from the acknowledged selected row.
         expect(previewSnapshot).toContain("Theme selector");
         const selectedLine = previewSnapshot.split("\n").find((line) => line.includes("›  "));
         expect(selectedLine).toBeDefined();
@@ -455,7 +457,11 @@ describe("PTY live terminal theme", () => {
         frame = await activeThemeFrame(session, "terminal");
         expect(frame).toContain("terminal");
         expect(frame).not.toContain(`›  ${oppositeBuiltIn} (active)`);
-        await session.press("escape");
+        await harness.pressAndWaitForSnapshot(
+          session,
+          "escape",
+          (text) => !text.includes("Theme selector"),
+        );
 
         // Clean exit without save prompt
         await session.press("q");

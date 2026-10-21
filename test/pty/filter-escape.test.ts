@@ -142,7 +142,7 @@ describe("filter escape clearing (PTY)", () => {
       await session.type("\\!foo");
       const escapedBang120 = await harness.waitForSnapshot(
         session,
-        (t) => t.includes("filter: \\!foo") && t.includes("!foo.ts"),
+        (t) => t.includes("filter: \\!foo") && t.includes("!foo.ts") && !t.includes("README.md"),
         5_000,
       );
       expect(escapedBang120).toContain("!foo.ts");

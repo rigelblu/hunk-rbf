@@ -1,6 +1,40 @@
 import { describe, expect, test } from "bun:test";
 import type { Session } from "tuistory";
-import { createPtyHarness, revealAddNoteOnRow } from "./harness";
+import {
+  createPtyHarness,
+  measureKeyScroll,
+  measureMouseWheelScroll,
+  revealAddNoteOnRow,
+} from "./harness";
+
+/** Keep old output visible after input idles, then deliver unrelated paint and anchor movement. */
+function createTestScrollSession(screens: string[]) {
+  const inputs: string[] = [];
+  let frame = 0;
+  const session: Pick<Session, "press" | "scrollDown" | "scrollUp" | "text"> = {
+    async press(key) {
+      inputs.push(String(key));
+    },
+    async scrollDown() {
+      inputs.push("wheel down");
+    },
+    async scrollUp() {
+      inputs.push("wheel up");
+    },
+    async text(options) {
+      if (typeof options?.waitFor === "function") {
+        while (frame < screens.length) {
+          const text = screens[frame]!;
+          if (options.waitFor(text)) return text;
+          frame += 1;
+        }
+        throw new Error("No delayed frame matched the destination");
+      }
+      return screens[frame]!;
+    },
+  };
+  return { inputs, session };
+}
 
 /** Simulate a key whose first output-idle cycle ends before its destination is painted. */
 function createTestTransitionSession(screens: string[]) {
@@ -54,6 +88,43 @@ function createTestHoverSession() {
 }
 
 describe("PTY transition synchronization", () => {
+  test("measures key movement after idle and ignores unrelated text repaint", async () => {
+    const { session, inputs } = createTestScrollSession([
+      "heading\nanchor\nlast",
+      "new heading\nanchor\nlast",
+      "anchor\nlast\nnext",
+    ]);
+    expect(await measureKeyScroll(session, "j", 1, { waitForMovement: true })).toBe(1);
+    expect(inputs).toEqual(["j"]);
+  });
+
+  for (const direction of ["down", "up"] as const) {
+    test(`measures delayed wheel ${direction} movement from one event`, async () => {
+      const { session, inputs } = createTestScrollSession([
+        "heading\nanchor\nlast",
+        direction === "down" ? "anchor\nlast\nnext" : "next\nheading\nanchor",
+      ]);
+      expect(await measureMouseWheelScroll(session, direction, 1, { waitForMovement: true })).toBe(
+        direction === "down" ? 1 : -1,
+      );
+      expect(inputs).toEqual([`wheel ${direction}`]);
+    });
+  }
+
+  test("keeps zero movement observable for cursor-only callers", async () => {
+    const { session, inputs } = createTestScrollSession(["heading\nanchor\nlast"]);
+    expect(await measureKeyScroll(session, "j", 1)).toBe(0);
+    expect(inputs).toEqual(["j"]);
+  });
+
+  test("reports missing movement without retrying input", async () => {
+    const { session, inputs } = createTestScrollSession(["heading\nanchor\nlast"]);
+    await expect(measureKeyScroll(session, "j", 1, { waitForMovement: true })).rejects.toThrow(
+      "No delayed frame matched the destination",
+    );
+    expect(inputs).toEqual(["j"]);
+  });
+
   test("waits past shared content until the destination is visible", async () => {
     const { session, inputs } = createTestTransitionSession([
       "Second history commit — review",

@@ -135,7 +135,8 @@ export default function (hunk) {
   const makeLayout = (file, requestedGeneration) => {
     const codeLines = Array.from({ length: 80 }, (_, index) => {
       if (index === 8) return "/* multiline comment";
-      if (index === 9) return "still commented */";
+      if (index > 8 && index < 13) return "comment context";
+      if (index === 13) return "still commented */";
       if (index === 20) return "const template = " + String.fromCharCode(96) + "first";
       if (index === 21) return "value \${21}";
       if (index === 22) return "last" + String.fromCharCode(96) + ";";
@@ -276,19 +277,27 @@ describe("PTY file views", () => {
         timeout: 20_000,
       });
 
-      // Scroll until the second comment line is visible while its lexical opener is offscreen.
+      // Keep a visible comment interval after its opener leaves the accelerated wheel viewport.
       let commentSnapshot = "";
       for (let step = 0; step < 20; step += 1) {
+        const beforeScrollRow = firstVisibleSyntaxRow(await session.text({ immediate: true }));
         await session.scrollDown(1);
-        commentSnapshot = await session.text({ immediate: true });
+        commentSnapshot = await harness.waitForSnapshot(
+          session,
+          (text) => {
+            const row = firstVisibleSyntaxRow(text);
+            return row !== undefined && row !== beforeScrollRow;
+          },
+          5_000,
+        );
         if (
-          commentSnapshot.includes("ROW 010 still commented */") &&
+          commentSnapshot.includes("ROW 014 still commented */") &&
           !commentSnapshot.includes("ROW 009 /* multiline comment")
         ) {
           break;
         }
       }
-      expect(commentSnapshot).toContain("ROW 010 still commented */");
+      expect(commentSnapshot).toContain("ROW 014 still commented */");
       expect(commentSnapshot).not.toContain("ROW 009 /* multiline comment");
 
       // PTY owns real Shiki completion; deterministic pending/stale/failure races live in AppHost.
@@ -299,7 +308,7 @@ describe("PTY file views", () => {
           immediate: true,
           only: { foreground: "#bb8009" },
         }),
-      ).toContain("FILE alpha.ts GEN 000 ROW 010");
+      ).toContain("FILE alpha.ts GEN 000 ROW 014");
 
       const themeAnchor = firstVisibleSyntaxRow(await session.text({ immediate: true }));
       expect(themeAnchor).toBeDefined();
@@ -478,7 +487,11 @@ describe("PTY file views", () => {
         });
         await harness.ensureKeyboardIsLive(session);
         await harness.clickAndWaitForText(session, /View/, demo.view, { timeout: 20_000 });
-        await session.press("escape");
+        await harness.pressAndWaitForSnapshot(
+          session,
+          "escape",
+          (text) => !text.includes("File presentation:"),
+        );
         await harness.pressAndWaitForText(session, "f8", demo.first, { timeout: 20_000 });
         await harness.pressAndWaitForText(session, "]", demo.second, { timeout: 20_000 });
         await harness.clickAndWaitForText(session, /View/, /File presentation: Raw diff/, {
@@ -915,7 +928,11 @@ describe("PTY file views", () => {
         /View/,
         /\[x\] File presentation: Rendered Markdown/,
       );
-      await session.press("escape");
+      await harness.pressAndWaitForSnapshot(
+        session,
+        "escape",
+        (text) => !text.includes("[x] File presentation: Rendered Markdown"),
+      );
 
       const restored = await harness.pressAndWaitForText(session, "a", /• new item/);
       expect(restored).not.toContain("old item");

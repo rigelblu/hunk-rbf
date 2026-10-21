@@ -64,6 +64,9 @@ for (const overlay of overlays) {
         let child: ReturnType<typeof Bun.spawn> | undefined;
         let watchdog: ReturnType<typeof setTimeout> | undefined;
         let pending: ReturnType<typeof setTimeout> | undefined;
+        let tearingDown = false;
+        let primaryFailure: { error: unknown } | undefined;
+        let childCleanupFailure: { error: unknown } | undefined;
         const chunks: Buffer[] = [];
         try {
           createTestDialogFixture(fixture);
@@ -86,6 +89,7 @@ for (const overlay of overlays) {
           };
           /** Send exactly one key; the first send has no warmup, idle helper, or retry. */
           const open = (pty: Bun.Terminal) => {
+            if (tearingDown) return;
             stage = "opening";
             sentAt = performance.now();
             pty.write(overlay.key);
@@ -97,6 +101,7 @@ for (const overlay of overlays) {
             rows: 30,
             name: "xterm-truecolor",
             data(pty, bytes) {
+              if (tearingDown) return;
               chunks.push(Buffer.from(bytes));
               screen.feed(bytes);
               const text: string = screen.getText();
@@ -116,6 +121,7 @@ for (const overlay of overlays) {
                 } else {
                   stage = "close-delay";
                   pending = setTimeout(() => {
+                    if (tearingDown) return;
                     stage = "closing";
                     pty.write("\x1b");
                     guard(`No screen-verified ${overlay.name} close within 1 s`);
@@ -166,12 +172,13 @@ for (const overlay of overlays) {
           expect(opens[0]).toBeLessThanOrEqual(idle ? 150 : 200);
           expect(opens[0]! - opens[1]!).toBeLessThanOrEqual(150);
         } catch (error) {
+          primaryFailure = { error };
           const artifacts = mkdtempSync(join(tmpdir(), "hunk-dialog-failure-"));
           writeFileSync(join(artifacts, "output.terminal"), Buffer.concat(chunks));
           writeFileSync(join(artifacts, "screen.txt"), screen.getText());
           console.error(`First-open PTY evidence: ${artifacts}`);
-          throw error;
         } finally {
+          tearingDown = true;
           clearTimeout(watchdog);
           clearTimeout(pending);
           try {
@@ -193,12 +200,22 @@ for (const overlay of overlays) {
               await Promise.race([child.exited, Bun.sleep(500)]);
               expect(child.exitCode).not.toBeNull();
             }
+          } catch (error) {
+            childCleanupFailure = { error };
           } finally {
             terminal?.close();
             screen.destroy();
             rmSync(temporary, { recursive: true, force: true });
           }
         }
+        if (primaryFailure && childCleanupFailure) {
+          throw new AggregateError(
+            [primaryFailure.error, childCleanupFailure.error],
+            "Dialog interaction and cleanup both failed",
+          );
+        }
+        if (primaryFailure) throw primaryFailure.error;
+        if (childCleanupFailure) throw childCleanupFailure.error;
       },
       10_000,
     );

@@ -1615,6 +1615,7 @@ test("workspace toggle and quit in one input burst saves the current choice", as
     );
     expect(prompt).toContain("history_workspace_names = false");
     await session.press("s");
+    expect(await session.waitForExit(5000)).toBe(true);
     expect(readFileSync(join(configDir, "config.toml"), "utf8")).toContain(
       "history_workspace_names = false",
     );

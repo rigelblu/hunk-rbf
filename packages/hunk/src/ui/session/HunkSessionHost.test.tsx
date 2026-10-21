@@ -1,6 +1,7 @@
 import { expect, mock, test } from "bun:test";
+import type { KeyEvent } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { act } from "react";
@@ -94,7 +95,7 @@ async function createHistoryRoute(subjects = ["History row"]) {
 
 /** Select Quit through the live history menu while review preparation owns the input lock. */
 async function selectHistoryMenuQuit(setup: Awaited<ReturnType<typeof testRender>>) {
-  await act(async () => setup.mockInput.pressKey("f10"));
+  await act(async () => setup.mockInput.pressKey("F10"));
   await act(async () => setup.mockInput.pressKey("q"));
 }
 
@@ -763,6 +764,9 @@ test("waits for non-cooperative provider planning before menu quit", async () =>
 
 test("blocks reopening until dirty-quit cancellation settles", async () => {
   const history = await createHistoryRoute();
+  const configHome = mkdtempSync(join(tmpdir(), "hunk-log-cancel-quit-"));
+  const configPath = join(configHome, "config.toml");
+  history.runtime.viewPreferencesConfigPath = configPath;
   let resolvePlanning!: (value: { kind: "revision-show"; revisionId: string }) => void;
   const planning = new Promise<{ kind: "revision-show"; revisionId: string }>((resolve) => {
     resolvePlanning = resolve;
@@ -782,13 +786,17 @@ test("blocks reopening until dirty-quit cancellation settles", async () => {
     throw new Error("cancelled planning reached preparation");
   });
   const quit = mock(() => undefined);
+  const scheduleQuit = mock(() => undefined);
   const setup = await testRender(
     <HunkSessionHost
       initialRoute={history}
       initialization={history.runtime.initialization}
       externalQuitSignal={new AbortController().signal}
       onQuit={quit}
-      deps={{ prepareReview: prepareReview as never }}
+      deps={{
+        prepareReview: prepareReview as never,
+        viewPreferenceQuitScheduler: { schedule: scheduleQuit, cancel: () => undefined },
+      }}
     />,
     { width: 100, height: 20 },
   );
@@ -812,9 +820,24 @@ test("blocks reopening until dirty-quit cancellation settles", async () => {
     expect(setup.captureCharFrame()).toContain("Save view preferences?");
     expect(planningSignal?.aborted).toBeTrue();
 
-    await act(async () => setup.mockInput.pressKey("escape"));
+    await act(async () => {
+      // A standalone Escape waits for the input decoder's ambiguity deadline.
+      // Observe it before the prompt consumes propagation, then assert the commit.
+      const decoded = new Promise<void>((resolve) => {
+        const acknowledgeEscape = (key: KeyEvent) => {
+          if (key.name !== "escape") return;
+          setup.renderer.keyInput.off("keypress", acknowledgeEscape);
+          resolve();
+        };
+        setup.renderer.keyInput.prependListener("keypress", acknowledgeEscape);
+      });
+      setup.mockInput.pressEscape();
+      await decoded;
+    });
     await setup.renderOnce();
     expect(setup.captureCharFrame()).not.toContain("Save view preferences?");
+    expect(scheduleQuit).not.toHaveBeenCalled();
+    expect(existsSync(configPath)).toBeFalse();
     await act(async () => setup.mockInput.pressEnter());
     expect(planReview).toHaveBeenCalledTimes(1);
 
@@ -826,9 +849,11 @@ test("blocks reopening until dirty-quit cancellation settles", async () => {
     expect(setup.captureCharFrame()).toContain("History row");
     expect(setup.captureCharFrame()).not.toContain("Preparing review");
     expect(quit).not.toHaveBeenCalled();
+    expect(scheduleQuit).not.toHaveBeenCalled();
   } finally {
     setup.renderer.destroy();
     await history.controller.close();
+    rmSync(configHome, { recursive: true, force: true });
   }
 });
 

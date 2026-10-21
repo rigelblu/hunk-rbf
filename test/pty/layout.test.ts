@@ -594,9 +594,15 @@ describe("PTY layout", () => {
     });
 
     try {
-      const initial = await session.waitForText(/View\s+Navigate\s+Agent\s+Help/, {
-        timeout: 15_000,
-      });
+      const initial = await harness.waitForSnapshot(
+        session,
+        (text) =>
+          text.includes("⌄ src/") &&
+          text.includes("⌄ ui/") &&
+          text.includes("alpha.ts") &&
+          text.includes("beta.ts"),
+        15_000,
+      );
       const initialDividerColumn = sidebarDividerColumn(initial);
       const compactDividerColumn = initialDividerColumn - 2;
       const initialSidebar = initial
@@ -819,9 +825,11 @@ describe("PTY layout", () => {
     });
 
     try {
-      const initial = await session.waitForText(/View\s+Navigate\s+Agent\s+Help/, {
-        timeout: 15_000,
-      });
+      const initial = await harness.waitForSnapshot(
+        session,
+        (text) => text.includes("this is a very long"),
+        15_000,
+      );
 
       expect(initial).toContain("this is a very long");
       expect(initial).not.toContain("ge';");
@@ -899,9 +907,11 @@ describe("PTY layout", () => {
     });
 
     try {
-      const initial = await session.waitForText(/View\s+Navigate\s+Agent\s+Help/, {
-        timeout: 15_000,
-      });
+      const initial = await harness.waitForSnapshot(
+        session,
+        (text) => text.includes("this is a very long"),
+        15_000,
+      );
 
       expect(initial).toContain("this is a very long");
       expect(initial).not.toContain("ge';");

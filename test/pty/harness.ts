@@ -69,15 +69,39 @@ export function pressKeyRepeat(session: Pick<Session, "press">, key: Key, count:
   return session.press(Array.from({ length: count }, () => key));
 }
 
+type ScrollMeasurementTestOptions = { waitForMovement?: boolean };
+
+/** Observe a changed anchor row when requested, preserving immediate cursor-only measurements. */
+function readScrollMeasurementTestFrame(
+  session: Pick<Session, "text">,
+  anchor: string,
+  anchorRow: number,
+  options: ScrollMeasurementTestOptions,
+) {
+  return session.text(
+    options.waitForMovement
+      ? {
+          timeout: 5_000,
+          waitFor: (text) =>
+            text.split("\n").findIndex((line) => line.trim() === anchor) !== anchorRow,
+        }
+      : { immediate: true },
+  );
+}
+
 /**
  * Count how many rows one keypress moved the stream by following the text that
  * sat on a fixed screen row.
  *
- * Positive means the content moved up (scrolled down); zero means the anchor
- * row did not move at all. `press` already performs Tuistory's bounded idle
- * wait, so another wait would only repeat the same readiness contract.
+ * Positive means the content moved up (scrolled down). Callers expecting movement
+ * can await its paint; cursor-only steps can still measure an unchanged row as zero.
  */
-export async function measureKeyScroll(session: Session, key: Key, anchorRow: number) {
+export async function measureKeyScroll(
+  session: Pick<Session, "press" | "text">,
+  key: Key,
+  anchorRow: number,
+  options: ScrollMeasurementTestOptions = {},
+) {
   const before = (await session.text({ immediate: true })).split("\n");
   const anchor = before[anchorRow]?.trim() ?? "";
   if (anchor.length === 0) {
@@ -86,7 +110,9 @@ export async function measureKeyScroll(session: Session, key: Key, anchorRow: nu
 
   await session.press(key);
 
-  const after = (await session.text({ immediate: true })).split("\n");
+  const after = (await readScrollMeasurementTestFrame(session, anchor, anchorRow, options)).split(
+    "\n",
+  );
   const movedTo = after.findIndex((line) => line.trim() === anchor);
   if (movedTo < 0) {
     throw new Error(
@@ -99,9 +125,10 @@ export async function measureKeyScroll(session: Session, key: Key, anchorRow: nu
 
 /** Count how many rows one mouse-wheel event moves the review stream. */
 export async function measureMouseWheelScroll(
-  session: Session,
+  session: Pick<Session, "scrollDown" | "scrollUp" | "text">,
   direction: "down" | "up",
   anchorRow: number,
+  options: ScrollMeasurementTestOptions = {},
 ) {
   const before = (await session.text({ immediate: true })).split("\n");
   const anchor = before[anchorRow]?.trim() ?? "";
@@ -115,7 +142,9 @@ export async function measureMouseWheelScroll(
     await session.scrollUp(1);
   }
 
-  const after = (await session.text({ immediate: true })).split("\n");
+  const after = (await readScrollMeasurementTestFrame(session, anchor, anchorRow, options)).split(
+    "\n",
+  );
   const movedTo = after.findIndex((line) => line.trim() === anchor);
   if (movedTo < 0) {
     throw new Error(

@@ -95,6 +95,11 @@ describe("watched input lifecycle", () => {
       await advanceWatch(setup, watch, 199);
       expect(setup.captureCharFrame()).not.toContain("observed");
       await advanceWatch(setup, watch, 1);
+      await flushUntil(
+        setup,
+        () => setup.captureCharFrame().includes("observed"),
+        "the watched reload to show the updated file",
+      );
       expect(setup.captureCharFrame()).toContain("observed");
       expect(setup.captureCharFrame()).toContain("filter:");
       expect(setup.captureCharFrame()).toContain("after");
