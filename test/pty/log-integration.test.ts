@@ -921,9 +921,11 @@ describe("interactive hunk log", () => {
       await session.waitForText(/historyValue = 'second'/, { timeout: 15_000 });
       writeFileSync(join(cwd, "history.ts"), "export const historyValue = 'third';\n");
       git(cwd, ["commit", "-qam", "Third history commit"]);
-      await returnToHistory(session);
-      const history = await session.waitForText(/Third history commit/, { timeout: 15_000 });
-      expect(history).toContain("Third history commit");
+      const history = await returnToHistory(session);
+      expect(history).toContain("Second history commit");
+      await harness.pressAndWaitForText(session, "home", /Third history commit/, {
+        timeout: 15_000,
+      });
       await session.press("f10");
       await session.waitForText(/Auto-refresh history: on/, { timeout: 5_000 });
       await session.press("q");
@@ -986,54 +988,22 @@ async function waitForTestFile(path: string) {
 
 const refreshRaceTest = process.platform === "win32" ? test.skip : test;
 const groupedRefreshTest = Bun.which("jj") ? test : test.skip;
-groupedRefreshTest("keeps the physical reading row after JJ authored-day rewrites", async () => {
-  const cwd = mkdtempSync(join(tmpdir(), "hunk-log-day-refresh-"));
-  tempDirs.push(cwd);
-  const jj = (...args: string[]) => {
-    const result = Bun.spawnSync(
-      [
-        "jj",
-        "--config",
-        'user.name="History Tester"',
-        "--config",
-        'user.email="history@example.com"',
-        ...args,
-      ],
-      { cwd, stdout: "pipe", stderr: "pipe" },
-    );
-    if (result.exitCode !== 0) throw new Error(result.stderr.toString());
-    return result.stdout.toString().trim();
-  };
-  jj("git", "init", "--no-colocate", ".");
-  jj("describe", "-m", "Dated entry 0");
-  for (let index = 1; index < 50; index += 1) jj("new", "-m", `Dated entry ${index}`);
-  jj("metaedit", "-r", "all() ~ root()", "--author-timestamp", "2026-01-01T12:00:00Z");
-  const identities = jj(
-    "log",
-    "--no-graph",
-    "-r",
-    "all() ~ root()",
-    "-T",
-    'change_id ++ "\\n"',
-  ).split("\n");
-  const session = await harness.launchHunk({
-    args: ["log", "--vcs", "jj", "--all", "--color", "never", "--no-extensions"],
-    cwd,
-    cols: 90,
-    // Preserve the original body budget: query chrome plus the new selection action row.
-    rows: 30,
-  });
-  try {
-    await session.waitForText(/Dated entry 49/, { timeout: 15_000 });
-    for (let index = 0; index < 8; index += 1) await session.press("down");
-    session.resize({ cols: 90, rows: 47 });
-    await session.waitIdle();
-    const selectedPhysicalRow = () =>
-      session.getTerminalData().lines.findIndex((line) =>
-        line.spans
-          .map((span) => span.text)
-          .join("")
-          .includes("Dated entry 41"),
+groupedRefreshTest(
+  "keeps the nearest feasible reading row after JJ authored-day rewrites",
+  async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "hunk-log-day-refresh-"));
+    tempDirs.push(cwd);
+    const jj = (...args: string[]) => {
+      const result = Bun.spawnSync(
+        [
+          "jj",
+          "--config",
+          'user.name="History Tester"',
+          "--config",
+          'user.email="history@example.com"',
+          ...args,
+        ],
+        { cwd, stdout: "pipe", stderr: "pipe" },
       );
       if (result.exitCode !== 0) throw new Error(result.stderr.toString());
       return result.stdout.toString().trim();
@@ -1054,12 +1024,13 @@ groupedRefreshTest("keeps the physical reading row after JJ authored-day rewrite
       args: ["log", "--vcs", "jj", "--all", "--color", "never", "--no-extensions"],
       cwd,
       cols: 90,
-      rows: 26,
+      // Retain the prior body budget beneath query and selection chrome.
+      rows: 30,
     });
     try {
       await session.waitForText(/Dated entry 49/, { timeout: 15_000 });
       for (let index = 0; index < 8; index += 1) await session.press("down");
-      session.resize({ cols: 90, rows: 43 });
+      session.resize({ cols: 90, rows: 47 });
       await session.waitIdle();
       const selectedPhysicalRow = () =>
         session.getTerminalData().lines.findIndex((line) =>
@@ -1196,7 +1167,8 @@ describe("HK-93 focused working history", () => {
         cwd,
         env,
         cols: 80,
-        rows: 26,
+        // Retain the prior body budget beneath query and selection chrome.
+        rows: 30,
       });
       try {
         const initial = await session.waitForText(/~ older history hidden/, { timeout: 15_000 });
@@ -1527,7 +1499,7 @@ describe("HK-92 workspace history", () => {
         // The ref-only ancestor reaches under the first-row ID/copy area at either placement.
         clickWorkspaceTestCell(session, cols - 6, nameLine, true);
         await session.waitIdle();
-        await session.waitForText(/2 commits selected/, { timeout: 5000 });
+        await session.waitForText(/Review range: 2/, { timeout: 5000 });
         await session.press("escape");
         await sleep(450);
         clickWorkspaceTestCell(session, cols - 6, nameLine);
@@ -1556,40 +1528,157 @@ describe("HK-92 workspace visibility", () => {
     };
     const session = await harness.launchHunk(options);
     try {
-      await session.waitForText(/@peer/, { timeout: 15_000 });
-      const lines = session
-        .getTerminalData()
-        .lines.map((line) => line.spans.map((span) => span.text).join(""));
-      const ancestorLine = lines.findIndex((line) => line.includes("Workspace ancestor"));
-      const currentLine = lines.findIndex((line) => line.includes("Workspace current"));
-      const x = lines[ancestorLine + 2]!.indexOf("@peer");
-      expect(x).toBeGreaterThan(0);
-      clickWorkspaceTestCell(session, x, ancestorLine + 2);
-      await session.waitIdle();
-      expect(await session.text({ immediate: true })).not.toContain("Opening commit");
-      expect(await session.text({ immediate: true })).toContain("Jujutsu history");
-      expect(session.getRawOutput()).not.toContain("value = 'ancestor'");
-      // A click on the same third line below the id/copy column belongs to the outer row.
-      await sleep(450);
-      clickWorkspaceTestCell(session, 64, currentLine + 2);
-      await session.waitIdle();
-      expect(await session.text({ immediate: true })).toContain("Jujutsu history");
-      expect(await session.text({ immediate: true })).not.toContain("Copied");
-      clickWorkspaceTestCell(session, 64, ancestorLine + 2, true);
-      await session.waitIdle();
-      await session.waitForText(/Review range: 2/, { timeout: 5_000 });
-      await session.press("escape");
-      await sleep(450);
-      clickWorkspaceTestCell(session, 64, ancestorLine + 2);
-      // An already selected row need not repaint; keep this pair inside the 400ms window.
-      await sleep(80);
-      expect(await session.text({ immediate: true })).toContain("Jujutsu history");
-      clickWorkspaceTestCell(session, x, ancestorLine + 2);
-      await session.waitForText(/value = 'ancestor'/, { timeout: 15_000 });
+      const initial = await session.waitForText(/@default, @peer/, { timeout: 15000 });
+      const rowIndex = initial.split("\n").findIndex((line) => line.includes("Workspace current"));
+      await session.press("f10");
+      await session.press("right");
+      await session.waitForText(/Show workspace names/);
+      await session.click("Show workspace names");
+      const hidden = await harness.waitForSnapshot(
+        session,
+        (text) => !text.includes("@default") && text.includes("(@, current)"),
+      );
+      expect(hidden.split("\n").findIndex((line) => line.includes("Workspace current"))).toBe(
+        rowIndex,
+      );
+      expect(hidden.split("\n")[rowIndex + 1]).not.toContain("@peer");
+      await harness.pressAndWaitForText(session, "enter", /value = 'current'/, { timeout: 15000 });
+      await harness.pressAndWaitForSnapshot(
+        session,
+        "q",
+        (text) => text.includes("Jujutsu history") && text.includes("Enter Open"),
+        15000,
+      );
+      expect(await session.text()).not.toContain("@default");
+      await session.press("f10");
+      await session.press("right");
+      await session.click("Show decorations");
+      await harness.waitForSnapshot(session, (text) => !text.includes("(@, current)"));
+      await session.press("f10");
+      await session.press("right");
+      await session.click("Show decorations");
+      const restoredMaster = await harness.waitForSnapshot(session, (text) =>
+        text.includes("(@, current)"),
+      );
+      expect(restoredMaster).not.toContain("@default");
+      const prompt = await harness.pressAndWaitForText(session, "q", /Save view preferences\?/);
+      expect(prompt).toContain("history_workspace_names = false");
+      await session.press("s");
+      expect(readFileSync(join(configHome, "hunk", "config.toml"), "utf8")).toContain(
+        "history_workspace_names = false",
+      );
     } finally {
       session.close();
     }
+    const reopened = await harness.launchHunk(options);
+    try {
+      const hidden = await reopened.waitForText(/Workspace current/, { timeout: 15000 });
+      expect(hidden).not.toContain("@default");
+      expect(hidden).toContain("(@, current)");
+      await reopened.press("f10");
+      await reopened.press("right");
+      await reopened.click("Show workspace names");
+      await reopened.waitForText(/@default, @peer/);
+    } finally {
+      reopened.close();
+    }
   });
+});
+
+test("workspace toggle and quit in one input burst saves the current choice", async () => {
+  const cwd = createHistoryRepo();
+  const configHome = mkdtempSync(join(tmpdir(), "hunk-workspace-rapid-quit-"));
+  tempDirs.push(configHome);
+  const configDir = join(configHome, "hunk");
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(
+    join(configDir, "config.toml"),
+    '[keybindings]\n"hunk.history.toggleWorkspaceNames" = "w"\n',
+  );
+  const session = await harness.launchHunk({
+    args: ["log", "--no-extensions", "--color", "never"],
+    cwd,
+    cols: 100,
+    rows: 24,
+    env: { XDG_CONFIG_HOME: configHome },
+  });
+  try {
+    await session.waitForText(/Second history commit/);
+    session.writeRaw("wq");
+    const prompt = await harness.waitForSnapshot(
+      session,
+      (text) =>
+        text.includes("Save view preferences?") &&
+        text.includes("+ history_workspace_names = false") &&
+        text.includes("never ask"),
+      5000,
+    );
+    expect(prompt).toContain("history_workspace_names = false");
+    await session.press("s");
+    expect(readFileSync(join(configDir, "config.toml"), "utf8")).toContain(
+      "history_workspace_names = false",
+    );
+  } finally {
+    session.close();
+  }
+});
+
+test("unchanged default workspace visibility does not prompt on quit", async () => {
+  const cwd = createHistoryRepo();
+  const configHome = mkdtempSync(join(tmpdir(), "hunk-workspace-default-quit-"));
+  tempDirs.push(configHome);
+  const session = await harness.launchHunk({
+    args: ["log", "--no-extensions", "--color", "never"],
+    cwd,
+    cols: 100,
+    rows: 24,
+    env: { XDG_CONFIG_HOME: configHome },
+  });
+  try {
+    await session.waitForText(/Second history commit/);
+    await session.press("q");
+    expect(await session.waitForExit(5000)).toBe(true);
+    expect(session.getRawOutput()).not.toContain("Save view preferences?");
+  } finally {
+    session.close();
+  }
+});
+
+test("compact workspace hiding collapses a spill row while preserving the bookmark and current title", async () => {
+  const { cwd } = createWorkspaceHistoryTestRepo("peer-workspace-with-a-very-long-recorded-name");
+  const session = await harness.launchHunk({
+    args: ["log", "--vcs", "jj", "--all", "--no-extensions"],
+    cwd,
+    cols: 70,
+    rows: 24,
+  });
+  try {
+    const initial = await session.waitForText(/@default, @peer-workspace/, { timeout: 15000 });
+    const lines = initial.split("\n"),
+      current = lines.findIndex((line) => line.includes("Workspace current")),
+      ancestor = lines.findIndex((line) => line.includes("Workspace ancestor"));
+    expect(ancestor - current).toBe(3);
+    expect(lines[current + 1]).toContain("(@, current)");
+    await session.press("f10");
+    await session.press("right");
+    await session.click("Show workspace names");
+    const hidden = await harness.waitForSnapshot(
+      session,
+      (text) => !text.includes("@default") && text.includes("(@, current)"),
+    );
+    const hiddenLines = hidden.split("\n");
+    expect(hiddenLines.findIndex((line) => line.includes("Workspace current"))).toBe(current);
+    expect(hiddenLines.findIndex((line) => line.includes("Workspace ancestor")) - current).toBe(2);
+    await session.press("f10");
+    await session.press("right");
+    await session.click("Show workspace names");
+    const restored = await session.waitForText(/@default, @peer-workspace/);
+    expect(
+      restored.split("\n").findIndex((line) => line.includes("Workspace ancestor")) - current,
+    ).toBe(3);
+  } finally {
+    session.close();
+  }
 });
 
 describe("ordinary history selection", () => {
@@ -1674,7 +1763,7 @@ describe("ordinary history selection", () => {
       await session.press("escape");
       expect(await session.text()).not.toContain("Review range:");
     } finally {
-      reopened.close();
+      session.close();
     }
   });
   for (const cols of [42, 60, 80, 120])
@@ -1829,7 +1918,7 @@ describe("HK-19.1 revset editor", () => {
         expect(custom).toContain("Custom revset: graph links and range review unavailable.");
         expect(custom).toContain("Selected newest; previous not loaded.");
 
-        // Reset restores launch policy and the five launch rows.
+        // Reset restores launch policy and all five rows while retaining reading context.
         session.writeRaw("L");
         await session.waitForText(/Edit revset/, { timeout: 5_000 });
         session.sendKey("f3");
@@ -1837,11 +1926,15 @@ describe("HK-19.1 revset editor", () => {
           session,
           (text) =>
             text.includes("Launch policy · Limit: 100") &&
-            text.includes("Merge current work") &&
+            text.includes("Jujutsu · 5 commits") &&
+            text.includes("Old-based sibling") &&
+            !text.includes("Custom revset") &&
             !text.includes("Edit revset"),
           15_000,
         );
+        expect(reset).toContain(`Revset: ${HK19_LAUNCH_REVSET}`);
         expect(reset).not.toContain("graph links and range review unavailable");
+        await harness.pressAndWaitForText(session, "home", /Merge current work/);
 
         // The earlier input is offered again; Enter inserts it without applying.
         session.writeRaw("L");

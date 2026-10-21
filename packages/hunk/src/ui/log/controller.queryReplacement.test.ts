@@ -12,6 +12,7 @@ import { LogController } from "./controller";
 interface TestEntry {
   revisionId: string;
   logicalId?: string;
+  decorations?: ExtensionVcsHistoryCommit["decorations"];
   parents?: string[];
   graphParents?: string[];
   /** Real parents the boundary cut: each adds a row to the entry, making it taller. */
@@ -57,7 +58,7 @@ function toCommit(entry: TestEntry): ExtensionVcsHistoryCommit {
     ...(entry.logicalId ? { logicalId: entry.logicalId } : {}),
     authorName: "Ada",
     authoredAt: "2026-01-01T00:00:00Z",
-    decorations: [],
+    decorations: entry.decorations ?? [],
   };
 }
 
@@ -1174,4 +1175,42 @@ describe("a refresh racing a query replacement", () => {
     expect(controller.getSnapshot().notice).toBe("a subscriber failed");
     await controller.close();
   });
+});
+
+test("applying a query keeps the compact reading row with hidden workspace labels", async () => {
+  const entries = Array.from({ length: 20 }, (_, index) => ({
+    revisionId: `revision-${index}`,
+    decorations: [
+      {
+        kind: "ref" as const,
+        label: `@workspace-with-a-long-recorded-name-${index}`,
+        workspaceName: `workspace-${index}`,
+      },
+    ],
+  }));
+  const { runtime } = createTestQueryRuntime({
+    queries: {
+      launch: { entries },
+      same: { entries },
+    },
+  });
+  const controller = new LogController(runtime);
+  try {
+    while (!controller.getSnapshot().historyDone) await controller.loadMore();
+    controller.setViewport(70, 13);
+    controller.togglePresentation("graph");
+    await controller.select(8, 13);
+    controller.togglePresentation("workspaceNames");
+    const before = controller.planViewport().selectedRowOffset;
+    expect(before).toBeGreaterThan(0);
+    expect(before).toBeLessThan(13);
+    expect((await controller.replaceQuery({ kind: "apply", expression: "same" })).status).toBe(
+      "applied",
+    );
+    expect(controller.getSelectedRow()?.commit.revisionId).toBe("revision-8");
+    expect(controller.planViewport().selectedRowOffset).toBe(before);
+    expect(controller.planViewport().usedHeight).toBeLessThanOrEqual(13);
+  } finally {
+    await controller.close();
+  }
 });

@@ -108,6 +108,7 @@ History-specific commands:
 | `hunk.history.toggleUnicode`           | Toggle Unicode graph lines              | _(none)_                     |
 | `hunk.history.toggleAuthor`            | Toggle author metadata                  | _(none)_                     |
 | `hunk.history.toggleDate`              | Toggle date metadata                    | _(none)_                     |
+| `hunk.history.toggleWorkspaceNames`    | Toggle workspace names                  | _(none)_                     |
 | `hunk.history.toggleDecorations`       | Toggle ref decorations                  | _(none)_                     |
 | `hunk.history.squash`                  | Squash selected or focused revisions    | `S`                          |
 | `hunk.history.rebase`                  | Choose rebase sources                   | `R`                          |

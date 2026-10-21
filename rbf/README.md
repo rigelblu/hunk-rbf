@@ -164,15 +164,31 @@ Git reporting remains unknown in this slice. Hunk RBF product work covers JJ and
 
 # 🔵⋯ Identify workspace heads in JJ history
 
-Run `hunk log --vcs jj` to see where each workspace's recorded head sits in history. The default view labels every workspace head it includes; add `--all` to reach heads on the older history that view hides. Repositories with multiple workspaces show names such as `@default` and `@feature` on their revisions. A repository with one workspace shows only the current-revision marker `@`.
+HK-92 is recorded in local Hunk RBF 0.12.0. The accepted candidate is built and verified; installation and public delivery remain pending.
 
-Run `hunk log --vcs jj --all` to see where each workspace's recorded head sits in history. Repositories with multiple workspaces show names such as `@default` and `@feature` on their revisions. A repository with one workspace shows only the current-revision marker `@`.
+Run `hunk log --vcs jj` to see where each workspace's recorded head sits in history. The default view labels every workspace head it includes; add `--all` to reach heads on the older history that view hides. Repositories with multiple workspaces show names such as `@default` and `@feature` on their revisions. A repository with one workspace shows only the current-revision marker `@`.
 
 Several workspace names can share a revision. The separate `@` marker identifies the current revision; it does not identify which named workspace opened Hunk. A recorded head can be stale, so its label does not mean someone is actively working there.
 
 Interactive history uses two rows normally. Workspace names fit beside author/time when possible, with a separate current/bookmark group such as `(@, main)`. Names that need more space use one extra row, shared with any real graph join. Plain graph continuations add no row. An ending `…` marks a clipped list. **View → Decorations** controls their visibility. Press `r` to refresh, or enable **File → Auto-refresh history** to follow workspace moves. Refresh keeps the focused revision near its previous screen row; press **Home** to see new commits above it.
 
 `hunk log --vcs jj --static` uses the existing scrollback format. Terminal output fits the terminal width; output piped to a file includes every name.
+
+### Workspace-name visibility
+
+Use **View → Show workspace names** in history to hide or restore recorded workspace labels. It starts enabled. The current `(@)`, bookmarks and tags retain their existing visibility; **Show decorations** controls all labels. Hiding names removes a row they alone required; graph joins and other labels retain their space. When you save view preferences on quit, Hunk writes the top-level `history_workspace_names = false` or `true` setting. A repository with one workspace still omits its name.
+
+# 🔵⋯ Filter review files with inclusion and exclusion
+
+During interactive review, press **Tab** to focus the file filter. The filter matches case-insensitively across normalized current file paths, previous paths (for renamed files), and agent summaries.
+
+- **Inclusion (default):** Type text to show only matching files, for example `README.md`.
+- **Exclusion (`!`):** Prefix with `!` to hide matching files, for example `!README.md`.
+- **Substring matching:** Matching is literal substring matching on the joined text, so `!README.md` also excludes `README.md.bak` or files whose agent summaries mention `README.md`. Wildcards (`*`, `?`) and spaces are treated as literal text. This is simple substring filtering, not JJ filesets or glob syntax.
+- **Lone `!`:** A bare `!` leaves all files visible so you can start typing an exclusion without hiding the entire review stream.
+- **Literal leading `!`:** Prefix with a single backslash (`\!`) to search for text starting with a literal `!`, such as `\!foo`.
+- **Excluding literal `!`:** Type `!!foo` to exclude files matching literal `!foo`.
+- **Two-step Escape:** Press **Escape** once while focused in the filter to clear the search text; press **Escape** a second time to leave the filter and return keyboard ownership to review navigation.
 
 # 🔵⋯ Edit the active JJ revset
 

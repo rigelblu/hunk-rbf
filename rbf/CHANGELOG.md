@@ -6,8 +6,6 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 
 # 🔵⋯ [Unreleased]
 
-## 🟠⋯ 🚨 Breaking Changes for End Users
-
 ## 🟠⋯ Added for End Users
 
 - 2026-10-20 - feat (ux) | select separate history revisions with keyboard or mouse, clear them independently of a review range, and capture them directly for Squash (#hk-27)
@@ -48,6 +46,35 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 - 2026-10-12 - fix (ux) | move the selection on every PageDown and wheel step in a terminal too short to show one history entry (#hk-93)
 - 2026-10-12 - fix (ux) | give a narrow static history row's cells to the subject when its ref list is clipped too far to name any ref (#hk-92)
 - 2026-10-12 - fix (ux) | never move a history mark to a different revision under a revision expression or `--first-parent`; the cost is that a mark on a rewritten revision shows as incomplete there and is not followed (#hk-27)
+
+# 🔵⋯ v0.13.0 (2026-10-16)
+
+Local HK-99 release records; publication remains pending.
+
+## 🟠⋯ 🚨 Breaking Changes for End Users
+
+- 2026-10-15 - feat (BREAKING) | search for a literal leading `!` with `\!` after `!` becomes the exclusion operator (#hk-99)
+
+## 🟠⋯ Added for End Users
+
+- 2026-10-15 - feat | exclude matching files from a review with `!text` in the Tab filter (#hk-99)
+
+# 🔵⋯ v0.12.0 (2026-10-14)
+
+Local HK-92 release records; installation and publication remain pending.
+
+## 🟠⋯ Added for End Users
+
+- 2026-10-14 - feat (ux) | see recorded workspace heads in multi-workspace JJ history while retaining the separate current-revision marker (#hk-92)
+- 2026-10-14 - feat (ux) | hide or restore workspace names through View and save that preference without hiding bookmarks or the current marker (#hk-92)
+
+## 🟠⋯ Added for Technical Users
+
+- 2026-10-14 - feat (technical) | distinguish workspace membership from ordinary generic history refs using optional workspaceName metadata and configure visibility with history_workspace_names (#hk-92)
+
+## 🟠⋯ Fixed for End Users
+
+- 2026-10-14 - fix (ux) | scan more history with two base rows, fitting workspace names beside metadata and adding a row only for label spill or a graph join, while keeping bookmarks and my reading position (#hk-92)
 
 # 🔵⋯ v0.11.0 (2026-10-13)
 

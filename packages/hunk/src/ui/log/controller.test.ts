@@ -3,6 +3,7 @@ import { createTestExtensionSession } from "../../../../../test/helpers/extensio
 import { persistedViewPreferencesFromOptions } from "../../core/run/config";
 import type { HistoryRuntime } from "../history/types";
 import { LogController } from "./controller";
+import type { HistoryCommit } from "../../core/history/types";
 import { RevisionSourceSelection } from "./revisionSourceSelection";
 import { planLogViewportGeometry } from "./geometry";
 
@@ -1505,6 +1506,85 @@ test("HK-93 latest tail scrolling cancels older pending End navigation", async (
   await end;
   expect(controller.getSelectedRow()?.commit.revisionId).toBe("one");
   expect(controller.getSnapshot().entryScroll).toBe(3);
+  await controller.close();
+});
+
+test("compact toggles and resize retain focused identity at the nearest whole-entry row", async () => {
+  const entries = Array.from({ length: 20 }, (_, index) => ({
+    revisionId: `revision-${index}`,
+    decorations: [
+      {
+        kind: "ref" as const,
+        label: `@workspace-with-a-long-recorded-name-${index}`,
+        workspaceName: `workspace-${index}`,
+      },
+    ],
+  }));
+  const { runtime } = createTestRuntime(entries);
+  const controller = new LogController(runtime);
+  while (!controller.getSnapshot().historyDone) await controller.loadMore();
+  controller.setViewport(70, 13);
+  controller.togglePresentation("graph");
+  await controller.select(8, 13);
+  const before = controller.planViewport().selectedRowOffset!;
+  expect(before).toBe(9);
+  controller.togglePresentation("workspaceNames");
+  const hidden = controller.planViewport().selectedRowOffset!;
+  expect(controller.getSelectedRow()?.commit.revisionId).toBe("revision-8");
+  expect(Math.abs(hidden - before)).toBe(1);
+  expect(controller.planViewport().usedHeight).toBeLessThanOrEqual(13);
+  controller.togglePresentation("workspaceNames");
+  expect(controller.planViewport().selectedRowOffset).toBe(9);
+  controller.setViewport(120, 13);
+  expect(Math.abs(controller.planViewport().selectedRowOffset! - 9)).toBe(1);
+  controller.setViewport(70, 13);
+  expect(controller.planViewport().selectedRowOffset).toBe(9);
+  controller.beginVisualSelection();
+  await controller.move(1, 13, { extend: true });
+  const selection = controller.getSelection();
+  controller.togglePresentation("workspaceNames");
+  expect(controller.getSelection()?.focus.commit.revisionId).toBe(
+    selection?.focus.commit.revisionId,
+  );
+  expect(controller.getSelection()?.oldest.commit.revisionId).toBe(
+    selection?.oldest.commit.revisionId,
+  );
+  await controller.close();
+});
+
+test("compact pointer-only label refresh keeps the old focus instead of following a new head", async () => {
+  const entries = Array.from({ length: 20 }, (_, index) => ({
+    revisionId: `revision-${index}`,
+    decorations: [
+      {
+        kind: "ref" as const,
+        label: `@workspace-with-a-long-recorded-name-${index}`,
+        workspaceName: `workspace-${index}`,
+      },
+    ],
+  }));
+  const { runtime, setHistory } = createTestRuntime(entries);
+  const controller = new LogController(runtime);
+  while (!controller.getSnapshot().historyDone) await controller.loadMore();
+  controller.setViewport(70, 13);
+  controller.togglePresentation("graph");
+  await controller.select(8, 13);
+  const before = controller.planViewport().selectedRowOffset!;
+  setHistory(
+    entries.map((entry, index) => ({
+      ...entry,
+      decorations:
+        index === 8
+          ? []
+          : index === 12
+            ? [...entry.decorations, entries[8]!.decorations[0]!]
+            : entry.decorations,
+    })),
+  );
+  expect(await controller.refresh()).toBe(true);
+  expect(controller.getSelectedRow()?.commit.revisionId).toBe("revision-8");
+  expect(controller.getSelectedRow()?.commit.decorations).toHaveLength(0);
+  expect(Math.abs(controller.planViewport().selectedRowOffset! - before)).toBeLessThanOrEqual(1);
   await controller.close();
 });
 

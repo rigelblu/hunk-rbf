@@ -74,8 +74,8 @@ import {
 import { formatHistoryTitle, splitHistoryTitle } from "../history/title";
 import { resolveHistoryTitlePalette } from "../history/titlePalette";
 import { formatHistoryDay } from "./formatting";
-import { commitEntryHeight, LOG_DAY_HEADER_HEIGHT, planLogViewportGeometry } from "./geometry";
-import { projectResponsiveLogRow, resolveLogResponsiveLayout } from "./responsiveLayout";
+import { LOG_DAY_HEADER_HEIGHT } from "./geometry";
+import { projectResponsiveLogRow, resolveLogViewportBodyHeight } from "./responsiveLayout";
 import { historyQueryViewRows, planHistoryQueryView } from "./historyQueryView";
 import { RevsetEditorDialog, type FieldHandle } from "./RevsetEditorDialog";
 import {
@@ -361,8 +361,9 @@ export function LogApp({
     operation.visit && operation.operation === "rebase"
       ? LOG_MARK_COLUMN_WIDTH
       : LOG_FOCUS_CELLS_WIDTH;
-  const responsiveLayout = resolveLogResponsiveLayout(
-    terminal.width,
+  // Render and measure the same effective width when Rebase adds its source rail.
+  const rowProjectionWidth = terminal.width - markColumnWidth + LOG_FOCUS_CELLS_WIDTH;
+  const viewportBodyHeight = resolveLogViewportBodyHeight(
     terminal.height -
       scopeLines.length -
       queryRows -
@@ -373,7 +374,6 @@ export function LogApp({
       historyContextLines.length +
       (replacesStatus || selectionFooter ? 1 : 0),
   );
-  const viewportBodyHeight = responsiveLayout.bodyHeight;
   const currentViewPreferences = useMemo(
     () => ({
       ...sessionViewPreferences,
@@ -1056,8 +1056,8 @@ export function LogApp({
     return () => clearInterval(timer);
   }, []);
   useEffect(() => {
-    controller.setViewport(terminal.width, viewportBodyHeight);
-    const geometry = controller.planViewport(viewportBodyHeight, terminal.width);
+    controller.setViewport(rowProjectionWidth, viewportBodyHeight);
+    const geometry = controller.planViewport(viewportBodyHeight, rowProjectionWidth);
     if (
       geometry.entries.at(-1)?.index !== undefined &&
       geometry.entries.at(-1)!.index + 8 >= snapshot.rows.length &&
@@ -1069,7 +1069,7 @@ export function LogApp({
     controller,
     snapshot.historyDone,
     snapshot.presentation,
-    terminal.width,
+    rowProjectionWidth,
     snapshot.rows,
     snapshot.selected,
     snapshot.top,
@@ -1252,7 +1252,7 @@ export function LogApp({
     consume();
   });
 
-  const viewportGeometry = controller.planViewport(viewportBodyHeight, terminal.width);
+  const viewportGeometry = controller.planViewport(viewportBodyHeight, rowProjectionWidth);
   const visible = viewportGeometry.entries;
   const visualSelectionKey = findAppCommandById(commands, "hunk.history.startVisualSelection")
     ?.keyLabels[0];
@@ -1423,8 +1423,7 @@ export function LogApp({
             const projected = projectResponsiveLogRow({
               row,
               presentation: snapshot.presentation,
-              layout: responsiveLayout,
-              width: terminal.width - markColumnWidth + LOG_FOCUS_CELLS_WIDTH,
+              width: rowProjectionWidth,
               now: relativeTimeNow,
             });
             const operationMark =
@@ -1435,6 +1434,38 @@ export function LogApp({
             const persistentSelected = snapshot.marks.some(
               (mark) => mark.kind === "resolved" && mark.revisionId === row.commit.revisionId,
             );
+            /** Apply revision-cell actions without treating source selection as review navigation. */
+            const handleRevisionMouseUp = (event: TuiMouseEvent) => {
+              event.stopPropagation();
+              if (event.button !== MouseButton.LEFT) return;
+              clearTransientNotice();
+              if (event.modifiers.ctrl) {
+                lastClick.current = { index: -1, at: 0 };
+                const visit = operation.visit;
+                if (visit && operations.getSnapshot().phase === "sources")
+                  operations.toggleSource(visit, row.commit.revisionId);
+                return;
+              }
+              if (event.modifiers.shift) {
+                if (operations.getSnapshot().visit && operations.getSnapshot().phase !== "sources")
+                  return;
+                lastClick.current = { index: -1, at: 0 };
+                void controller.select(index, viewportBodyHeight, { extend: true });
+                return;
+              }
+              const copyIconStart =
+                1 +
+                markColumnWidth +
+                projected.graphWidth +
+                projected.leftWidth +
+                projected.columnGap +
+                projected.rightWidth -
+                measureTextWidth(projected.copyIcon);
+              void controller.select(index, viewportBodyHeight).then(() => {
+                if (event.x >= copyIconStart) copySelected(row);
+                else if (!operations.getSnapshot().visit) void openSelected();
+              });
+            };
             const sourceSelected = operationMark?.tags.includes("from");
             const rowBackground =
               index === snapshot.selected
@@ -1448,14 +1479,21 @@ export function LogApp({
               operation.operation === "squash"
                 ? operationMark?.tags.find((tag) => tag === "from" || tag === "into")
                 : undefined;
-            const membership =
+            // Keep operation cues on a measured row even when metadata needs no spill row.
+            const membership = [
               squashRole === "from"
                 ? "From"
                 : squashRole === "into"
                   ? "Into"
                   : !operation.visit && persistentSelected
                     ? "Selected"
-                    : "";
+                    : "",
+              ...(operationMark?.tags
+                .filter((tag) => tag !== squashRole)
+                .map((tag) => `[${tag}]`) ?? []),
+            ]
+              .filter(Boolean)
+              .join(" ");
             const title = membership
               ? formatHistoryTitle(
                   row.commit,
@@ -1548,7 +1586,7 @@ export function LogApp({
                     <box
                       style={{
                         width: LOG_FOCUS_CELLS_WIDTH,
-                        height: responsiveLayout.rowHeight,
+                        height: projected.textRowCount,
                         flexShrink: 0,
                       }}
                     >
@@ -1566,7 +1604,7 @@ export function LogApp({
                           marksDialogIndex === null &&
                           !statusLineState.prompt
                         }
-                        height={responsiveLayout.rowHeight}
+                        height={projected.textRowCount}
                         theme={theme}
                         onMouseGesture={() => {
                           lastClick.current = { index: -1, at: 0 };
@@ -1599,14 +1637,8 @@ export function LogApp({
                         flexDirection: "column",
                       }}
                     >
-                      <box style={{ width: projected.textWidth, height: 2, flexDirection: "row" }}>
-                        <box
-                          style={{
-                            width: projected.leftWidth,
-                            height: 2,
-                            flexDirection: "column",
-                          }}
-                        >
+                      <box style={{ width: projected.textWidth, height: 1, flexDirection: "row" }}>
+                        <box style={{ width: projected.leftWidth, height: 1 }}>
                           <text fg={theme.text} style={{ height: 1 }}>
                             {membership ? (
                               <>
@@ -1629,46 +1661,8 @@ export function LogApp({
                           <box style={{ width: projected.columnGap }} />
                         ) : null}
                         <box
-                          style={{
-                            width: projected.rightWidth,
-                            height: 2,
-                            flexDirection: "column",
-                            alignItems: "flex-end",
-                          }}
-                          onMouseUp={(event: TuiMouseEvent) => {
-                            event.stopPropagation();
-                            if (event.button !== MouseButton.LEFT) return;
-                            clearTransientNotice();
-                            if (event.modifiers.ctrl) {
-                              lastClick.current = { index: -1, at: 0 };
-                              const visit = operation.visit;
-                              if (visit && operations.getSnapshot().phase === "sources")
-                                operations.toggleSource(visit, row.commit.revisionId);
-                              return;
-                            }
-                            if (event.modifiers.shift) {
-                              if (
-                                operations.getSnapshot().visit &&
-                                operations.getSnapshot().phase !== "sources"
-                              )
-                                return;
-                              lastClick.current = { index: -1, at: 0 };
-                              void controller.select(index, viewportBodyHeight, { extend: true });
-                              return;
-                            }
-                            const copyIconStart =
-                              1 +
-                              markColumnWidth +
-                              projected.graphWidth +
-                              projected.leftWidth +
-                              projected.columnGap +
-                              projected.rightWidth -
-                              measureTextWidth(projected.copyIcon);
-                            void controller.select(index, viewportBodyHeight).then(() => {
-                              if (event.x >= copyIconStart) copySelected(row);
-                              else if (!operations.getSnapshot().visit) void openSelected();
-                            });
-                          }}
+                          style={{ width: projected.rightWidth, height: 1, alignItems: "flex-end" }}
+                          onMouseUp={handleRevisionMouseUp}
                         >
                           <RevisionIdControl
                             displayRevision={projected.displayId}
@@ -1707,23 +1701,47 @@ export function LogApp({
                           />
                         </box>
                       </box>
-                      <text
-                        style={{ width: projected.textWidth, height: 1 }}
-                        fg={operationMark?.muted ? theme.muted : logPalette.decoration}
-                      >
-                        {fitText(
-                          [
-                            projected.refLine,
-                            ...(operationMark?.tags
-                              .filter((tag) => tag !== squashRole)
-                              .map((tag) => `[${tag}]`) ?? []),
-                          ]
-                            .filter(Boolean)
-                            .join(" ") || " ",
-                          projected.textWidth,
-                          "…",
-                        )}
-                      </text>
+                      <box style={{ width: projected.textWidth, height: 1, flexDirection: "row" }}>
+                        <box style={{ width: projected.metadataWidth, height: 1 }}>
+                          <CommitMetadataText
+                            author={projected.author}
+                            relativeTime={projected.relativeTime}
+                            authorColor={logPalette.author}
+                            separatorColor={logPalette.separator}
+                            relativeTimeColor={logPalette.relativeTime}
+                          />
+                        </box>
+                        {projected.metadataGap ? (
+                          <box style={{ width: projected.metadataGap }} />
+                        ) : null}
+                        {projected.inlineRefLine ? (
+                          <text
+                            style={{ width: measureTextWidth(projected.inlineRefLine), height: 1 }}
+                            fg={logPalette.decoration}
+                          >
+                            {projected.inlineRefLine}
+                          </text>
+                        ) : null}
+                        {projected.summaryGap ? (
+                          <box style={{ width: projected.summaryGap }} />
+                        ) : null}
+                        {projected.secondary ? (
+                          <box
+                            style={{ width: projected.secondaryWidth, height: 1 }}
+                            onMouseUp={handleRevisionMouseUp}
+                          >
+                            <text fg={logPalette.decoration}>{projected.secondary}</text>
+                          </box>
+                        ) : null}
+                      </box>
+                      {projected.textRowCount === 3 ? (
+                        <text
+                          style={{ width: projected.textWidth, height: 1 }}
+                          fg={operationMark?.muted ? theme.muted : logPalette.decoration}
+                        >
+                          {projected.refLine || " "}
+                        </text>
+                      ) : null}
                     </box>
                   </box>
                   {/* Cutoff markers are not revisions: they carry no checkbox and continue the

@@ -767,7 +767,17 @@ test("blocks reopening until dirty-quit cancellation settles", async () => {
   const planning = new Promise<{ kind: "revision-show"; revisionId: string }>((resolve) => {
     resolvePlanning = resolve;
   });
-  history.runtime.planReview = mock(() => planning);
+  let acknowledgePlanning!: () => void;
+  const planningStarted = new Promise<void>((resolve) => {
+    acknowledgePlanning = resolve;
+  });
+  let planningSignal: AbortSignal | undefined;
+  const planReview = mock((...args: Parameters<InteractiveHistoryRuntime["planReview"]>) => {
+    planningSignal = args[2];
+    acknowledgePlanning();
+    return planning;
+  });
+  history.runtime.planReview = planReview;
   const prepareReview = mock(async () => {
     throw new Error("cancelled planning reached preparation");
   });
@@ -792,16 +802,21 @@ test("blocks reopening until dirty-quit cancellation settles", async () => {
     expect(setup.captureCharFrame()).toContain("›  github-dark-dimmed");
     await act(async () => setup.mockInput.pressEnter());
     await setup.renderOnce();
-    await act(async () => setup.mockInput.pressEnter());
-    await Bun.sleep(10);
+    await act(async () => {
+      setup.mockInput.pressEnter();
+      await planningStarted;
+    });
+    expect(planReview).toHaveBeenCalledTimes(1);
     await selectHistoryMenuQuit(setup);
     await setup.renderOnce();
     expect(setup.captureCharFrame()).toContain("Save view preferences?");
+    expect(planningSignal?.aborted).toBeTrue();
 
     await act(async () => setup.mockInput.pressKey("escape"));
     await setup.renderOnce();
-    await act(async () => setup.mockInput.pressEnter());
     expect(setup.captureCharFrame()).not.toContain("Save view preferences?");
+    await act(async () => setup.mockInput.pressEnter());
+    expect(planReview).toHaveBeenCalledTimes(1);
 
     resolvePlanning({ kind: "revision-show", revisionId: "revision-a" });
     await settle(setup);

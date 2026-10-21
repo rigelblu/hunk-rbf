@@ -665,7 +665,10 @@ for (const width of [28, 42, 80, 120]) {
         const source = lines.findIndex((line) => line.includes(" From "));
         const destination = lines.findIndex((line) => line.includes(" Into "));
         expect(source).toBeGreaterThanOrEqual(0);
-        expect(destination - source).toBe(3);
+        const originalSource = original.findIndex((line) => line.includes("11111111"));
+        const originalDestination = original.findIndex((line) => line.includes("22222222"));
+        // Badges retain the existing measured entry spacing, including compact two-row entries.
+        expect(destination - source).toBe(originalDestination - originalSource);
         const refRow = original.findIndex((line) => line.includes("role-ref"));
         expect(refRow).toBeGreaterThanOrEqual(0);
         expect(lines[refRow]).toBe(original[refRow]);

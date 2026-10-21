@@ -340,6 +340,7 @@ export class LogController {
   /** Select a target, optionally extending a contiguous range from the current focus. */
   select(index: number, viewportBodyHeight: number, { extend = false }: { extend?: boolean } = {}) {
     this.clearNotice();
+    this.viewportAnchorOffset = null;
     if (extend && historyInputCanHideIntermediateCommits(this.acceptedInput)) {
       this.setNotice(
         "Multi-commit selection is unavailable when history traversal can hide or interleave commits.",
@@ -933,7 +934,8 @@ export class LogController {
         const selectionAnchor =
           anchor ?? (visualSelectionActive && !anchorIdentity ? selected : null);
         const bodyHeight = this.viewportBodyHeight;
-        const { geometry, entryScroll } = this.planReplacementViewport(
+        const width = this.viewportWidth;
+        const { geometry, entryScroll, previousSelectedRowOffset } = this.planReplacementViewport(
           current,
           rows,
           selected,
@@ -967,7 +969,7 @@ export class LogController {
         this.checkpoint = checkpoint;
         this.loadingPromise = null;
         previousAbort.abort();
-        this.viewportAnchorOffset = currentGeometry.selectedRowOffset;
+        this.viewportAnchorOffset = previousSelectedRowOffset;
         this.publish({
           rows,
           marks,
@@ -1038,8 +1040,16 @@ export class LogController {
     bodyHeight: number,
     keepEntryScroll: boolean,
   ) {
-    const requestedTop = Math.max(0, selected - (current.selected - current.top));
+    const width = this.viewportWidth;
+    const previousTop = findHistoryRowIndex(rows, current.rows[current.top]?.commit);
+    const requestedTop =
+      previousTop >= 0
+        ? Math.min(selected, previousTop)
+        : Math.max(0, selected - (current.selected - current.top));
     const currentGeometry = planLogViewportGeometry({
+      width,
+      presentation: current.presentation,
+      requestedSelectedRowOffset: this.viewportAnchorOffset,
       rows: current.rows,
       selected: current.selected,
       requestedTop: current.top,
@@ -1047,6 +1057,8 @@ export class LogController {
       groupByDay: !current.presentation.graph,
     });
     const geometry = planLogViewportGeometry({
+      width,
+      presentation: current.presentation,
       rows,
       selected,
       requestedTop,
@@ -1057,10 +1069,16 @@ export class LogController {
     const entryScroll = Math.min(
       keepEntryScroll ? current.entryScroll : 0,
       rows[selected]
-        ? Math.max(0, commitEntryHeight(rows[selected]!, !current.presentation.graph) - bodyHeight)
+        ? Math.max(
+            0,
+            commitEntryHeight(rows[selected]!, !current.presentation.graph, {
+              width,
+              presentation: current.presentation,
+            }) - bodyHeight,
+          )
         : 0,
     );
-    return { geometry, entryScroll };
+    return { geometry, entryScroll, previousSelectedRowOffset: currentGeometry.selectedRowOffset };
   }
 
   /**
@@ -1140,7 +1158,7 @@ export class LogController {
           complete: page.done && revisionMarkLogicalFallbackEligible(nextInput),
         },
       );
-      const { geometry, entryScroll } = this.planReplacementViewport(
+      const { geometry, entryScroll, previousSelectedRowOffset } = this.planReplacementViewport(
         before,
         rows,
         focus.selected,
@@ -1173,6 +1191,7 @@ export class LogController {
       this.checkpoint = planned.checkpoint;
       this.loadingPromise = null;
       previousAbort.abort();
+      this.viewportAnchorOffset = previousSelectedRowOffset;
       this.publish({
         rows,
         marks,
