@@ -76,14 +76,28 @@ describe("PTY current line", () => {
     });
 
     try {
-      await session.waitForText(/Current line · old above, new below/, { timeout: 15_000 });
-      await session.waitIdle({ timeout: 400 });
-      const beforeClick = await session.text({ immediate: true });
+      // The heading can paint before both lens rows and their viewport geometry settle.
+      const beforeClick = await session.text({
+        waitFor: (text) => {
+          const lens = text.split("Current line · old above, new below")[1] ?? "";
+          return (
+            lens.includes("export const line01 = 1;") && lens.includes("export const line01 = 101;")
+          );
+        },
+        timeout: 15_000,
+      });
       const clickedRow = lineIndexOf(beforeClick, "export const line05 = 5;") - 1;
       expect(clickedRow).toBeGreaterThan(0);
 
       await dragMouse(session, 30, clickedRow, 31, clickedRow);
-      const clicked = await session.text({ immediate: true });
+      // Idle output does not acknowledge the drag's resulting current-line paint.
+      const clicked = await session.text({
+        waitFor: (text) => {
+          const lens = text.split("Current line · old above, new below")[1] ?? "";
+          return lens.includes("export const line05 = 5;");
+        },
+        timeout: 15_000,
+      });
       const clickedLens = clicked.split("Current line").at(-1) ?? "";
       expect(clickedLens).toContain("export const line05 = 5;");
       expect(clicked).not.toContain("Copied selection to clipboard");

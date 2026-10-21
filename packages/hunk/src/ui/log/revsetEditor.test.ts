@@ -519,8 +519,9 @@ describe("planRevsetEditor never draws outside its frame", () => {
     return list;
   };
 
-  test("at every size and state the frame fits the rows, its rows fit the frame, and the actions stay", () => {
-    for (let width = 20; width <= 130; width += 1) {
+  test.each(Array.from({ length: 111 }, (_, index) => 20 + index))(
+    "at every size and state the frame fits the rows, its rows fit the frame, and the actions stay at %d columns",
+    (width) => {
       for (let height = 6; height <= 40; height += 1) {
         for (const [name, state] of states()) {
           const layout = planRevsetEditor(state, { width, height });
@@ -556,8 +557,8 @@ describe("planRevsetEditor never draws outside its frame", () => {
           }
         }
       }
-    }
-  });
+    },
+  );
 
   test("short terminals drop optional rows before the controls: hint last, never Cancel", () => {
     const state = moveHighlight(editDraft(openRevsetEditor(launchQuery, ["a", "b"]), "@"), 1);
@@ -696,30 +697,33 @@ describe("planRevsetEditor sweeps for the list, the error and the busy size", ()
     }
   });
 
-  test("a failed Apply shows its error at every size the editor opens", () => {
-    const base = editDraft(openRevsetEditor(launchQuery, previous(2)), "@-");
-    for (const notice of [
-      "Revset not applied: Function `x` doesn't exist",
-      long,
-      "Reset failed: Could not run jj.",
-    ]) {
-      const failed = endRequest(base, notice);
-      for (const size of sizes) {
-        if (planRevsetEditor(base, size).kind === "too-small") continue;
-        const layout = planRevsetEditor(failed, size);
-        const where = `${size.width}x${size.height}`;
-        expect(layout.kind, where).toBe("layout");
-        if (layout.kind !== "layout") continue;
-        expect(
-          layout.rows.some((row) => row.kind === "text" && row.tone === "error"),
-          where,
-        ).toBeTrue();
-        // The hint is what gives way first.
-        if (layout.frame.height >= (layout.compact ? 9 : 14))
-          expect(layout.rows.some((row) => row.kind === "actions")).toBeTrue();
+  test.each(Array.from({ length: 107 }, (_, index) => 24 + index))(
+    "a failed Apply shows its error at every size the editor opens at %d columns",
+    (width) => {
+      const base = editDraft(openRevsetEditor(launchQuery, previous(2)), "@-");
+      for (const notice of [
+        "Revset not applied: Function `x` doesn't exist",
+        long,
+        "Reset failed: Could not run jj.",
+      ]) {
+        const failed = endRequest(base, notice);
+        for (const size of sizes.filter((size) => size.width === width)) {
+          if (planRevsetEditor(base, size).kind === "too-small") continue;
+          const layout = planRevsetEditor(failed, size);
+          const where = `${size.width}x${size.height}`;
+          expect(layout.kind, where).toBe("layout");
+          if (layout.kind !== "layout") continue;
+          expect(
+            layout.rows.some((row) => row.kind === "text" && row.tone === "error"),
+            where,
+          ).toBeTrue();
+          // The hint is what gives way first.
+          if (layout.frame.height >= (layout.compact ? 9 : 14))
+            expect(layout.rows.some((row) => row.kind === "actions")).toBeTrue();
+        }
       }
-    }
-  });
+    },
+  );
 
   test("a busy frame keeps the size it had and never covers the status row", () => {
     for (const count of [0, 2, 9]) {
@@ -752,22 +756,27 @@ describe("planRevsetEditor sweeps for the list, the error and the busy size", ()
     }
   });
 
-  test("a source with no revset keeps its style and top row from open to the first keystroke", () => {
-    for (const count of [1, 2, 9]) {
-      const opened = openRevsetEditor({ ...launchQuery, expression: undefined }, previous(count));
-      for (const typed of [editDraft(opened, "@"), editDraft(opened, "@-")]) {
-        for (const size of sizes) {
-          const before = planRevsetEditor(opened, size);
-          const after = planRevsetEditor(typed, size);
-          expect(before.kind, `${count} previous at ${size.width}x${size.height}`).toBe(after.kind);
-          if (before.kind !== "layout" || after.kind !== "layout") continue;
-          const where = `${count} previous at ${size.width}x${size.height}`;
-          expect(after.compact, where).toBe(before.compact);
-          expect(after.frame.top, where).toBe(before.frame.top);
+  test.each(Array.from({ length: 107 }, (_, index) => 24 + index))(
+    "a source with no revset keeps its style and top row from open to the first keystroke at %d columns",
+    (width) => {
+      for (const count of [1, 2, 9]) {
+        const opened = openRevsetEditor({ ...launchQuery, expression: undefined }, previous(count));
+        for (const typed of [editDraft(opened, "@"), editDraft(opened, "@-")]) {
+          for (const size of sizes.filter((size) => size.width === width)) {
+            const before = planRevsetEditor(opened, size);
+            const after = planRevsetEditor(typed, size);
+            expect(before.kind, `${count} previous at ${size.width}x${size.height}`).toBe(
+              after.kind,
+            );
+            if (before.kind !== "layout" || after.kind !== "layout") continue;
+            const where = `${count} previous at ${size.width}x${size.height}`;
+            expect(after.compact, where).toBe(before.compact);
+            expect(after.frame.top, where).toBe(before.frame.top);
+          }
         }
       }
-    }
-  });
+    },
+  );
 
   test("a failed Apply plans the whole error, or ends it with an ellipsis or a scroll row, and the hint goes first", () => {
     const base = editDraft(openRevsetEditor(launchQuery, previous(2)), "@-");
@@ -859,14 +868,15 @@ describe("busy frames keep their style and their notice", () => {
       expect(notices(busy), `${size.width}x${size.height}`).toContain("Applying revset…");
     }
   });
-  test("a busy frame names its work at every size the editor opens, and never grows", () => {
-    const previous = (count: number) =>
-      Array.from({ length: count }, (_, index) => `mine-${index}`);
-    for (const count of [0, 1, 2, 9]) {
-      for (const draft of ["@-", launchQuery.expression!]) {
-        for (const source of [launchQuery, { ...launchQuery, expression: undefined }]) {
-          const state = editDraft(openRevsetEditor(source, previous(count)), draft);
-          for (let width = 24; width <= 130; width += 1) {
+  test.each(Array.from({ length: 107 }, (_, index) => 24 + index))(
+    "a busy frame names its work at every size the editor opens, and never grows at %d columns",
+    (width) => {
+      const previous = (count: number) =>
+        Array.from({ length: count }, (_, index) => `mine-${index}`);
+      for (const count of [0, 1, 2, 9]) {
+        for (const draft of ["@-", launchQuery.expression!]) {
+          for (const source of [launchQuery, { ...launchQuery, expression: undefined }]) {
+            const state = editDraft(openRevsetEditor(source, previous(count)), draft);
             for (let height = 8; height <= 40; height += 1) {
               const size = { width, height };
               const idle = planRevsetEditor(state, size);
@@ -897,6 +907,6 @@ describe("busy frames keep their style and their notice", () => {
           }
         }
       }
-    }
-  });
+    },
+  );
 });

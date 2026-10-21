@@ -1812,6 +1812,7 @@ describe("HK-19.1 revset editor", () => {
           session,
           (text) =>
             text.includes("Old-based sibling") &&
+            text.includes("Selected newest; previous not loaded.") &&
             text.includes("Custom revset · Limit: 100") &&
             !text.includes("Edit revset"),
           15_000,
