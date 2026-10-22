@@ -858,7 +858,7 @@ export class LogController {
     }
   }
 
-  /** Toggle detail fields immediately, or stage graph visibility on the accepted source context. */
+  /** Toggle detail fields immediately, or select Hunk graph and toggle it off when already visible. */
   togglePresentation(key: keyof LogPresentation) {
     if (key !== "graph") {
       this.viewportAnchorOffset = this.planViewport().selectedRowOffset;
@@ -868,18 +868,20 @@ export class LogController {
       this.clampViewport(this.viewportBodyHeight);
       return;
     }
-    const graph = !this.snapshot.presentation.graph;
-    const preference = this.graphPreference;
-    void this.stageGraph(graph ? preference : "default", { graph, preference });
+    const graph = !this.snapshot.presentation.graph || this.snapshot.graphStyle !== "default";
+    void this.stageGraph("default", { graph, preference: "default" });
   }
 
-  /** Select the other graph preference and enable Graph view, including from grouped history. */
+  /** Select JJ graph from grouped or Hunk history, and return to Hunk when JJ is already visible. */
   toggleNativeGraph() {
     if (!this.snapshot.supportsNativeGraph) {
       this.setNotice("Graph view (jj style) is available only for JJ history.");
       return;
     }
-    const preference = this.graphPreference === "native" ? "default" : "native";
+    const preference =
+      this.snapshot.presentation.graph && this.snapshot.graphStyle === "native"
+        ? "default"
+        : "native";
     void this.stageGraph(preference, { graph: true, preference });
   }
 

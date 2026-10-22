@@ -3067,7 +3067,7 @@ async function settleTestGraph(controller: LogController) {
 }
 
 describe("native graph accepted transactions", () => {
-  test("covers grouped/Hunk/native transitions, retained preference and cursor ownership", async () => {
+  test("graph commands select the visible style across grouped, Hunk and native views", async () => {
     const { runtime, sources } = createTestGraphRuntime();
     const c = new LogController(runtime);
     await c.loadMore();
@@ -3088,10 +3088,17 @@ describe("native graph accepted transactions", () => {
     await settleTestGraph(c);
     expect(c.getSnapshot()).toMatchObject({
       graphStyle: "default",
-      graphPreference: "native",
-      presentation: { graph: false },
+      graphPreference: "default",
+      presentation: { graph: true },
     });
     c.togglePresentation("graph");
+    await settleTestGraph(c);
+    expect(c.getSnapshot()).toMatchObject({
+      graphStyle: "default",
+      graphPreference: "default",
+      presentation: { graph: false },
+    });
+    c.toggleNativeGraph();
     await settleTestGraph(c);
     expect(c.getSnapshot()).toMatchObject({
       graphStyle: "native",
@@ -3107,6 +3114,24 @@ describe("native graph accepted transactions", () => {
     });
     await c.close();
     expect(sources.map((s) => s.closes)).toEqual(sources.map(() => 1));
+  });
+
+  test("choosing JJ from grouped history ignores a hidden retained native preference", async () => {
+    const { runtime } = createTestGraphRuntime();
+    const c = new LogController(runtime);
+    try {
+      await c.loadMore();
+      expect(await c.stageGraph("default", { graph: false, preference: "native" })).toBeTrue();
+      c.toggleNativeGraph();
+      await settleTestGraph(c);
+      expect(c.getSnapshot()).toMatchObject({
+        graphStyle: "native",
+        graphPreference: "native",
+        presentation: { graph: true },
+      });
+    } finally {
+      await c.close();
+    }
   });
 
   test("failure/cancel keeps accepted rows, preference and checkboxes; candidate closes once", async () => {

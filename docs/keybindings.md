@@ -106,7 +106,7 @@ History-specific commands:
 | `hunk.history.nextMatch`               | Select the next match                   | `n`                          |
 | `hunk.history.previousMatch`           | Select the previous match               | `N`                          |
 | `hunk.history.editRevset`              | Edit the history revset                 | `L`                          |
-| `hunk.history.toggleGraph`             | Toggle graph presentation               | _(none)_                     |
+| `hunk.history.toggleGraph`             | Toggle Hunk graph view                  | _(none)_                     |
 | `hunk.history.toggleNativeGraph`       | Toggle Graph view (jj style)            | `ctrl+g`                     |
 | `hunk.history.toggleUnicode`           | Toggle Unicode graph lines              | _(none)_                     |
 | `hunk.history.toggleAuthor`            | Toggle author metadata                  | _(none)_                     |

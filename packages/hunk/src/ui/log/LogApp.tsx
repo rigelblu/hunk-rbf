@@ -882,9 +882,11 @@ export function LogApp({
     view: [
       commandItem("hunk.view.openThemeSelector"),
       { kind: "separator" },
-      commandItem("hunk.history.toggleGraph", { checked: snapshot.presentation.graph }),
+      commandItem("hunk.history.toggleGraph", {
+        checked: snapshot.presentation.graph && snapshot.graphStyle === "default",
+      }),
       commandItem("hunk.history.toggleNativeGraph", {
-        checked: snapshot.graphPreference === "native",
+        checked: snapshot.presentation.graph && snapshot.graphStyle === "native",
       }),
       commandItem("hunk.history.toggleUnicode", { checked: snapshot.presentation.unicode }),
       commandItem("hunk.history.toggleAuthor", { checked: snapshot.presentation.author }),

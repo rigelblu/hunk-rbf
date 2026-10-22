@@ -79,6 +79,46 @@ afterEach(async () => {
 });
 
 describe("native JJ graph terminal interactions", () => {
+  jjTest("checks only the visible graph style across menu and shortcut transitions", async () => {
+    const f = createNativeGraphTestRepo();
+    const session = await harness.launchHunk({
+      args: ["log", "--vcs", "jj", "--color", "never", "--no-extensions"],
+      ...f,
+      cols: 120,
+      rows: 24,
+    });
+    /** Read both graph checks from the accepted View menu rather than a cached preference. */
+    const expectGraphMenu = async (hunk: boolean, native: boolean) => {
+      const menu = await openNativeTestView(session);
+      expect(menu).toMatch(new RegExp(`\\[${hunk ? "x" : " "}\\] Graph view(?! \\(jj style\\))`));
+      expect(menu).toContain(`[${native ? "x" : " "}] Graph view (jj style)`);
+    };
+    try {
+      await session.waitForText(/Native merge focus/, { timeout: 15000 });
+      await expectGraphMenu(false, false);
+      await session.click("Graph view (jj style)");
+      await waitNativeTestStyle(session, true);
+      await expectGraphMenu(false, true);
+      await session.click(/Graph view(?! \(jj style\))/);
+      const hunk = await waitNativeTestStyle(session, false);
+      expect(hunk).not.toContain("Commits on");
+      await expectGraphMenu(true, false);
+      await session.click(/Graph view(?! \(jj style\))/);
+      await harness.waitForSnapshot(session, (text) => text.includes("Commits on"), 5000);
+      await expectGraphMenu(false, false);
+      await session.press("escape");
+      session.sendKey(["ctrl", "g"]);
+      await waitNativeTestStyle(session, true);
+      await expectGraphMenu(false, true);
+      await session.press("escape");
+      session.sendKey(["ctrl", "g"]);
+      await waitNativeTestStyle(session, false);
+      await expectGraphMenu(true, false);
+    } finally {
+      session.close();
+    }
+  });
+
   jjTest(
     "mouse/shortcut transitions preserve native preference, selected revision and review routing",
     async () => {
@@ -100,15 +140,20 @@ describe("native JJ graph terminal interactions", () => {
         await session.click("Graph view (jj style)");
         await waitNativeTestStyle(session, true);
         const enabled = await openNativeTestView(session);
-        expect(enabled).toMatch(/\[x\] Graph view(?! \(jj style\))/);
+        expect(enabled).toMatch(/\[ \] Graph view(?! \(jj style\))/);
         expect(enabled).toContain("[x] Graph view (jj style)");
         expect(enabled).toContain("Unicode lines (JJ config)");
         await session.click(/Graph view(?! \(jj style\))/);
         await waitNativeTestStyle(session, false);
+        const hunk = await openNativeTestView(session);
+        expect(hunk).toMatch(/\[x\] Graph view(?! \(jj style\))/);
+        expect(hunk).toContain("[ ] Graph view (jj style)");
+        await session.click(/Graph view(?! \(jj style\))/);
+        await harness.waitForSnapshot(session, (text) => text.includes("Commits on"), 5000);
         const grouped = await openNativeTestView(session);
         expect(grouped).toMatch(/\[ \] Graph view(?! \(jj style\))/);
-        expect(grouped).toContain("[x] Graph view (jj style)");
-        await session.click(/Graph view(?! \(jj style\))/);
+        expect(grouped).toContain("[ ] Graph view (jj style)");
+        await session.click("Graph view (jj style)");
         await waitNativeTestStyle(session, true);
         session.sendKey(["ctrl", "g"]);
         await waitNativeTestStyle(session, false);
