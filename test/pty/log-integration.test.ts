@@ -939,6 +939,8 @@ describe("interactive hunk log", () => {
       git(cwd, ["commit", "-qam", "Third history commit"]);
       const history = await returnToHistory(session);
       expect(history).toContain("Second history commit");
+      // Wait for the return refresh before checking navigation against the new history.
+      await session.waitForText(/History refreshed\./, { timeout: 15_000 });
       await harness.pressAndWaitForText(session, "home", /Third history commit/, {
         timeout: 15_000,
       });

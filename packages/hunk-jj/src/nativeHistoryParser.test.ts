@@ -25,6 +25,7 @@ function createTestRecord(id = 1, description = "subject") {
     "",
     "false",
     "",
+    "false",
   ].join("\0");
 }
 
@@ -43,7 +44,7 @@ function createTestFrame(record: string, body = ["@  ", "│  ", "│  "], after
 /** Exercise the production metadata decoder through the native byte framing parser. */
 function createTestParser() {
   return new NativeHistoryParser(
-    (record) => parseJjHistory(`${record}\0`, false, false, 15, true)[0]!,
+    (record) => parseJjHistory(`${record}\0`, false, false, undefined, true)[0]!,
   );
 }
 
@@ -179,7 +180,13 @@ describe("native JJ independent budget boundaries", () => {
     test(`queue bytes at 8 MiB ${delta >= 0 ? "+" : ""}${delta} UTF-16 units drains without exceeding bound`, () => {
       const parser = createTestParser();
       const body = ["@  ", "│  ", "│  "];
-      const base = parseJjHistory(`${createTestRecord(1, "")}\0`, false, false, 15, true)[0]!;
+      const base = parseJjHistory(
+        `${createTestRecord(1, "")}\0`,
+        false,
+        false,
+        undefined,
+        true,
+      )[0]!;
       base.nativeGraph = { body: body as [string, string, string], after: [] };
       const fixed = nativeCommitRetainedBytes(base) - base.subject.length * 2;
       const ordinary = 65_000;

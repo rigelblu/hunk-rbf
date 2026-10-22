@@ -163,12 +163,21 @@ describe("native JJ graph terminal interactions", () => {
         const copied = await session.waitForText(/Copied [a-z0-9]+/, { timeout: 5000 });
         const identity = copied.match(/Copied ([a-z0-9]+)/)![1];
         session.resize({ cols: 80, rows: 5 });
-        await session.waitIdle();
-        await session.press("pagedown");
-        await session.press("y");
-        expect(await session.text()).toContain(`Copied ${identity}`);
+        await harness.waitForSnapshot(
+          session,
+          (text) => text.includes("Native merge focus") && !text.includes("Copied"),
+        );
+        await harness.pressAndWaitForSnapshot(
+          session,
+          "pagedown",
+          (text) => text.includes("├─╮") && !text.includes("Native merge focus"),
+        );
         session.resize({ cols: 120, rows: 24 });
         await waitNativeTestStyle(session, true);
+        // Five rows leave no notice line; copy after restoring space to observe the selected ID.
+        await harness.pressAndWaitForSnapshot(session, "y", (text) =>
+          text.includes(`Copied ${identity}`),
+        );
         await session.press("enter");
         await session.waitForText(/merge.ts/, { timeout: 15000 });
         await session.press("q");
@@ -210,9 +219,14 @@ describe("native JJ graph terminal interactions", () => {
       await session.press("escape");
       await waitNativeTestStyle(session, true);
       session.writeRaw("L\x15@ | main\x1bOQ");
-      const custom = await session.waitForText(/Custom revset: range review unavailable./, {
-        timeout: 15000,
-      });
+      const custom = await harness.waitForSnapshot(
+        session,
+        (text) =>
+          text.includes("Revset: @ | main") &&
+          text.includes("Custom revset: range review unavailable.") &&
+          !text.includes("Edit revset"),
+        15000,
+      );
       expect(custom).toContain("界");
       expect(custom).not.toContain("graph links and range");
       await session.press("r");
