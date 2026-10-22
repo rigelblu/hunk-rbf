@@ -224,7 +224,8 @@ describe("native JJ graph terminal interactions", () => {
         (text) =>
           text.includes("Revset: @ | main") &&
           text.includes("Custom revset: range review unavailable.") &&
-          !text.includes("Edit revset"),
+          !text.includes("Edit revset") &&
+          !text.includes("[F2] Apply"),
         15000,
       );
       expect(custom).toContain("界");

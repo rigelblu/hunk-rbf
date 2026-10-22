@@ -143,9 +143,11 @@ describe("PTY navigation", () => {
     });
 
     try {
-      const initial = await session.waitForText(/View\s+Navigate\s+Agent\s+Help/, {
-        timeout: 15_000,
-      });
+      const initial = await harness.waitForSnapshot(
+        session,
+        (text) => /View\s+Navigate\s+Agent\s+Help/.test(text) && text.includes("line1 = 100"),
+        15_000,
+      );
 
       expect(initial).toContain("line1 = 100");
       expect(initial).not.toContain("line60 = 6000");

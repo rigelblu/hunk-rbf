@@ -6,6 +6,10 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 
 # 🔵⋯ [Unreleased]
 
+## 🟠⋯ Fixed for Builders
+
+- 2026-10-22 - fix (technical) | avoid false terminal-test failures after signal termination or partial startup output (#hk-98)
+
 ## 🟠⋯ Added for End Users
 
 - 2026-10-20 - feat (ux) | select separate history revisions with keyboard or mouse, clear them independently of a review range, and capture them directly for Squash (#hk-27)

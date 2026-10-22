@@ -1888,7 +1888,10 @@ describe("HK-19.1 revset editor", () => {
         session.writeRaw(`L\x15${expression}\x1bOQ`);
         return harness.waitForSnapshot(
           session,
-          (text) => text.includes(`Revset: ${expression}`) && !text.includes("Edit revset"),
+          (text) =>
+            text.includes(`Revset: ${expression}`) &&
+            !text.includes("Edit revset") &&
+            !text.includes("[F2] Apply"),
           15_000,
         );
       };
@@ -1967,7 +1970,12 @@ describe("HK-19.1 revset editor", () => {
         session.sendKey("f3");
         const reset = await harness.waitForSnapshot(
           session,
-          (text) => text.includes("Launch policy · Limit: 100") && !text.includes("Edit revset"),
+          (text) =>
+            text.includes("Launch policy · Limit: 100") &&
+            text.includes("~ older history hidden") &&
+            !text.includes("Custom revset") &&
+            !text.includes("Edit revset") &&
+            !text.includes("[F2] Apply"),
           15_000,
         );
         expect(reset).toContain("Feature current work");
