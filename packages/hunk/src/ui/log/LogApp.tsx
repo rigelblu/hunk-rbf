@@ -1525,23 +1525,30 @@ export function LogApp({
                   }}
                 >
                   {showDayHeader ? (
-                    <text>
-                      <span fg={logPalette.timeline}>
-                        {snapshot.presentation.unicode ? "○─" : "o-"}
-                      </span>
-                      <span fg={logPalette.separator}> </span>
-                      <span fg={logPalette.dayHeading}>
-                        {fitText(
-                          formatHistoryDay(row.commit.authoredAt),
-                          Math.max(1, terminal.width - 5),
-                        )}
-                      </span>
-                    </text>
-                  ) : null}
-                  {showDayHeader ? (
-                    <text fg={logPalette.timeline}>
-                      {snapshot.presentation.unicode ? "│" : "|"}
-                    </text>
+                    <box
+                      style={{
+                        height: LOG_DAY_HEADER_HEIGHT,
+                        flexShrink: 0,
+                        flexDirection: "column",
+                        paddingLeft: markColumnWidth,
+                      }}
+                    >
+                      <text>
+                        <span fg={logPalette.timeline}>
+                          {snapshot.presentation.unicode ? "○─" : "o-"}
+                        </span>
+                        <span fg={logPalette.separator}> </span>
+                        <span fg={logPalette.dayHeading}>
+                          {fitText(
+                            formatHistoryDay(row.commit.authoredAt),
+                            Math.max(1, terminal.width - markColumnWidth - 5),
+                          )}
+                        </span>
+                      </text>
+                      <text fg={logPalette.timeline}>
+                        {snapshot.presentation.unicode ? "│" : "|"}
+                      </text>
+                    </box>
                   ) : null}
                   <box
                     style={{

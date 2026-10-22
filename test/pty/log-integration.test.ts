@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Session } from "tuistory";
 import { measureTextWidth } from "../../packages/hunk/src/ui/lib/text";
+import { expectGroupedTimelineTestColumn } from "../helpers/historyTimeline";
 import { createPtyHarness, rightmostColumnOf, rowCellBackgrounds, sleep } from "./harness";
 
 const harness = createPtyHarness();
@@ -616,6 +617,7 @@ describe("interactive hunk log", () => {
       expect(wide).toContain("○─ Commits on Sep 6, 2026");
       expect(wide).toContain("Commits on Sep 5, 2026");
       expect(wide).toMatch(/Commits on Sep 6, 2026\n\s*│\s*\n\s+│\s+Second history commit/);
+      expectGroupedTimelineTestColumn(wide, ["Second history commit", "First history commit"], 3);
       expect(wide).not.toContain("Responsive description");
       expect(rightmostColumnOf(wide, displayId)).toBeGreaterThan(95);
 
@@ -631,10 +633,13 @@ describe("interactive hunk log", () => {
         (text) =>
           text.includes("Second history commit") &&
           text.includes("history ·") &&
-          text.includes(displayId),
+          rightmostColumnOf(text, displayId) > 55 &&
+          rightmostColumnOf(text, displayId) < 70,
         5_000,
       );
       const medium = await session.text({ immediate: true });
+      expectGroupedTimelineTestColumn(medium, ["Second history commit", "First history commit"], 3);
+      expect(medium).toContain("○─ Commits on Sep 6, 2026");
       expect(medium).toContain("history ·");
       expect(rightmostColumnOf(medium, displayId)).toBeGreaterThan(55);
       session.resize({ cols: 42, rows: 18 });
@@ -643,10 +648,13 @@ describe("interactive hunk log", () => {
         (text) =>
           text.includes("Second history com") &&
           !text.includes("2026-") &&
-          text.includes(displayId),
+          rightmostColumnOf(text, displayId) > 27 &&
+          rightmostColumnOf(text, displayId) < 42,
         5_000,
       );
       const narrow = await session.text({ immediate: true });
+      expectGroupedTimelineTestColumn(narrow, ["Second history com", "First history commit"], 3);
+      expect(narrow).toContain("○─ Commits on Sep 6, 2026");
       const narrowCommitLine = narrow
         .split("\n")
         .find((line) => line.includes("Second history com"));
@@ -690,6 +698,14 @@ describe("interactive hunk log", () => {
       const history = await session.waitForText(/Second history commit/, { timeout: 15_000 });
       expect(history).toContain("o- Commits on Sep 6, 2026");
       expect(history).toContain("|");
+      expectGroupedTimelineTestColumn(
+        history,
+        ["Second history commit", "First history commit"],
+        3,
+        {
+          ascii: true,
+        },
+      );
 
       await session.press("f10");
       await session.press("right");
@@ -1892,6 +1908,12 @@ describe("HK-19.1 revset editor", () => {
         expect(regular).toContain("Commits on");
         expect(regular).toContain("~ omitted parent");
         expect(regular).not.toContain("older history hidden");
+        expectGroupedTimelineTestColumn(
+          regular,
+          ["Feature current work", "Mainline boundary", "Hidden old B"],
+          3,
+          { cutoffs: true },
+        );
         await toggleGraph();
         const connected = await harness.waitForSnapshot(
           session,
@@ -1935,6 +1957,9 @@ describe("HK-19.1 revset editor", () => {
           5_000,
         );
         expect(groupedGap).toMatch(/\n\s*~\s*\n/);
+        expectGroupedTimelineTestColumn(groupedGap, ["Feature current work", "Hidden old B"], 3, {
+          cutoffs: true,
+        });
         session.writeRaw("L");
         await session.waitForText(/Edit revset/, { timeout: 5_000 });
         session.sendKey("f3");
@@ -1947,6 +1972,9 @@ describe("HK-19.1 revset editor", () => {
         expect(reset).toContain("Jujutsu · 5 commits");
         expect(reset).toContain("~ older history hidden");
         expect(reset).not.toContain("Custom revset");
+        expectGroupedTimelineTestColumn(reset, ["Feature current work", "Mainline boundary"], 3, {
+          cutoffs: true,
+        });
         await toggleGraph();
         const resetGraph = await harness.waitForSnapshot(
           session,

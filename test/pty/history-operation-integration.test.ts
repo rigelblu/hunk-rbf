@@ -12,6 +12,7 @@ import {
 import { delimiter, join } from "node:path";
 import { tmpdir } from "node:os";
 import type { Session } from "tuistory";
+import { expectGroupedTimelineTestColumn } from "../helpers/historyTimeline";
 import { createPtyHarness } from "./harness";
 
 const harness = createPtyHarness();
@@ -155,6 +156,7 @@ describe("real operation selection PTY", () => {
         const session = await launchOperationPtyTest(f, cols);
         try {
           await beginOperationPtyTest(session, "rebase");
+          expectGroupedTimelineTestColumn(await session.text(), ["A source", "C base"], 7);
           await session.press("space");
           let text = await session.waitForText(/0 selected/);
           expect(text).not.toContain("Enter Continue");
@@ -188,6 +190,7 @@ describe("real operation selection PTY", () => {
             10_000,
           );
           expect(text).not.toContain("✓");
+          expectGroupedTimelineTestColumn(text, ["A source", "C base"], 3);
         } finally {
           session.close();
         }
