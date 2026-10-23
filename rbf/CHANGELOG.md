@@ -13,18 +13,12 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 - 2026-10-15 - feat (ux) | see Squash From and Into beside the graph, write the combined description in my configured JJ editor, and return to the actual result (#hk-27)
 
 - 2026-10-14 - feat (ux) | select exact revisions with Space or checkmarks after choosing Rebase, inspect the highlighted diff with I, and preview one-source Rebase operations before Apply (#hk-27)
-- 2026-10-12 - feat (ux) | edit the complete active JJ revset in `hunk log` with `L`, reuse earlier revsets from this session, and restore launch policy with Reset; completion is not available yet (#hk-19)
 
 ## 🟠⋯ Added for Technical Users
 
 - 2026-10-14 - feat (technical) | let opted-in history providers prepare, confirm and report mutation results through extension API 33, with JJ Squash and Rebase using the shared runtime (#hk-27)
-- 2026-10-12 - feat (technical) | let a history provider opt in to complete expression input and report the exact query text through extension API 32; providers without `acceptsExpression` keep today's behavior (#hk-19)
 
 ## 🟠⋯ Fixed for End Users
-
-- 2026-10-22 - fix (ux) | keep grouped-history date dots connected to their revision rails while preserving selection controls (#hk-19)
-
-- 2026-10-21 - fix (ux) | preserve direct graph connections in custom revsets and mark omitted parents without enabling unsafe range review (#hk-19)
 
 - 2026-10-21 - fix (ux) | keep large unwrapped diffs responsive during their initial render (#hk-27.2)
 
@@ -43,13 +37,30 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 - 2026-10-15 - fix (ux) | keep Squash actions compact, read contextual messages inline, and open full output only when recovering from a failure (#hk-27)
 - 2026-10-16 - fix (ux) | browse Squash destinations without flashing progress for checks that finish within 200 ms (#hk-27)
 
-- 2026-10-12 - fix (ux) | preserve native revset editing when opening and typing arrive together, block input at unsupported terminal sizes, and move the caret to the end when reusing a previous input (#hk-19)
 - 2026-10-11 - fix (ux) | retain history cursor ownership and the highlighted terminal row while refresh stages replacement pages (#hk-28 dependency for hk-27)
 - 2026-10-11 - fix (ux) | use the configured root theme in history even when revision reviews have a different `[show]` theme (#hk-95)
 - 2026-10-12 - fix (ux) | refresh history automatically without a delay or an error notice when Hunk runs in a secondary JJ workspace (#hk-85)
 - 2026-10-12 - fix (ux) | move the selection on every PageDown and wheel step in a terminal too short to show one history entry (#hk-93)
 - 2026-10-12 - fix (ux) | give a narrow static history row's cells to the subject when its ref list is clipped too far to name any ref (#hk-92)
 - 2026-10-12 - fix (ux) | never move a history mark to a different revision under a revision expression or `--first-parent`; the cost is that a mark on a rewritten revision shows as incomplete there and is not followed (#hk-27)
+
+# 🔵⋯ v0.14.0 (2026-10-22)
+
+Local HK-19.1 release records; remote integration and publication remain pending. This metadata cut is not separately installed; the combined successor is installed once.
+
+## 🟠⋯ Added for End Users
+
+- 2026-10-12 - feat (ux) | edit the complete active JJ revset in `hunk log` with `L`, reuse earlier revsets from this session, and restore launch policy with Reset; completion is not available yet (#hk-19)
+
+## 🟠⋯ Added for Technical Users
+
+- 2026-10-12 - feat (technical) | let a history provider opt in to complete expression input and report the exact query text through extension API 32; providers without `acceptsExpression` keep today's behavior (#hk-19)
+
+## 🟠⋯ Fixed for End Users
+
+- 2026-10-22 - fix (ux) | keep grouped-history date dots connected to their revision rails while preserving selection controls (#hk-19)
+- 2026-10-21 - fix (ux) | preserve direct graph connections in custom revsets and mark omitted parents without enabling unsafe range review (#hk-19)
+- 2026-10-12 - fix (ux) | preserve native revset editing when opening and typing arrive together, block input at unsupported terminal sizes, and move the caret to the end when reusing a previous input (#hk-19)
 
 # 🔵⋯ v0.13.0 (2026-10-16)
 
