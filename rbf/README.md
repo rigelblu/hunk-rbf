@@ -10,7 +10,7 @@ Fork-specific product guidance for Hunk. The upstream project README remains at 
 
 ```text
 $ hunk --version
-hunk 0.23.0 (Hunk RBF 0.12.0)
+hunk 0.23.0 (Hunk RBF 0.15.0)
 ```
 
 The first number is the upstream Hunk release this fork is built against. The parenthetical is the fork's own release. They advance independently, so neither is "ahead" of the other — quote the whole line in a bug report and it says exactly which build you have.
@@ -164,7 +164,7 @@ Git reporting remains unknown in this slice. Hunk RBF product work covers JJ and
 
 # 🔵⋯ Identify workspace heads in JJ history
 
-HK-92 is recorded in local Hunk RBF 0.12.0. The accepted candidate is built and verified; installation and public delivery remain pending.
+HK-92 is recorded in local Hunk RBF 0.15.0. The accepted candidate is built and verified; installation and public delivery remain pending.
 
 Run `hunk log --vcs jj` to see where each workspace's recorded head sits in history. The default view labels every workspace head it includes; add `--all` to reach heads on the older history that view hides. Repositories with multiple workspaces show names such as `@default` and `@feature` on their revisions. A repository with one workspace shows only the current-revision marker `@`.
 
@@ -238,3 +238,13 @@ When active, Hunk presents JJ's exact graph prefixes, node glyphs, and connector
 Graph view (jj style) is session-local and applies to the active log view. If a custom revset is active, native graph continues to draw JJ's connectors, while range review remains unavailable (`Custom revset: range review unavailable.`). Bounded scope notes (`Older mainline history hidden.`) remain visible above the status line.
 
 The View menu checks only the visible graph style: **Graph view** for Hunk's graph, **Graph view (jj style)** for JJ's graph, and neither in grouped history. Choosing **Graph view** from grouped or JJ history selects Hunk's graph; choosing it again returns to grouped history. **Graph view (jj style)** or `Ctrl+G` selects JJ's graph from grouped or Hunk history, and returns to Hunk's graph when JJ's graph is already visible. Switching graph requires the currently selected revision, anchor, and marks to remain within the loaded history limit; if excluded, Hunk explains the refusal and keeps the accepted view. If JJ configuration changes while a session is running, Hunk requests a normal refresh (`r`) before switching graph styles.
+
+# 🔵⋯ Edit the active JJ revset
+
+In JJ history, press `L` or choose View → Edit revset. Edit the complete expression, use F2 to apply it, or F3 to restore launch policy. Successful inputs remain available for this session, including after opening and returning from a review. Completion is not available yet.
+
+Custom revsets preserve direct graph connections between displayed revisions. A `~` marks an omitted real parent; Hunk does not draw a direct relationship across a missing revision. Range review remains unavailable for a custom query. Single-revision review and explicit exact revision selections retain real revision identities. Reset restores launch policy and its range eligibility.
+
+# 🔵⋯ Choose a history graph style
+
+View → Graph view selects Hunk's graph. View → Graph view (jj style), or Ctrl+G, selects JJ's native graph. Only the active graph style is checked; grouped history checks neither. A grouped date dot connects to its revision rail. Display style changes do not expand range-review or mutation eligibility.
