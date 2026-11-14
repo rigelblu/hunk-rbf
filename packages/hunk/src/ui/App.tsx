@@ -1180,7 +1180,7 @@ export function App({
     const { id, answer } = statusLineStore.openPrompt(
       {
         prefix: "filter:",
-        placeholder: "type to filter files",
+        placeholder: "text; !text excludes",
         initial: review.filter,
         onChange: review.setFilter,
       },

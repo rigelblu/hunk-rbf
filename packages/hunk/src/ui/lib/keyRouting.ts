@@ -34,13 +34,14 @@ import type { KeyEvent } from "@opentui/core";
  * - The everyday decision is two-state. Did this handler act on the key (or
  *   deliberately swallow it as part of a modal surface)? Then `"mine"`.
  *   Otherwise `"notMine"`.
- * - `"focused"` has exactly one trigger: **a focused text input needs this key
- *   as text.** Consuming would cut off the renderable path the input receives
- *   its characters through, so the handler must end the chain — otherwise a
- *   later handler or the command table would act on plain typing — while
- *   leaving the key itself untouched. If you are about to write a comment
- *   like "let the input own this", you want `"focused"`. Unless you are
- *   adding a new text input, you will never return it.
+ * - `"focused"` has two triggers: **a focused text input needs this key
+ *   as text, or a focused modal ScrollBox needs navigation keys to scroll locally.**
+ *   Consuming would cut off the renderable path the widget receives
+ *   its events through, so the handler must end the chain — otherwise a
+ *   later handler or the command table would act on plain typing or
+ *   trigger global review navigation — while leaving the key itself
+ *   unconsumed. If you are about to write a comment like "let the
+ *   input or scrollbox own this", you want `"focused"`.
  */
 export type KeyOwner = "notMine" | "mine" | "focused";
 

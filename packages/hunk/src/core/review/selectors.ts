@@ -78,6 +78,9 @@ export type ReviewFilterFile = Pick<ReviewFileV1, "path" | "previousPath" | "age
 /**
  * Matches one file against the shared review filter.
  *
+ * Leading `\!` searches for a literal leading `!`, while leading `!` excludes matching
+ * files. Empty operands always match.
+ *
  * A query matches a file's current path, the path it came from, or the agent's summary of
  * it, case-insensitively. The fields are joined before matching, so a query may span the
  * boundary between them — that is the terminal's long-standing behavior, kept exactly
@@ -88,16 +91,33 @@ export type ReviewFilterFile = Pick<ReviewFileV1, "path" | "previousPath" | "age
  * decide whether that file matches.
  */
 export function reviewFileMatchesFilter(file: ReviewFilterFile, filter: string) {
-  const query = filter.trim().toLowerCase();
-  if (!query) {
+  const trimmed = filter.trim();
+  let isExclude = false;
+  let operand = trimmed;
+
+  if (trimmed.startsWith("\\!")) {
+    isExclude = false;
+    operand = trimmed.slice(1);
+  } else if (trimmed.startsWith("!")) {
+    isExclude = true;
+    operand = trimmed.slice(1).trim();
+  }
+
+  if (!operand) {
     return true;
   }
 
-  return [normalizeDiffPath(file.path), normalizeDiffPath(file.previousPath), file.agentSummary]
+  const searchable = [
+    normalizeDiffPath(file.path),
+    normalizeDiffPath(file.previousPath),
+    file.agentSummary,
+  ]
     .filter(Boolean)
     .join(" ")
-    .toLowerCase()
-    .includes(query);
+    .toLowerCase();
+
+  const matches = searchable.includes(operand.toLowerCase());
+  return isExclude ? !matches : matches;
 }
 
 /** Select the files the current filter leaves visible, in review order. */

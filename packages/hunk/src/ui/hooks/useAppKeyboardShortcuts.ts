@@ -10,6 +10,7 @@ import type { MenuId } from "../components/chrome/menu";
 import {
   dispatchAppCommand,
   executeAppCommand,
+  isCommandEnabled,
   type AppCommand,
   verticalCommandDirection,
 } from "../lib/appCommands";
@@ -240,20 +241,54 @@ export function useAppKeyboardShortcuts({
     return "mine";
   };
 
-  /** Escape closes the topmost open overlay (agent skill, then help). */
+  /**
+   * Own keys while overlays (agent skill or help dialog) are mounted.
+   *
+   * Escape closes the help overlay directly. While help is displayed and no
+   * text input holds focus, vertical scroll and review navigation keys are left
+   * for the focused help scrollbox rather than falling through to review commands.
+   * Ordinary mapped commands (such as Tab to focus the filter) retain their bindings.
+   */
   const handleDialogShortcut = (key: KeyEvent): KeyOwner => {
-    if (!isEscapeKey(key)) {
+    if (showAgentSkillRef.current) {
+      if (isEscapeKey(key)) {
+        closeAgentSkill();
+        return "mine";
+      }
       return "notMine";
     }
 
-    if (showAgentSkillRef.current) {
-      closeAgentSkill();
-      return "mine";
-    }
-
     if (showHelpRef.current) {
-      closeHelp();
-      return "mine";
+      if (isEscapeKey(key)) {
+        closeHelp();
+        return "mine";
+      }
+
+      if (focusAreaRef.current === "files") {
+        const matched = commandsRef.current.find(
+          (command) => isCommandEnabled(command) && command.match(key),
+        );
+        if (matched) {
+          const isNavigation =
+            matched.verticalDirection !== undefined ||
+            matched.id === "hunk.review.jumpToTop" ||
+            matched.id === "hunk.review.jumpToBottom";
+          return isNavigation ? "focused" : "notMine";
+        }
+
+        if (
+          key.name === "up" ||
+          key.name === "down" ||
+          key.name === "pageup" ||
+          key.name === "pagedown" ||
+          key.name === "home" ||
+          key.name === "end"
+        ) {
+          return "focused";
+        }
+      }
+
+      return "notMine";
     }
 
     return "notMine";

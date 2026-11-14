@@ -121,13 +121,13 @@ describe("PTY content search", () => {
       await session.press("tab");
       await harness.waitForSnapshot(
         session,
-        (text) => text.includes("filter: type to filter files"),
+        (text) => text.includes("filter: text; !text excludes"),
         5_000,
       );
       await session.press("escape");
       await harness.waitForSnapshot(
         session,
-        (text) => !text.includes("filter: type to filter files"),
+        (text) => !text.includes("filter: text; !text excludes"),
         5_000,
       );
     } finally {
@@ -268,13 +268,13 @@ describe("PTY content search", () => {
       await session.type("/");
       await harness.waitForSnapshot(
         session,
-        (text) => text.includes("filter: type to filter files"),
+        (text) => text.includes("filter: text; !text excludes"),
         5_000,
       );
       await session.press("escape");
       await harness.waitForSnapshot(
         session,
-        (text) => !text.includes("filter: type to filter files"),
+        (text) => !text.includes("filter: text; !text excludes"),
         5_000,
       );
 

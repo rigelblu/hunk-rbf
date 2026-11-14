@@ -78,7 +78,7 @@ describe("PTY key routing", () => {
       await harness.pressAndWaitForSnapshot(
         session,
         "tab",
-        (text) => text.includes("filter: type to filter files"),
+        (text) => text.includes("filter: text; !text excludes"),
         5_000,
       );
       await session.type("beta");
@@ -94,7 +94,7 @@ describe("PTY key routing", () => {
       );
 
       expect(afterEscape).toContain("filter: beta");
-      expect(afterEscape).not.toContain("filter: type to filter files");
+      expect(afterEscape).not.toContain("filter: text; !text excludes");
     } finally {
       session.close();
     }
@@ -119,7 +119,7 @@ describe("PTY key routing", () => {
       await harness.pressAndWaitForSnapshot(
         session,
         "tab",
-        (text) => text.includes("filter: type to filter files"),
+        (text) => text.includes("filter: text; !text excludes"),
         5_000,
       );
       await session.type("beta");

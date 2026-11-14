@@ -104,6 +104,189 @@ describe("filter selectors", () => {
     expect(reviewFileMatchesFilter({ path: "src/alpha.ts\r\n" }, "alpha.ts")).toBe(true);
   });
 
+  // Intent: leading ! excludes matching text; leading \! searches literal leading !.
+  test("truth table for exclusion, escape, whitespace, and literal operators", () => {
+    const cases: Array<{
+      query: string;
+      file: { path: string; previousPath?: string; agentSummary?: string };
+      expected: boolean;
+      description: string;
+    }> = [
+      {
+        query: "",
+        file: { path: "src/main.ts" },
+        expected: true,
+        description: "empty query matches any file",
+      },
+      {
+        query: "   ",
+        file: { path: "src/main.ts" },
+        expected: true,
+        description: "whitespace query matches any file",
+      },
+      {
+        query: "README.md",
+        file: { path: "docs/readme.MD" },
+        expected: true,
+        description: "inclusion matches case-insensitively",
+      },
+      {
+        query: "README.md",
+        file: { path: "src/main.ts" },
+        expected: false,
+        description: "inclusion rejects non-matching file",
+      },
+      {
+        query: "!README.md",
+        file: { path: "README.md" },
+        expected: false,
+        description: "exclusion hides exact match",
+      },
+      {
+        query: "!README.md",
+        file: { path: "docs/readme.MD" },
+        expected: false,
+        description: "exclusion hides case-insensitive substring match",
+      },
+      {
+        query: "!README.md",
+        file: { path: "README.md.bak" },
+        expected: false,
+        description: "exclusion hides substring match on extension suffix",
+      },
+      {
+        query: " !README.md ",
+        file: { path: "docs/README.md" },
+        expected: false,
+        description: "outer whitespace around exclusion prefix is trimmed",
+      },
+      {
+        query: "! README.md ",
+        file: { path: "docs/README.md" },
+        expected: false,
+        description: "whitespace after leading ! is trimmed from operand",
+      },
+      {
+        query: "!README.md",
+        file: { path: "src/main.ts", previousPath: "README.md" },
+        expected: false,
+        description: "exclusion hides match in previous path",
+      },
+      {
+        query: "!README.md",
+        file: { path: "src/main.ts", agentSummary: "Updates README.md references" },
+        expected: false,
+        description: "exclusion hides match in agent summary",
+      },
+      {
+        query: "!README.md",
+        file: { path: "src/main.ts" },
+        expected: true,
+        description: "exclusion keeps non-matching file",
+      },
+      {
+        query: "!",
+        file: { path: "src/main.ts" },
+        expected: true,
+        description: "bare ! matches any file (empty operand)",
+      },
+      {
+        query: "!   ",
+        file: { path: "src/main.ts" },
+        expected: true,
+        description: "! with whitespace matches any file",
+      },
+      {
+        query: "\\!foo",
+        file: { path: "!foo.txt" },
+        expected: true,
+        description: "leading \\! searches for literal leading !",
+      },
+      {
+        query: "\\!foo",
+        file: { path: "foo.txt" },
+        expected: false,
+        description: "leading \\! does not match text without literal !",
+      },
+      {
+        query: "!!foo",
+        file: { path: "!foo.txt" },
+        expected: false,
+        description: "!!foo excludes files matching literal !foo",
+      },
+      {
+        query: "!!foo",
+        file: { path: "foo.txt" },
+        expected: true,
+        description: "!!foo keeps files not matching literal !foo",
+      },
+      {
+        query: "!*.md",
+        file: { path: "README.md" },
+        expected: true,
+        description: "wildcards are literal; non-matching wildcard query keeps file",
+      },
+      {
+        query: "!*.md",
+        file: { path: "src/*.md" },
+        expected: false,
+        description: "wildcards are literal; matching literal wildcard query hides file",
+      },
+      {
+        query: "!README.md !test",
+        file: { path: "README.md" },
+        expected: true,
+        description: "multiple ! are literal in operand; non-matching phrase keeps file",
+      },
+      {
+        query: "placement policy",
+        file: { path: "src/policy.ts", agentSummary: "Rewrites placement policy" },
+        expected: true,
+        description: "inclusion matches multi-word summary",
+      },
+      {
+        query: "alpha.ts old",
+        file: { path: "src/alpha.ts", previousPath: "old/name.ts" },
+        expected: true,
+        description: "inclusion matches across joined field boundary",
+      },
+      {
+        query: "!alpha.ts old",
+        file: { path: "src/alpha.ts", previousPath: "old/name.ts" },
+        expected: false,
+        description: "exclusion hides match across joined field boundary",
+      },
+      {
+        query: "\\",
+        file: { path: "src\\win.ts" },
+        expected: true,
+        description: "lone backslash is literal positive search",
+      },
+      {
+        query: "\\",
+        file: { path: "src/unix.ts" },
+        expected: false,
+        description: "lone backslash does not match path without backslash",
+      },
+      {
+        query: "!\\!foo",
+        file: { path: "src/\\!foo.ts" },
+        expected: false,
+        description: "!\\!foo excludes literal backslash-plus-!foo",
+      },
+      {
+        query: "!\\!foo",
+        file: { path: "src/!foo.ts" },
+        expected: true,
+        description: "!\\!foo keeps literal !foo without backslash",
+      },
+    ];
+
+    for (const testCase of cases) {
+      expect(reviewFileMatchesFilter(testCase.file, testCase.query)).toBe(testCase.expected);
+    }
+  });
+
   test("select visible files and the navigable stream in review order", () => {
     const state = { ...createTestReviewState(["alpha", "beta"]), filter: "beta" };
 

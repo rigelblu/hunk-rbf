@@ -911,7 +911,7 @@ describe("AppHost file views", () => {
     try {
       await waitForFrame(setup, (frame) => frame.includes("alpha.ts"));
       await act(async () => setup.mockInput.pressTab());
-      await waitForFrame(setup, (frame) => frame.includes("filter: type to filter files"));
+      await waitForFrame(setup, (frame) => frame.includes("filter: text; !text excludes"));
       await act(async () => setup.mockInput.typeText("alpha"));
       await waitForFrame(setup, (frame) => frame.includes("filter: alpha"));
       await act(async () => setup.mockInput.pressTab());
@@ -941,7 +941,7 @@ describe("AppHost file views", () => {
       await act(async () => setup.mockInput.pressTab());
       await waitForFrame(setup, (frame) => frame.includes("filter: alpha"));
       await act(async () => setup.mockInput.pressEscape());
-      await waitForFrame(setup, (frame) => frame.includes("filter: type to filter files"));
+      await waitForFrame(setup, (frame) => frame.includes("filter: text; !text excludes"));
       await act(async () => setup.mockInput.pressTab());
       const expanded = await waitForFrame(
         setup,
