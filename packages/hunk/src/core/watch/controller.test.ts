@@ -305,6 +305,29 @@ describe("createWatchController", () => {
     expect(errors).toHaveLength(1);
   });
 
+  test("keeps the old baseline when refresh is deferred and retries the change", async () => {
+    const clock = new FakeWatchClock();
+    const source = fakeSource();
+    let attempts = 0;
+    const controller = createWatchController({
+      initialSignature: "old",
+      clock,
+      createEventSource: source.create,
+      getSignature: () => "new",
+      refresh: () => ++attempts > 1,
+    });
+
+    source.event();
+    clock.advance(200);
+    await settle();
+    expect(controller.getState().appliedSignature).toBe("old");
+    source.event();
+    clock.advance(200);
+    await settle();
+    expect(attempts).toBe(2);
+    expect(controller.getState().appliedSignature).toBe("new");
+  });
+
   test("keeps a signature exception retryable", async () => {
     const clock = new FakeWatchClock();
     const source = fakeSource();

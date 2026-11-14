@@ -31,6 +31,8 @@ import { StatusLine } from "../statusLine/StatusLine";
 import type { StatusItem } from "../statusLine/types";
 import { useStatusLine } from "../statusLine/useStatusLine";
 import type { InteractiveHistoryRuntime } from "../history/types";
+import { createWatchController } from "../../core/watch/controller";
+import { createWatchEventSource } from "../../core/watch/observer";
 import type { LogController } from "./controller";
 import { dispatchAppCommand, executeAppCommand, findAppCommandById } from "../lib/appCommands";
 import { resolveCommandKeys } from "../lib/keymap";
@@ -79,6 +81,9 @@ export function LogApp({
   runtime,
   onOutcome,
   sessionViewPreferences,
+  autoRefreshEnabled,
+  onAutoRefreshEnabledChange,
+  refreshOnMountGeneration,
   themeController,
   useColor,
   quitScheduler,
@@ -88,6 +93,9 @@ export function LogApp({
   onOutcome: (outcome: LogAppOutcome) => void | Promise<void>;
   /** Latest review preferences retained by the routed interactive session. */
   sessionViewPreferences: PersistedViewPreferences;
+  autoRefreshEnabled: boolean;
+  onAutoRefreshEnabledChange: (enabled: boolean) => void;
+  refreshOnMountGeneration: number;
   themeController: ThemeController;
   useColor: boolean;
   quitScheduler?: ViewPreferenceQuitScheduler;
@@ -109,6 +117,9 @@ export function LogApp({
   // open two child reviews. Quit remains available while the host settles pending work.
   const reviewPending = useRef(false);
   const reviewQuitEnabled = useRef(false);
+  const interactionActive = useRef(false);
+  const deferredAutoRefresh = useRef(false);
+  const deferredRefreshResolvers = useRef<Array<(applied: boolean) => void>>([]);
   const quitRequestCaptured = useRef(false);
   const pendingExitCode = useRef<number | undefined>(undefined);
   const themeSelector = useThemeSelectorController({
@@ -172,6 +183,7 @@ export function LogApp({
   const openSelected = async (parentRevisionId?: string, pending = false) => {
     if (reviewPending.current && !pending) return;
     reviewPending.current = true;
+    interactionActive.current = true;
     reviewQuitEnabled.current = false;
     await controller.settleNavigation();
     const currentSelection = controller.getSelection();
@@ -372,6 +384,12 @@ export function LogApp({
       commandItem("hunk.history.openSelection"),
       commandItem("hunk.history.copyRevision"),
       commandItem("hunk.history.refresh"),
+      {
+        kind: "item",
+        label: `Auto-refresh history: ${autoRefreshEnabled ? "on" : "off"}`,
+        disabled: !runtime.historyWatchSignature,
+        action: () => onAutoRefreshEnabledChange(!autoRefreshEnabled),
+      },
       { kind: "separator" },
       commandItem("hunk.app.quit"),
     ],
@@ -414,6 +432,111 @@ export function LogApp({
     help: [commandItem("hunk.app.toggleHelp"), commandItem("hunk.history.showAbout")],
   };
   const menu = useMenuController(menus);
+
+  const activeInteraction = Boolean(
+    menu.activeMenuId ||
+    statusLineState.prompt ||
+    parentSelectorIndex !== null ||
+    themeSelector.themeSelectorOpen ||
+    showHelp ||
+    viewPreferenceQuit.saveConfigPromptOpen ||
+    openingCommit ||
+    reviewPending.current ||
+    controller.isNavigating(),
+  );
+  interactionActive.current = activeInteraction;
+
+  useEffect(() => {
+    if (!autoRefreshEnabled) return;
+    if (!runtime.historyWatchPlan || !runtime.historyWatchSignature) {
+      controller.setNotice("This VCS provider supports manual history refresh only.");
+      onAutoRefreshEnabledChange(false);
+      return;
+    }
+    const abort = new AbortController();
+    let closed = false;
+    let watchController: ReturnType<typeof createWatchController> | undefined;
+    const start = async () => {
+      try {
+        const returnedFromReview = refreshOnMountGeneration > 0;
+        const refreshedOnReturn = returnedFromReview ? await controller.refresh() : true;
+        const initialSignature = refreshedOnReturn
+          ? await runtime.historyWatchSignature!(abort.signal)
+          : undefined;
+        if (closed) return;
+        watchController = createWatchController({
+          initialSignature,
+          getSignature: (signal) => runtime.historyWatchSignature!(signal),
+          createEventSource: createWatchEventSource(runtime.historyWatchPlan!),
+          refresh: () => {
+            if (!interactionActive.current) {
+              let deferred = false;
+              return controller
+                .refresh(() => {
+                  if (!interactionActive.current) return true;
+                  deferred = true;
+                  deferredAutoRefresh.current = true;
+                  controller.setNotice(
+                    "History changed; refresh will run when the current interaction ends.",
+                  );
+                  return false;
+                })
+                .then((applied) =>
+                  deferred
+                    ? new Promise<boolean>((resolve) =>
+                        deferredRefreshResolvers.current.push(resolve),
+                      )
+                    : applied,
+                );
+            }
+            deferredAutoRefresh.current = true;
+            controller.setNotice(
+              "History changed; refresh will run when the current interaction ends.",
+            );
+            return new Promise<boolean>((resolve) =>
+              deferredRefreshResolvers.current.push(resolve),
+            );
+          },
+          reportError: (error) => {
+            if (!closed) {
+              controller.setNotice(
+                `Auto-refresh check failed: ${sanitizeTerminalLine(error instanceof Error ? error.message : String(error))}`,
+              );
+            }
+          },
+        });
+      } catch (error) {
+        if (closed || abort.signal.aborted) return;
+        controller.setNotice(
+          `Auto-refresh unavailable: ${sanitizeTerminalLine(error instanceof Error ? error.message : String(error))}`,
+        );
+        onAutoRefreshEnabledChange(false);
+      }
+    };
+    void start();
+    return () => {
+      closed = true;
+      abort.abort();
+      watchController?.close();
+      deferredAutoRefresh.current = false;
+      for (const resolve of deferredRefreshResolvers.current.splice(0)) resolve(false);
+    };
+  }, [
+    autoRefreshEnabled,
+    controller,
+    onAutoRefreshEnabledChange,
+    refreshOnMountGeneration,
+    runtime,
+  ]);
+
+  useEffect(() => {
+    if (activeInteraction || !deferredAutoRefresh.current) return;
+    deferredAutoRefresh.current = false;
+    const resolvers = deferredRefreshResolvers.current.splice(0);
+    void controller.refresh().then((applied) => {
+      for (const resolve of resolvers) resolve(applied);
+    });
+  }, [activeInteraction, controller]);
 
   useEffect(() => {
     void controller.loadMore();

@@ -4,29 +4,39 @@ import { persistedViewPreferencesFromOptions } from "../../core/run/config";
 import type { HistoryRuntime } from "../history/types";
 import { LogController } from "./controller";
 
-function createRuntime(subjects = ["first", "second", "third"], notices: readonly string[] = []) {
+type TestHistoryEntry = string | { revisionId: string; subject?: string; logicalId?: string };
+
+function createRuntime(
+  subjects: TestHistoryEntry[] = ["first", "second", "third"],
+  notices: readonly string[] = [],
+) {
+  let historyEntries = subjects;
   let cursor = 0;
   let closeCount = 0;
   const makeSource = () => ({
     async read({ limit }: { limit: number; signal?: AbortSignal }) {
-      const selected = subjects.slice(cursor, cursor + Math.min(limit, 2));
+      const selected = historyEntries.slice(cursor, cursor + Math.min(limit, 2));
       cursor += selected.length;
       return {
-        commits: selected.map((subject) => ({
-          revisionId: subject,
-          displayId: subject.slice(0, 8),
-          parentRevisionIds: [],
-          subject,
-          authorName: "Ada",
-          authoredAt: "2026-01-01T00:00:00Z",
-          decorations: [],
-        })),
-        done: cursor >= subjects.length,
+        commits: selected.map((entry) => {
+          const commit = typeof entry === "string" ? { revisionId: entry, subject: entry } : entry;
+          return {
+            revisionId: commit.revisionId,
+            displayId: commit.revisionId.slice(0, 8),
+            parentRevisionIds: [],
+            subject: commit.subject ?? commit.revisionId,
+            ...(commit.logicalId ? { logicalId: commit.logicalId } : {}),
+            authorName: "Ada",
+            authoredAt: "2026-01-01T00:00:00Z",
+            decorations: [],
+          };
+        }),
+        done: cursor >= historyEntries.length,
       };
     },
     async close() {},
   });
-  let source = makeSource();
+  let source: HistoryRuntime["source"] = makeSource();
   const runtime: HistoryRuntime = {
     input: {
       kind: "history",
@@ -52,14 +62,23 @@ function createRuntime(subjects = ["first", "second", "third"], notices: readonl
     },
     async reopenSource() {
       cursor = 0;
-      source = makeSource();
-      return source;
+      return makeSource();
+    },
+    async acceptSource(nextSource) {
+      source = nextSource;
+      runtime.source = nextSource;
     },
     async close() {
       closeCount += 1;
     },
   };
-  return { runtime, closeCount: () => closeCount };
+  return {
+    runtime,
+    closeCount: () => closeCount,
+    setHistory(entries: TestHistoryEntry[]) {
+      historyEntries = entries;
+    },
+  };
 }
 
 describe("LogController", () => {
@@ -291,6 +310,79 @@ describe("LogController", () => {
     await controller.close();
   });
 
+  test("refresh restores a rewritten revision through its unique logical id", async () => {
+    const { runtime, setHistory } = createRuntime([
+      { revisionId: "old-head", logicalId: "head", subject: "head" },
+      { revisionId: "old-selected", logicalId: "change", subject: "selected" },
+    ]);
+    const controller = new LogController(runtime);
+    await controller.loadMore();
+    await controller.select(1, 5);
+
+    setHistory([
+      { revisionId: "new-head", logicalId: "head", subject: "head" },
+      { revisionId: "new-selected", logicalId: "change", subject: "selected" },
+    ]);
+    await controller.refresh();
+
+    expect(
+      controller.getSnapshot().rows[controller.getSnapshot().selected]?.commit.revisionId,
+    ).toBe("new-selected");
+    expect(controller.getSnapshot().notice).toBe("History refreshed.");
+    await controller.close();
+  });
+
+  test("refresh announces fallback to a surviving range anchor", async () => {
+    const { runtime, setHistory } = createRuntime([
+      { revisionId: "anchor", logicalId: "anchor", subject: "anchor" },
+      { revisionId: "selected", logicalId: "selected", subject: "selected" },
+    ]);
+    const controller = new LogController(runtime);
+    await controller.loadMore();
+    await controller.select(0, 5);
+    controller.beginVisualSelection();
+    await controller.move(1, 5, { extend: true });
+
+    setHistory([{ revisionId: "anchor-rewritten", logicalId: "anchor", subject: "anchor" }]);
+    await controller.refresh();
+
+    expect(
+      controller.getSnapshot().rows[controller.getSnapshot().selected]?.commit.revisionId,
+    ).toBe("anchor-rewritten");
+    expect(controller.getSnapshot()).toMatchObject({
+      selectionAnchor: null,
+      visualSelectionActive: false,
+      notice: "Couldn’t uniquely identify selected change; moved to range anchor.",
+    });
+    await controller.close();
+  });
+
+  test("refresh refuses an ambiguous logical id and announces newest-row fallback", async () => {
+    const { runtime, setHistory } = createRuntime([
+      { revisionId: "old-head", logicalId: "head", subject: "head" },
+      { revisionId: "old-selected", logicalId: "change", subject: "selected" },
+    ]);
+    const controller = new LogController(runtime);
+    await controller.loadMore();
+    await controller.select(1, 5);
+
+    setHistory([
+      { revisionId: "new-head", logicalId: "head", subject: "head" },
+      { revisionId: "split-a", logicalId: "change", subject: "split a" },
+      { revisionId: "middle", logicalId: "middle", subject: "middle" },
+      { revisionId: "split-b", logicalId: "change", subject: "split b" },
+    ]);
+    await controller.refresh();
+
+    expect(
+      controller.getSnapshot().rows[controller.getSnapshot().selected]?.commit.revisionId,
+    ).toBe("new-head");
+    expect(controller.getSnapshot().notice).toBe(
+      "Couldn’t uniquely identify selected change; moved to newest change.",
+    );
+    await controller.close();
+  });
+
   test("entering visual selection during refresh preserves the new mode", async () => {
     const { runtime } = createRuntime(["one", "two", "three"]);
     const reopenSource = runtime.reopenSource.bind(runtime);
@@ -353,7 +445,7 @@ describe("LogController", () => {
 
     const refresh = controller.refresh();
     await started;
-    expect(controller.getSnapshot().rows).toHaveLength(0);
+    expect(controller.getSnapshot().rows).toHaveLength(2);
     controller.beginVisualSelection();
     release();
     await refresh;
@@ -524,5 +616,231 @@ describe("LogController", () => {
     await controller.close();
     await controller.close();
     expect(closeCount()).toBe(1);
+  });
+
+  test("stages deep selection pages before publishing the replacement", async () => {
+    const entries = ["one", "two", "three", "four", "five"];
+    const { runtime, setHistory } = createRuntime(entries);
+    const controller = new LogController(runtime);
+    await controller.loadMore();
+    await controller.loadMore();
+    await controller.loadMore();
+    await controller.select(4, 3);
+    const originalRows = controller.getSnapshot().rows;
+    setHistory(["new-head", "new-two", "new-three", "new-four", "five"]);
+
+    const reopenSource = runtime.reopenSource.bind(runtime);
+    let release!: () => void;
+    let markSecondRead!: () => void;
+    const secondReadStarted = new Promise<void>((resolve) => {
+      markSecondRead = resolve;
+    });
+    const secondReadGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    runtime.reopenSource = async (signal) => {
+      const source = await reopenSource(signal);
+      let reads = 0;
+      return {
+        async read(options) {
+          reads += 1;
+          if (reads === 2) {
+            markSecondRead();
+            await secondReadGate;
+          }
+          return source.read(options);
+        },
+        close: () => source.close(),
+      };
+    };
+
+    const refreshing = controller.refresh();
+    await secondReadStarted;
+    expect(controller.getSnapshot().rows).toEqual(originalRows);
+    release();
+    expect(await refreshing).toBeTrue();
+    expect(controller.getSnapshot().rows.map((row) => row.commit.revisionId)).toEqual([
+      "new-head",
+      "new-two",
+      "new-three",
+      "new-four",
+      "five",
+    ]);
+    expect(
+      controller.getSnapshot().rows[controller.getSnapshot().selected]?.commit.revisionId,
+    ).toBe("five");
+    await controller.close();
+  });
+
+  test("defers when an interaction starts during deep selection staging", async () => {
+    const { runtime } = createRuntime(["one", "two", "three", "four", "five"]);
+    const controller = new LogController(runtime);
+    await controller.loadMore();
+    await controller.loadMore();
+    await controller.loadMore();
+    await controller.select(4, 3);
+    const originalRows = controller.getSnapshot().rows;
+    const originalSource = runtime.source;
+    const reopenSource = runtime.reopenSource.bind(runtime);
+    let release!: () => void;
+    let markSecondRead!: () => void;
+    const secondReadStarted = new Promise<void>((resolve) => {
+      markSecondRead = resolve;
+    });
+    const secondReadGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    runtime.reopenSource = async (signal) => {
+      const source = await reopenSource(signal);
+      let reads = 0;
+      return {
+        async read(options) {
+          reads += 1;
+          if (reads === 2) {
+            markSecondRead();
+            await secondReadGate;
+          }
+          return source.read(options);
+        },
+        close: () => source.close(),
+      };
+    };
+    let interactionActive = false;
+
+    const refreshing = controller.refresh(() => !interactionActive);
+    await secondReadStarted;
+    interactionActive = true;
+    release();
+
+    expect(await refreshing).toBeFalse();
+    expect(controller.getSnapshot().rows).toEqual(originalRows);
+    expect(runtime.source).toBe(originalSource);
+    await controller.close();
+  });
+
+  test("keeps the previous source and rows when a later staged page fails", async () => {
+    const { runtime } = createRuntime(["one", "two", "three", "four", "five"]);
+    const controller = new LogController(runtime);
+    await controller.loadMore();
+    await controller.loadMore();
+    await controller.loadMore();
+    await controller.select(4, 3);
+    const originalRows = controller.getSnapshot().rows;
+    const originalSource = runtime.source;
+    const reopenSource = runtime.reopenSource.bind(runtime);
+    runtime.reopenSource = async (signal) => {
+      const source = await reopenSource(signal);
+      let reads = 0;
+      return {
+        async read(options) {
+          reads += 1;
+          if (reads === 2) throw new Error("second replacement page failed");
+          return source.read(options);
+        },
+        close: () => source.close(),
+      };
+    };
+
+    expect(await controller.refresh()).toBeFalse();
+    expect(controller.getSnapshot().rows).toEqual(originalRows);
+    expect(controller.getSnapshot().notice).toBe("second replacement page failed");
+    expect(runtime.source).toBe(originalSource);
+    await controller.close();
+  });
+
+  test("clears a canceled page indicator when replacement refresh fails", async () => {
+    const { runtime } = createRuntime(["one", "two", "three", "four"]);
+    const originalSource = runtime.source;
+    let release!: () => void;
+    let markStarted!: () => void;
+    let reads = 0;
+    const readStarted = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const readGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    runtime.source = {
+      async read(options) {
+        reads += 1;
+        if (reads === 2) {
+          markStarted();
+          await readGate;
+        }
+        return originalSource.read(options);
+      },
+      close: () => originalSource.close(),
+    };
+    runtime.reopenSource = async () => {
+      throw new Error("replacement unavailable");
+    };
+    const controller = new LogController(runtime);
+    await controller.loadMore();
+
+    const loading = controller.loadMore();
+    await readStarted;
+    const refreshing = controller.refresh();
+    release();
+    await Promise.all([loading, refreshing]);
+
+    expect(controller.getSnapshot()).toMatchObject({
+      loading: false,
+      notice: "replacement unavailable",
+    });
+    await controller.close();
+  });
+
+  test("keeps the current rows and source when a replacement page fails", async () => {
+    const { runtime } = createRuntime(["first", "second"]);
+    const controller = new LogController(runtime);
+    await controller.loadMore();
+    const previousSource = controller.getSnapshot().rows;
+    runtime.reopenSource = async () => ({
+      async read() {
+        throw new Error("replacement read failed");
+      },
+      async close() {},
+    });
+
+    expect(await controller.refresh()).toBeFalse();
+    expect(controller.getSnapshot().rows).toEqual(previousSource);
+    expect(controller.getSnapshot().notice).toBe("replacement read failed");
+    await controller.close();
+  });
+
+  test("does not apply a replacement when an interaction starts during its read", async () => {
+    const { runtime } = createRuntime(["first", "second"]);
+    const reopenSource = runtime.reopenSource.bind(runtime);
+    let release!: () => void;
+    let markStarted!: () => void;
+    const readStarted = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const readGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const controller = new LogController(runtime);
+    await controller.loadMore();
+    const originalRows = controller.getSnapshot().rows;
+    runtime.reopenSource = async (signal) => {
+      const replacement = await reopenSource(signal);
+      return {
+        async read(options) {
+          markStarted();
+          await readGate;
+          return replacement.read(options);
+        },
+        close: () => replacement.close(),
+      };
+    };
+    let interactionActive = false;
+    const refreshing = controller.refresh(() => !interactionActive);
+    await readStarted;
+    interactionActive = true;
+    release();
+
+    expect(await refreshing).toBeFalse();
+    expect(controller.getSnapshot().rows).toEqual(originalRows);
+    await controller.close();
   });
 });

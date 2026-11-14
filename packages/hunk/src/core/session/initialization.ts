@@ -17,17 +17,21 @@ export interface InteractiveSessionInitialization {
   theme: SessionThemeInitialization;
   /** Resolved launch preferences that routed review surfaces may update in memory. */
   viewPreferences: PersistedViewPreferences;
+  /** Initial history watcher state; the session host owns later F10 overrides. */
+  historyAutoRefreshEnabled?: boolean;
 }
 
 /** Package finalized cross-surface inputs into one interactive-session launch record. */
 export function createInteractiveSessionInitialization({
   theme,
   viewPreferences,
+  historyAutoRefreshEnabled,
 }: {
   theme: Omit<SessionThemeInitialization, "customThemes"> & {
     customThemes?: readonly NamedCustomThemeConfig[];
   };
   viewPreferences: PersistedViewPreferences;
+  historyAutoRefreshEnabled?: boolean;
 }): InteractiveSessionInitialization {
   return {
     theme: {
@@ -36,5 +40,6 @@ export function createInteractiveSessionInitialization({
       customThemes: theme.customThemes ?? [],
     },
     viewPreferences,
+    ...(historyAutoRefreshEnabled === undefined ? {} : { historyAutoRefreshEnabled }),
   };
 }

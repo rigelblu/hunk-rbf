@@ -15,6 +15,7 @@ import {
   countJjReviewCommits,
   loadJjReviewCommits,
   openJjHistory,
+  getJjHistoryWatchSignature,
   planJjHistoryRangeReview,
 } from "./history";
 import { readJjFileSource } from "./source";
@@ -178,6 +179,23 @@ export function createJjVcsAdapter({ jjExecutable = "jj" }: Readonly<JjVcsAdapte
     history: {
       open(input, { cwd }) {
         return openJjHistory(input, { cwd, jjExecutable });
+      },
+      watchSignature(input, { cwd, signal }) {
+        return getJjHistoryWatchSignature(input, { cwd, jjExecutable, signal });
+      },
+      watchPlan(_input, { cwd }) {
+        const opHeads = join(cwd, ".jj", "repo", "op_heads");
+        return {
+          coverage: "hybrid" as const,
+          targets: [
+            {
+              kind: "directory-tree" as const,
+              directory: opHeads,
+              ignoredRoots: [],
+              sources: ["vcs-metadata" as const],
+            },
+          ],
+        };
       },
       // JJ's single-revision diff compares ordinary commits with their parent,
       // merges with their merged-parent tree, and first commits with the root.

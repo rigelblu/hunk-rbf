@@ -101,6 +101,35 @@ export function buildJjHistoryArgs(input: ExtensionVcsHistoryInput) {
   return args;
 }
 
+/** Fingerprint the visible commit fields and decorations selected by the same Jujutsu revset. */
+export async function getJjHistoryWatchSignature(
+  input: ExtensionVcsHistoryInput,
+  { cwd, jjExecutable = "jj", signal }: JjHistoryOptions,
+) {
+  const result = await runAbortableCommand(
+    [
+      jjExecutable,
+      "--ignore-working-copy",
+      "--no-pager",
+      "--color",
+      "never",
+      "log",
+      "--no-graph",
+      "--revisions",
+      buildJjHistoryRevset(input),
+      ...(input.maxCount !== undefined ? ["--limit", String(input.maxCount)] : []),
+      "--template",
+      JJ_HISTORY_TEMPLATE,
+      ...(input.pathspecs?.length ? ["--", ...input.pathspecs] : []),
+    ],
+    { cwd, signal },
+  );
+  if (result.exitCode !== 0) {
+    throw new Error(result.stderr.trim() || "Jujutsu could not read history.");
+  }
+  return result.stdout;
+}
+
 /** Split a Jujutsu description into the medium-format subject and body fields. */
 function splitDescription(description: string) {
   const normalized = description.endsWith("\n") ? description.slice(0, -1) : description;

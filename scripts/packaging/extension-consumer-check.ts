@@ -44,7 +44,7 @@ import type {
   ExtensionStatusSpan,
 } from "hunkdiff/extension";
 
-const apiVersion: 28 = HUNK_EXTENSION_API_VERSION;
+const apiVersion: 29 = HUNK_EXTENSION_API_VERSION;
 const document = {
   id: "generated",
   text: "const answer = 42;",

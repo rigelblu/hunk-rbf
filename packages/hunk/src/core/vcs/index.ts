@@ -8,6 +8,7 @@ import type {
   ExtensionVcsHistoryRangeSelection,
   ExtensionVcsHistoryReviewAction,
   ExtensionVcsHistoryReviewOptions,
+  ExtensionVcsWatchPlan,
 } from "../../extension-api/types";
 import type { CliInput } from "../run/commandInputs";
 import type {
@@ -208,6 +209,29 @@ export async function planVcsHistoryRangeReview(
     ]);
   }
   return await adapter.history.planRangeReview(selection, context, options);
+}
+
+/** Build history watch hints when the selected provider exposes a signature. */
+export function getVcsHistoryWatchPlan(
+  adapter: VcsAdapter,
+  input: ExtensionVcsHistoryInput,
+  context: VcsLoadContext,
+): ExtensionVcsWatchPlan | undefined {
+  const history = adapter.history;
+  if (!history?.watchSignature) return undefined;
+  return history.watchPlan?.(input, context) ?? { coverage: "poll-only", targets: [] };
+}
+
+/** Read the selected provider's history fingerprint. */
+export function getVcsHistoryWatchSignature(
+  adapter: VcsAdapter,
+  input: ExtensionVcsHistoryInput,
+  context: VcsLoadContext,
+): string | Promise<string> {
+  if (!adapter.history?.watchSignature) {
+    throw new Error(`${adapter.name} does not support history watch signatures.`);
+  }
+  return adapter.history.watchSignature(input, context);
 }
 
 /** Build an adapter event plan, falling back to signature polling. */

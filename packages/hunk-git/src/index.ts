@@ -25,6 +25,7 @@ import {
   countGitReviewCommits,
   loadGitReviewCommits,
   openGitHistory,
+  getGitHistoryWatchSignature,
   planGitHistoryRangeReview,
 } from "./history";
 import { gitEndpointSourceSpec, readGitFileSource } from "./source";
@@ -355,6 +356,19 @@ export function createGitVcsAdapter({
     history: {
       open(input, { cwd }) {
         return openGitHistory(input, { cwd, gitExecutable });
+      },
+      watchSignature(input, { cwd, signal }) {
+        return getGitHistoryWatchSignature(input, { cwd, gitExecutable, signal });
+      },
+      watchPlan(_input, cwdContext) {
+        const metadata = resolveGitMetadata(
+          { kind: "show", options: {} },
+          { cwd: cwdContext.cwd, gitExecutable },
+        );
+        return {
+          coverage: "hybrid",
+          targets: buildGitMetadataTargets(metadata.gitDir, metadata.commonDir),
+        };
       },
       planReview(commit, _context?: unknown, options?: { parentRevisionId?: string }) {
         const parent = options?.parentRevisionId ?? commit.parentRevisionIds[0];

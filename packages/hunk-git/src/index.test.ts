@@ -27,6 +27,45 @@ describe("GitVcsAdapter published surface", () => {
     // Git is the detection baseline every other backend positions against.
     expect(GitVcsAdapter.detectionPriority).toBe(0);
   });
+
+  test("ignores refs outside a bounded history query", async () => {
+    const repo = createTempRepo("hunk-git-history-watch-bounded-");
+    writeFileSync(join(repo, "file.txt"), "first\n");
+    git(repo, "add", "file.txt");
+    git(repo, "commit", "-m", "first");
+    writeFileSync(join(repo, "file.txt"), "second\n");
+    git(repo, "commit", "-am", "second");
+    const input = { maxCount: 1 };
+    const before = await GitVcsAdapter.history!.watchSignature!(input, { cwd: repo });
+
+    git(repo, "branch", "older-change", "HEAD~1");
+    const afterUnrelatedRef = await GitVcsAdapter.history!.watchSignature!(input, { cwd: repo });
+    git(repo, "branch", "visible-change", "HEAD");
+    const afterVisibleRef = await GitVcsAdapter.history!.watchSignature!(input, { cwd: repo });
+
+    expect(afterUnrelatedRef).toBe(before);
+    expect(afterVisibleRef).not.toBe(before);
+  });
+
+  test("watches Git metadata and fingerprints the selected history", async () => {
+    const repo = createTempRepo("hunk-git-history-watch-");
+    writeFileSync(join(repo, "file.txt"), "first\n");
+    git(repo, "add", "file.txt");
+    git(repo, "commit", "-m", "first");
+    const before = await GitVcsAdapter.history!.watchSignature!({}, { cwd: repo });
+    const plan = GitVcsAdapter.history!.watchPlan!({}, { cwd: repo });
+    git(repo, "branch", "feature");
+    const afterRefOnlyChange = await GitVcsAdapter.history!.watchSignature!({}, { cwd: repo });
+
+    writeFileSync(join(repo, "file.txt"), "second\n");
+    git(repo, "commit", "-am", "second");
+    const after = await GitVcsAdapter.history!.watchSignature!({}, { cwd: repo });
+
+    expect(plan.coverage).toBe("hybrid");
+    expect(plan.targets.length).toBeGreaterThan(0);
+    expect(afterRefOnlyChange).not.toBe(before);
+    expect(after).not.toBe(before);
+  });
 });
 
 const tempDirs: string[] = [];
