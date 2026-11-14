@@ -13,8 +13,8 @@ function bundledMetadata(id: string) {
 }
 
 describe("runExtensionFactory", () => {
-  test("advertises history watch hooks through extension API v29", () => {
-    expect(HUNK_EXTENSION_API_VERSION).toBe(29);
+  test("advertises history revision emptiness through extension API v30", () => {
+    expect(HUNK_EXTENSION_API_VERSION).toBe(30);
   });
 
   test("applies a synchronous factory before returning, with nothing to await", () => {
@@ -1381,5 +1381,125 @@ describe("toInternalVcsAdapter history boundary", () => {
     await expect(source.read({ limit: 1 })).rejects.toThrow(
       "VCS history returned parent parent before child child.",
     );
+  });
+
+  test("preserves validated isEmpty true and false through real extension registration and history source", async () => {
+    let getterReads = 0;
+    const baseCommit = {
+      revisionId: "1".repeat(40),
+      displayId: "11111111",
+      parentRevisionIds: [],
+      subject: "Empty revision",
+      body: "Semantic body.",
+      authorName: "Ada Lovelace",
+      authorEmail: "ada@example.com",
+      authoredAt: "2026-01-01T00:00:00Z",
+      decorations: [],
+      logicalId: "change-1",
+    };
+    const emptyCommit = {
+      ...baseCommit,
+      revisionId: "2".repeat(40),
+      displayId: "22222222",
+      get isEmpty() {
+        getterReads += 1;
+        return true;
+      },
+    };
+    const nonemptyCommit = {
+      ...baseCommit,
+      revisionId: "3".repeat(40),
+      displayId: "33333333",
+      isEmpty: false,
+    };
+    const legacyCommit = {
+      ...baseCommit,
+      revisionId: "4".repeat(40),
+      displayId: "44444444",
+    };
+
+    const registry = createEmptyExtensionRegistry();
+    const issues: ExtensionLoadIssue[] = [];
+    runExtensionFactory({
+      metadata: bundledMetadata("boundary-vcs"),
+      registry,
+      issues,
+      factory: (hunk) => {
+        hunk.registerVcsAdapter({
+          id: "boundary-vcs",
+          name: "Boundary VCS",
+          detect: () => null,
+          history: {
+            open: () => ({
+              read: async () => ({
+                commits: [emptyCommit, nonemptyCommit, legacyCommit],
+                done: true,
+              }),
+              close() {},
+            }),
+            planReview: (selected) => ({
+              kind: "revision-show",
+              revisionId: selected.revisionId,
+            }),
+          },
+        });
+      },
+    });
+
+    expect(issues).toEqual([]);
+    const adapter = registry.vcsAdapters[0]?.adapter;
+    expect(adapter).toBeDefined();
+    const source = await adapter!.history!.open({}, { cwd: "/repo" });
+    const result = await source.read({ limit: 10 });
+    await source.close();
+
+    expect(getterReads).toBe(1);
+    expect(result.commits).toHaveLength(3);
+    // Known empty
+    expect(result.commits[0]!.isEmpty).toBe(true);
+    expect(result.commits[0]!.subject).toBe("Empty revision");
+    expect(result.commits[0]!.body).toBe("Semantic body.");
+    expect(result.commits[0]!.logicalId).toBe("change-1");
+    // Known nonempty
+    expect(result.commits[1]!.isEmpty).toBe(false);
+    expect(result.commits[1]!.subject).toBe("Empty revision");
+    // Legacy omission remains undefined
+    expect(result.commits[2]!.isEmpty).toBeUndefined();
+    expect("isEmpty" in result.commits[2]!).toBe(false);
+  });
+
+  test("rejects non-boolean isEmpty values without modifying semantic data", async () => {
+    const invalidValues = ["true", "false", 1, 0, null, {}, []];
+    for (const invalid of invalidValues) {
+      const commit = {
+        revisionId: "5".repeat(40),
+        displayId: "55555555",
+        parentRevisionIds: [],
+        subject: "Subject unchanged",
+        authorName: "Ada",
+        authoredAt: "2026-01-01T00:00:00Z",
+        decorations: [],
+        isEmpty: invalid as never,
+      };
+      const adapter = toInternalVcsAdapter({
+        id: "invalid-empty-vcs",
+        name: "Invalid Empty VCS",
+        detect: () => null,
+        history: {
+          open: () => ({
+            read: async () => ({ commits: [commit], done: true }),
+            close() {},
+          }),
+          planReview: (selected) => ({
+            kind: "revision-show",
+            revisionId: selected.revisionId,
+          }),
+        },
+      });
+      const source = await adapter.history!.open({}, { cwd: "/repo" });
+      await expect(source.read({ limit: 1 })).rejects.toThrow(
+        "VCS history commit isEmpty must be a boolean when present.",
+      );
+    }
   });
 });

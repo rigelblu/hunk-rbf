@@ -6,6 +6,7 @@ import {
   renderHistoryConvergence,
   renderHistoryGraph,
 } from "../history/staticProjection";
+import { formatHistoryTitle } from "../history/title";
 import { fitText, measureTextWidth } from "../lib/text";
 import type { LogPresentation } from "./controller";
 import { formatHistoryRelativeTime, resolveHistoryAuthorLabel } from "./formatting";
@@ -162,7 +163,7 @@ export function projectResponsiveLogRow({
     leftWidth,
     rightWidth,
     columnGap,
-    title: fitText(sanitizeTerminalLine(row.commit.subject).replaceAll("\t", " "), leftWidth),
+    title: formatHistoryTitle(row.commit, leftWidth),
     author: fittedAuthor,
     relativeTime: fittedRelativeTime,
     metadata,

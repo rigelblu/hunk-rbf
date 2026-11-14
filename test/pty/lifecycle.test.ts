@@ -3,6 +3,7 @@ import { dlopen, FFIType, ptr, type Library } from "bun:ffi";
 import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, existsSync, read, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createServer } from "node:net";
 import { createPtyHarness } from "./harness";
 
 const harness = createPtyHarness();
@@ -16,6 +17,37 @@ afterEach(() => {
 interface ChildExit {
   code: number | null;
   signal: NodeJS.Signals | null;
+}
+
+/** Reserve a launch-owned broker port so lifecycle checks do not contact a user's daemon. */
+async function reserveTestBrokerPort() {
+  const listener = createServer();
+  await new Promise<void>((resolve, reject) => {
+    listener.once("error", reject);
+    listener.listen(0, "127.0.0.1", resolve);
+  });
+  const address = listener.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  await new Promise<void>((resolve, reject) =>
+    listener.close((error) => (error ? reject(error) : resolve())),
+  );
+  if (!port) throw new Error("Failed to reserve a broker port for the lifecycle test.");
+  return port;
+}
+
+/** Consume shutdown output until stopped; an unread PTY can block the child before it exits. */
+function drainPtyOutput(fd: number) {
+  const buffer = Buffer.alloc(64 * 1024);
+  let stopped = false;
+  const readNext = () => {
+    read(fd, buffer, 0, buffer.length, null, (error, bytesRead) => {
+      if (!stopped && !error && bytesRead > 0) readNext();
+    });
+  };
+  readNext();
+  return () => {
+    stopped = true;
+  };
 }
 
 /** Wait for a child to exit and preserve whether it returned or died from a signal. */
@@ -259,6 +291,7 @@ describe("PTY lifecycle", () => {
     test.skipIf(process.platform === "win32")(`exits cleanly on ${signal}`, async () => {
       const fixture = harness.createLongWrapFilePair();
       const runtimeDir = harness.createIsolatedConfigHome();
+      const brokerPort = await reserveTestBrokerPort();
       // Signal shutdown belongs to the interactive runner; piped stdout intentionally selects
       // one-shot static output instead.
       const { master, slave } = openPtyPair();
@@ -276,22 +309,25 @@ describe("PTY lifecycle", () => {
           TERM: "xterm-256color",
           XDG_CONFIG_HOME: harness.createIsolatedConfigHome(),
           XDG_RUNTIME_DIR: runtimeDir,
-          // Brokering exposes an issue: disabled, passes on unfixed code.
           HUNK_MCP_DISABLE: "0",
+          HUNK_MCP_PORT: String(brokerPort),
           HUNK_DISABLE_UPDATE_NOTICE: "1",
         },
       });
       closeSync(slave);
 
       let masterClosed = false;
+      let stopDraining: () => void = () => undefined;
       const closeMaster = () => {
         if (masterClosed) return;
         masterClosed = true;
+        stopDraining();
         closeSync(master);
       };
 
       try {
         await waitForPtyOutput(master, /this is a very long wrapped line/);
+        stopDraining = drainPtyOutput(master);
         process.kill(child.pid!, signal);
 
         await expect(waitForChildExit(child)).resolves.toEqual({ code: 0, signal: null });

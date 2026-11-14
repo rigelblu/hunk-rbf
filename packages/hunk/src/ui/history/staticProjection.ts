@@ -3,6 +3,8 @@ import type { NamedCustomThemeConfig } from "../../extension-api/types";
 import { sanitizeTerminalLine, sanitizeTerminalText } from "../../lib/terminalText";
 import { fitText, measureTextWidth } from "../lib/text";
 import { resolveTheme, type AppTheme } from "../themes";
+import { formatHistoryTitle, splitHistoryTitle } from "./title";
+import { resolveHistoryTitlePalette } from "./titlePalette";
 
 export interface HistoryProjectionOptions {
   ascii: boolean;
@@ -151,7 +153,7 @@ export function projectHistoryRow(row: HistoryGraphRow, options: HistoryProjecti
   const theme = options.theme ?? resolveHistoryTheme(undefined);
   const graph = renderHistoryGraph(row, options.ascii);
   const displayId = sanitizeTerminalLine(row.commit.displayId).replaceAll("\t", " ");
-  const subject = sanitizeTerminalLine(row.commit.subject).replaceAll("\t", " ");
+  const subject = formatHistoryTitle(row.commit);
   const refs = formatHistoryDecorations(row);
   const author = sanitizeTerminalLine(row.commit.authorName).replaceAll("\t", " ");
   const date = row.commit.authoredAt.slice(0, 10);
@@ -171,13 +173,18 @@ export function projectHistoryRow(row: HistoryGraphRow, options: HistoryProjecti
     ];
     suffix =
       candidates.find((candidate) => measureTextWidth(candidate) <= available) ??
-      fitText(subject, available, "…");
+      formatHistoryTitle(row.commit, available, "…");
   }
   const plain = clampLine(`${graphPrefix}${hashPrefix}${suffix}`, options.width);
   if (!options.color) return plain;
   const graphText = plain.slice(0, graphPrefix.length);
   const hashText = plain.slice(graphPrefix.length, graphPrefix.length + hashPrefix.length);
-  return `${styledGraph(graphText, theme)}${styled(hashText, theme.accent, true)}${plain.slice(graphPrefix.length + hashPrefix.length)}`;
+  const title = plain.slice(graphPrefix.length + hashPrefix.length);
+  const palette = resolveHistoryTitlePalette(theme);
+  const coloredTitle = splitHistoryTitle(row.commit, title)
+    .map((span) => styled(span.text, palette[span.role], span.role !== "text"))
+    .join("");
+  return `${styledGraph(graphText, theme)}${styled(hashText, theme.accent, true)}${coloredTitle}`;
 }
 
 /** Render a themed standalone lane-collapse line for compact static output. */
@@ -200,7 +207,16 @@ export function projectHistoryRecord(row: HistoryGraphRow, options: HistoryProje
     ? ` <${sanitizeTerminalLine(row.commit.authorEmail).replaceAll("\t", " ")}>`
     : "";
   const date = sanitizeTerminalLine(row.commit.authoredAt).replace("T", " ");
-  const subject = sanitizeTerminalLine(row.commit.subject).replaceAll("\t", " ");
+  const titlePrefix = `${continuation ? `${continuation}  ` : "   "}    `;
+  const titleWidth =
+    options.width === undefined
+      ? undefined
+      : Math.max(0, options.width - measureTextWidth(titlePrefix));
+  const subject = formatHistoryTitle(
+    row.commit,
+    row.commit.isEmpty === true ? titleWidth : undefined,
+    "…",
+  );
   const body = row.commit.body
     ? sanitizeTerminalText(row.commit.body, { preserveNewlines: true, preserveTabs: false }).split(
         "\n",
@@ -213,7 +229,7 @@ export function projectHistoryRecord(row: HistoryGraphRow, options: HistoryProje
     `${prefix(continuation)}Author: ${authorName}${authorEmail}`,
     `${prefix(continuation)}Date:   ${date}`,
     prefix(continuation).trimEnd(),
-    `${prefix(continuation)}    ${subject}`,
+    `${titlePrefix}${subject}`,
     ...(body.length
       ? [
           prefix(continuation).trimEnd(),
@@ -224,7 +240,14 @@ export function projectHistoryRecord(row: HistoryGraphRow, options: HistoryProje
   const convergence = renderHistoryConvergence(row, options.ascii);
   if (convergence) plainLines.push(convergence);
   plainLines.push(prefix(continuation).trimEnd());
-  const fitted = plainLines.map((line) => clampLine(line, options.width));
+  // Known-empty titles reserve marker cells; other titles retain whole-line grapheme fitting.
+  const fitted = plainLines.map((line, index) =>
+    row.commit.isEmpty === true &&
+    index === 4 &&
+    (options.width === undefined || options.width >= measureTextWidth(titlePrefix))
+      ? line
+      : clampLine(line, options.width),
+  );
   if (!options.color) return fitted;
   return fitted.map((line, index) => {
     if (!line) return line;
@@ -237,6 +260,14 @@ export function projectHistoryRecord(row: HistoryGraphRow, options: HistoryProje
       return `${styledGraph(lane, theme)}${rest.slice(0, hashStart)}${styled(rest.slice(hashStart, hashEnd), theme.accent, true)}${styled(rest.slice(hashEnd), theme.addedSignColor, true)}`;
     }
     const color = index >= 4 ? theme.text : theme.muted;
+    if (index === 4) {
+      const indent = rest.slice(0, 4);
+      const palette = resolveHistoryTitlePalette(theme);
+      const title = splitHistoryTitle(row.commit, rest.slice(4))
+        .map((span) => styled(span.text, palette[span.role], true))
+        .join("");
+      return `${styledGraph(lane, theme)}${styled(indent, theme.text, true)}${title}`;
+    }
     return `${styledGraph(lane, theme)}${styled(rest, color, true)}`;
   });
 }

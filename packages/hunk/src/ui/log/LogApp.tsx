@@ -47,6 +47,8 @@ import {
 } from "./commands";
 import { ParentSelectorDialog } from "./ParentSelectorDialog";
 import { monochromeLogTheme, resolveInteractiveLogPalette } from "./colorPolicy";
+import { splitHistoryTitle } from "../history/title";
+import { resolveHistoryTitlePalette } from "../history/titlePalette";
 import { formatHistoryDay } from "./formatting";
 import { LOG_DAY_HEADER_HEIGHT, planLogViewportGeometry } from "./geometry";
 import { projectResponsiveLogRow, resolveLogResponsiveLayout } from "./responsiveLayout";
@@ -796,6 +798,11 @@ export function LogApp({
               width: terminal.width,
               now: relativeTimeNow,
             });
+            const titlePalette = resolveHistoryTitlePalette(
+              theme,
+              selected ? theme.selectedHunk : theme.background,
+              useColor,
+            );
             return (
               <box
                 key={row.commit.revisionId}
@@ -865,7 +872,13 @@ export function LogApp({
                       flexDirection: "column",
                     }}
                   >
-                    <text fg={theme.text}>{projected.title}</text>
+                    <text fg={theme.text}>
+                      {splitHistoryTitle(row.commit, projected.title).map((span, spanIndex) => (
+                        <span key={spanIndex} fg={titlePalette[span.role]}>
+                          {span.text}
+                        </span>
+                      ))}
+                    </text>
                     <CommitMetadataText
                       author={projected.author}
                       relativeTime={projected.relativeTime}

@@ -65,6 +65,8 @@ if (import.meta.main) {
       "build",
       "--compile",
       "--no-compile-autoload-bunfig",
+      // External extensions resolve their installed dependencies through package.json.
+      "--compile-autoload-package-json",
       ...(target ? [`--target=${target}`] : []),
       path.join(HUNK_SOURCE_ROOT, "main.tsx"),
       path.join(HUNK_SOURCE_ROOT, "highlightWorkerEntry.ts"),

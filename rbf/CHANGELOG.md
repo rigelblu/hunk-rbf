@@ -14,6 +14,30 @@ Local dogfood patch; remote integration and publication remain pending.
 
 - 2026-10-11 - feat (ux) | start interactive `hunk log` with automatic refresh enabled from user or repository config, while F10 remains a session-only override (#hk-85)
 
+# 🔵⋯ v0.10.1 (2026-10-11)
+
+Local dogfood amendment; remote integration and publication remain pending.
+
+## 🟠⋯ Improved for End Users
+
+- 2026-10-11 - feat (ux) | highlight `(empty)` and `(no description set)` labels in yellow while scanning history (#hk-91)
+
+# 🔵⋯ v0.10.0 (2026-10-11)
+
+Local dogfood release; remote integration and publication remain pending.
+
+## 🟠⋯ Added for End Users
+
+- 2026-10-11 - feat (ux) | recognize empty JJ revisions from the leading `(empty)` marker while scanning history, including revisions without descriptions (#hk-91)
+
+## 🟠⋯ Added for Technical Users
+
+- 2026-10-11 - feat (technical) | provide optional authoritative whole-revision emptiness to history consumers through extension API 30; omitted facts remain unknown (#hk-91)
+
+## 🟠⋯ Fixed for Technical Users
+
+- 2026-10-11 - fix (technical) | load installed package dependencies from external extensions in the compiled Hunk binary (#hk-91)
+
 # 🔵⋯ v0.9.0 (2026-10-10)
 
 ## 🟠⋯ Added for End Users

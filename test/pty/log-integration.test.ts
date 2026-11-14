@@ -792,8 +792,9 @@ describe("interactive hunk log", () => {
       await session.waitForText(/historyValue = 'second'/, { timeout: 15_000 });
       writeFileSync(join(cwd, "history.ts"), "export const historyValue = 'third';\n");
       git(cwd, ["commit", "-qam", "Third history commit"]);
-      const history = await returnToHistory(session);
-      expect(history).toContain("Third history commit");
+      await returnToHistory(session);
+      // The refresh can land after the return, so wait for it rather than reading once.
+      await session.waitForText(/Third history commit/, { timeout: 15_000 });
       await session.press("f10");
       await session.waitForText(/Auto-refresh history: on/, { timeout: 5_000 });
       await session.press("q");
