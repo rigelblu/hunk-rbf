@@ -85,3 +85,42 @@ describe("history lane planning", () => {
     expect(() => planHistoryPage([commit("same"), commit("same")])).toThrow("duplicate revision");
   });
 });
+
+test("HK-93 cutoff topology stays local across every page partition and repeated hidden parent", () => {
+  const entries = [
+    {
+      ...commit("merge", ["hidden-a", "hidden-b"]),
+      graphCutoffParentRevisionIds: ["hidden-a", "hidden-b"],
+    },
+    {
+      ...commit("sibling", ["hidden-a"]),
+      graphParentRevisionIds: [],
+      graphCutoffParentRevisionIds: ["hidden-a"],
+    },
+    commit("tip", ["later"]),
+    { ...commit("other", ["hidden-b"]), graphCutoffParentRevisionIds: ["hidden-b"] },
+    commit("later"),
+  ];
+  const whole = planHistoryPage(entries);
+  expect(whole.rows[0]!.cutoffLanes).toHaveLength(2);
+  expect(whole.rows[1]!.cutoffLanes).toHaveLength(1);
+  expect(whole.rows[3]!.cutoffLanes).toHaveLength(1);
+  for (let mask = 0; mask < 1 << (entries.length - 1); mask += 1) {
+    let checkpoint = createHistoryLaneCheckpoint();
+    const rows: typeof whole.rows = [];
+    let start = 0;
+    for (let index = 0; index < entries.length; index += 1) {
+      if (index === entries.length - 1 || mask & (1 << index)) {
+        const page = planHistoryPage(entries.slice(start, index + 1), checkpoint);
+        rows.push(...page.rows);
+        checkpoint = page.checkpoint;
+        start = index + 1;
+        expect(checkpoint.lanes).not.toContain("hidden-a");
+        expect(checkpoint.lanes).not.toContain("hidden-b");
+      }
+    }
+    expect(rows).toEqual(whole.rows);
+    expect(checkpoint).toEqual(whole.checkpoint);
+  }
+  expect(whole.rows[0]!.commit.parentRevisionIds).toEqual(["hidden-a", "hidden-b"]);
+});

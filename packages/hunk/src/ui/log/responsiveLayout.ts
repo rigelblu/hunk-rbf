@@ -5,6 +5,8 @@ import {
   renderHistoryContinuation,
   renderHistoryConvergence,
   renderHistoryGraph,
+  renderHistoryCutoffs,
+  renderHistoryCutoffConvergence,
 } from "../history/staticProjection";
 import { formatHistoryTitle } from "../history/title";
 import { fitText, measureTextWidth } from "../lib/text";
@@ -24,6 +26,8 @@ export interface LogResponsiveRow {
   continuation: string;
   convergence: string;
   graphWidth: number;
+  cutoffs: string[];
+  cutoffConvergence: string;
   leftWidth: number;
   rightWidth: number;
   columnGap: number;
@@ -157,9 +161,23 @@ export function projectResponsiveLogRow({
     : "";
   return {
     graph,
+    cutoffConvergence: presentation.graph
+      ? fitText(
+          renderHistoryCutoffConvergence(row, !presentation.unicode),
+          Math.max(0, graphWidth - 2),
+          "…",
+        )
+      : "",
     continuation,
     convergence,
     graphWidth,
+    cutoffs: (row.cutoffLanes ?? []).length
+      ? presentation.graph
+        ? renderHistoryCutoffs(row, !presentation.unicode).map((line) =>
+            graphContentWidth > 0 && measureTextWidth(line) <= graphContentWidth ? line : "~",
+          )
+        : (row.cutoffLanes ?? []).map(() => "~")
+      : [],
     leftWidth,
     rightWidth,
     columnGap,

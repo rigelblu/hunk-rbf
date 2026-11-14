@@ -10,7 +10,7 @@ Fork-specific product guidance for Hunk. The upstream project README remains at 
 
 ```text
 $ hunk --version
-hunk 0.23.0 (Hunk RBF 0.10.2)
+hunk 0.23.0 (Hunk RBF 0.11.0)
 ```
 
 The first number is the upstream Hunk release this fork is built against. The parenthetical is the fork's own release. They advance independently, so neither is "ahead" of the other — quote the whole line in a bug report and it says exactly which build you have.
@@ -36,6 +36,28 @@ One known consequence: the upstream `install.sh` already-current check reduces t
 - The fork release version lives in `rbf/RBF_VERSION`
 - The upstream package version lives in `packages/hunk/package.json`, which upstream owns for its packaging and synchronization
 - Local fork releases update `rbf/RBF_VERSION` and `rbf/CHANGELOG.md` together without rewriting upstream release metadata
+
+# 🔵⋯ Focus JJ working history
+
+Ordinary `hunk log --vcs jj` keeps the configured JJ `trunk()` revision and work on every
+visible branch while hiding older mainline ancestry. Protected branches and branches based
+before mainline remain visible. Filters and limits narrow that working history.
+
+Each deliberately omitted direct parent ends with a nonselectable `~` row. The explanation
+`~ older history hidden` appears once above the status line, or after static output. Graph
+mode preserves the connection; the ordinary timeline shows the same markers. If an entry
+is taller than the window, use Page Up/Down or the mouse wheel to scroll its cutoff rows.
+Arrow keys still select real commits, and Enter compares the selected commit with its real parent.
+
+When `trunk()` has no usable revision or resolves to several revisions, Hunk shows visible
+history and keeps an unavailable or ambiguous explanation above the status line. Static
+output writes it once to stderr, including when filters produce no commits. Invalid JJ
+configuration and process/read failures remain errors. A failed refresh retains the previous
+rows and their explanation.
+
+Use `hunk log --vcs jj --all` for full visible ancestry, or pass a revision/revset explicitly
+to inspect its ancestry. Those explicit requests keep their previous behavior. Git and
+Sapling history are unchanged. HK-93 is recorded in the local Hunk RBF 0.11.0 release; installation and remote publication remain pending.
 
 # 🔵⋯ Start history auto-refresh from config
 

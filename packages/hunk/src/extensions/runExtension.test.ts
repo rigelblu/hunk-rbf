@@ -13,8 +13,8 @@ function bundledMetadata(id: string) {
 }
 
 describe("runExtensionFactory", () => {
-  test("advertises history revision emptiness through extension API v30", () => {
-    expect(HUNK_EXTENSION_API_VERSION).toBe(30);
+  test("advertises optional history scope through extension API v31", () => {
+    expect(HUNK_EXTENSION_API_VERSION).toBe(31);
   });
 
   test("applies a synchronous factory before returning, with nothing to await", () => {
@@ -1502,4 +1502,131 @@ describe("toInternalVcsAdapter history boundary", () => {
       );
     }
   });
+});
+
+/** Exercise the real extension boundary with controlled optional metadata. */
+function createHk93TestAdapter(source: unknown) {
+  return toInternalVcsAdapter({
+    id: "hk93-test",
+    name: "Test",
+    detect: () => null,
+    history: {
+      open: () => source as never,
+      planReview: (commit) => ({ kind: "revision-show", revisionId: commit.revisionId }),
+    },
+  });
+}
+
+test("HK-93 history metadata snapshots scope and cutoff accessors once and copies caller arrays", async () => {
+  let scopes = 0,
+    cuts = 0,
+    boundaries = 0,
+    closed = 0;
+  const ids = ["hidden"];
+  const scope = {
+    kind: "bounded",
+    get boundaryRevisionId() {
+      boundaries++;
+      return "boundary";
+    },
+  };
+  const commit = {
+    revisionId: "child",
+    displayId: "child",
+    parentRevisionIds: ["hidden"],
+    graphParentRevisionIds: [],
+    subject: "Child",
+    authorName: "Ada",
+    authoredAt: "2026-10-10T00:00:00Z",
+    decorations: [],
+    get graphCutoffParentRevisionIds() {
+      cuts++;
+      return ids;
+    },
+  };
+  const source = await createHk93TestAdapter({
+    get scope() {
+      scopes++;
+      return scope;
+    },
+    read: async () => ({ commits: [commit], done: false }),
+    close() {
+      closed++;
+    },
+  }).history!.open({}, { cwd: "." });
+  const page = await source.read({ limit: 1 });
+  ids[0] = "mutated";
+  scope.kind = "mutated";
+  expect(source.scope).toEqual({ kind: "bounded", boundaryRevisionId: "boundary" });
+  expect(page.commits[0]?.graphCutoffParentRevisionIds).toEqual(["hidden"]);
+  expect([scopes, cuts, boundaries]).toEqual([1, 1, 1]);
+  await source.close();
+  expect(closed).toBe(1);
+});
+
+test("HK-93 history metadata rejects malformed scope with captured close once and primary error", async () => {
+  for (const scope of [
+    null,
+    { kind: "wrong" },
+    { kind: "bounded" },
+    { kind: "bounded", boundaryRevisionId: "bad\tid" },
+    { kind: "fallback", reason: "wrong" },
+  ]) {
+    let closed = 0;
+    await expect(
+      createHk93TestAdapter({
+        scope,
+        read: async () => ({ commits: [], done: true }),
+        close() {
+          closed++;
+          throw new Error("cleanup failed");
+        },
+      }).history!.open({}, { cwd: "." }),
+    ).rejects.toThrow(/scope|boundary/);
+    expect(closed).toBe(1);
+  }
+  let closed = 0;
+  await expect(
+    createHk93TestAdapter({
+      get scope() {
+        throw new Error("scope getter failed");
+      },
+      read: async () => ({ commits: [], done: true }),
+      close() {
+        closed++;
+      },
+    }).history!.open({}, { cwd: "." }),
+  ).rejects.toThrow("scope getter failed");
+  expect(closed).toBe(1);
+});
+
+test("HK-93 history metadata rejects false cuts, duplicates, reordering and ordinary overlap", async () => {
+  for (const [cuts, graph] of [
+    ["wrong", []],
+    [["nonparent"], []],
+    [["a", "a"], []],
+    [["b", "a"], []],
+    [["a"], ["a"]],
+  ] as const) {
+    let closed = 0;
+    const commit = {
+      revisionId: "child",
+      displayId: "child",
+      parentRevisionIds: ["a", "b"],
+      graphParentRevisionIds: graph,
+      graphCutoffParentRevisionIds: cuts,
+      subject: "Child",
+      authorName: "Ada",
+      authoredAt: "2026-10-10T00:00:00Z",
+      decorations: [],
+    };
+    const source = await createHk93TestAdapter({
+      read: async () => ({ commits: [commit], done: true }),
+      close() {
+        closed++;
+      },
+    }).history!.open({}, { cwd: "." });
+    await expect(source.read({ limit: 1 })).rejects.toThrow(/cutoff/);
+    expect(closed).toBe(1);
+  }
 });
