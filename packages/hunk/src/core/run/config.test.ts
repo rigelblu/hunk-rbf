@@ -1708,3 +1708,37 @@ describe("extension configuration", () => {
     ).toThrow(/\[extension.copy-as\] to contain a TOML table/);
   });
 });
+
+test("workspace visibility defaults on, layers config, and persists through the existing save", () => {
+  const home = createTempDir("hunk-workspace-config-home-");
+  const repo = createTempDir("hunk-workspace-config-repo-");
+  createRepo(repo);
+  const configPath = join(home, ".config", "hunk", "config.toml");
+  mkdirSync(join(home, ".config", "hunk"), { recursive: true });
+  const resolve = () =>
+    resolveConfiguredCliInput(
+      { kind: "show", ref: "HEAD", options: {} },
+      { cwd: repo, env: { HOME: home } },
+    );
+  expect(resolve().input.options.historyWorkspaceNames).toBe(true);
+  writeFileSync(configPath, "history_workspace_names = false\n");
+  expect(resolve().input.options.historyWorkspaceNames).toBe(false);
+  const base = {
+    mode: "auto",
+    showLineNumbers: true,
+    wrapLines: false,
+    showHunkHeaders: true,
+    showMenuBar: true,
+    showAgentNotes: false,
+    copyDecorations: false,
+    cursorLine: "row",
+    historyWorkspaceNames: true,
+  } as const;
+  const hidden = { ...base, historyWorkspaceNames: false };
+  expect(diffPersistedViewPreferences(base, hidden)).toEqual([
+    { configKey: "history_workspace_names", previousValue: "true", nextValue: "false" },
+  ]);
+  saveGlobalViewPreferences(hidden, { configPath });
+  expect(resolve().input.options.historyWorkspaceNames).toBe(false);
+  expect(readFileSync(configPath, "utf8")).toContain("history_workspace_names = false");
+});

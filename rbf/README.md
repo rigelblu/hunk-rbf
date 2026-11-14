@@ -10,7 +10,7 @@ Fork-specific product guidance for Hunk. The upstream project README remains at 
 
 ```text
 $ hunk --version
-hunk 0.23.0 (Hunk RBF 0.11.0)
+hunk 0.23.0 (Hunk RBF 0.12.0)
 ```
 
 The first number is the upstream Hunk release this fork is built against. The parenthetical is the fork's own release. They advance independently, so neither is "ahead" of the other — quote the whole line in a bug report and it says exactly which build you have.
@@ -146,3 +146,19 @@ Hunk composites partial alpha over the actual ordinary or moved diff row, then a
 The isolated HK-91 candidate shows `(empty)` before a JJ revision's description in interactive, compact, and medium history. JJ reports whether the whole revision contributes changes against its auto-merged parents. A described revision can be empty; an undescribed revision can contain changes. Ref, graph, and ASCII controls leave the empty label visible.
 
 Git reporting remains unknown in this slice. Hunk RBF product work covers JJ and Git; Sapling is out of scope. This candidate is separate from the installed release.
+
+# 🔵⋯ Identify workspace heads in JJ history
+
+HK-92 is recorded in local Hunk RBF 0.12.0. The accepted candidate is built and verified; installation and public delivery remain pending.
+
+Run `hunk log --vcs jj --all` to see where each workspace's recorded head sits in history. Repositories with multiple workspaces show names such as `@default` and `@feature` on their revisions. A repository with one workspace shows only the current-revision marker `@`.
+
+Several workspace names can share a revision. The separate `@` marker identifies the current revision; it does not identify which named workspace opened Hunk. A recorded head can be stale, so its label does not mean someone is actively working there.
+
+Interactive history uses two rows normally. Workspace names fit beside author/time when possible, with a separate current/bookmark group such as `(@, main)`. Names that need more space use one extra row, shared with any real graph join. Plain graph continuations add no row. An ending `…` marks a clipped list. **View → Decorations** controls their visibility. Press `r` to refresh, or enable **File → Auto-refresh history** to follow workspace moves. Refresh keeps the focused revision near its previous screen row; press **Home** to see new commits above it.
+
+`hunk log --vcs jj --all --static` uses the existing scrollback format. Terminal output fits the terminal width; output piped to a file includes every name.
+
+### Workspace-name visibility
+
+Use **View → Show workspace names** in history to hide or restore recorded workspace labels. It starts enabled. The current `(@)`, bookmarks and tags retain their existing visibility; **Show decorations** controls all labels. Hiding names removes a row they alone required; graph joins and other labels retain their space. When you save view preferences on quit, Hunk writes the top-level `history_workspace_names = false` or `true` setting. A repository with one workspace still omits its name.

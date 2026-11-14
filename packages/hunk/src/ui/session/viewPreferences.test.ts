@@ -50,3 +50,21 @@ test("projects every retained view preference into a fresh review bootstrap", ()
   });
   expect(bootstrap.initialMode).toBe("split");
 });
+
+test("retains the history workspace preference while preparing a routed review", () => {
+  const bootstrap = createTestVcsAppBootstrap({ files: [] });
+  const prefs: PersistedViewPreferences = {
+    mode: "auto",
+    showLineNumbers: true,
+    wrapLines: false,
+    showHunkHeaders: true,
+    showMenuBar: true,
+    showAgentNotes: false,
+    copyDecorations: false,
+    cursorLine: "row",
+    historyWorkspaceNames: false,
+  };
+  expect(applySessionViewPreferences(bootstrap, prefs).input.options.historyWorkspaceNames).toBe(
+    false,
+  );
+});

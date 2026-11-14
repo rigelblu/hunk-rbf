@@ -1630,3 +1630,63 @@ test("HK-93 history metadata rejects false cuts, duplicates, reordering and ordi
     expect(closed).toBe(1);
   }
 });
+
+test("workspace metadata is snapshotted once, retained on refs and rejected on other kinds", async () => {
+  let reads = 0;
+  const commit = {
+    revisionId: "a".repeat(40),
+    displayId: "aaaaaaaa",
+    parentRevisionIds: [],
+    subject: "Workspace",
+    authorName: "Ada",
+    authoredAt: "2026-01-01T00:00:00Z",
+    decorations: [
+      {
+        kind: "ref",
+        label: "@peer",
+        get workspaceName() {
+          reads += 1;
+          return reads === 1 ? "peer" : "changed";
+        },
+      },
+    ],
+  };
+  const open = (decorations: unknown) => {
+    const adapter = toInternalVcsAdapter({
+      id: "workspace-test",
+      name: "Workspace test",
+      detect: () => null,
+      history: {
+        open: () => ({
+          read: async () => ({ commits: [{ ...commit, decorations }], done: true }) as never,
+          close() {},
+        }),
+        planReview: (selected) => ({ kind: "revision-show", revisionId: selected.revisionId }),
+      },
+    });
+    return adapter.history!.open({}, { cwd: process.cwd() });
+  };
+  const source = await open(commit.decorations);
+  try {
+    const page = await source.read({ limit: 1 });
+    expect(page.commits[0]!.decorations).toEqual([
+      { kind: "ref", label: "@peer", workspaceName: "peer" },
+    ]);
+    expect(reads).toBe(1);
+  } finally {
+    await source.close();
+  }
+  for (const decorations of [
+    [{ kind: "tag", label: "release", workspaceName: "peer" }],
+    [{ kind: "head", label: "@", workspaceName: "peer" }],
+    [{ kind: "ref", label: "@peer", workspaceName: false }],
+    [{ kind: "ref", label: "@peer", workspaceName: "" }],
+  ]) {
+    const invalid = await open(decorations);
+    try {
+      await expect(invalid.read({ limit: 1 })).rejects.toThrow(/workspace/);
+    } finally {
+      await invalid.close();
+    }
+  }
+});

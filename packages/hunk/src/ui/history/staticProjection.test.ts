@@ -36,6 +36,64 @@ const commit: HistoryCommit = {
 const row = planHistoryPage([commit]).rows[0]!;
 
 describe("static history projection", () => {
+  test("HK-92 keeps complete piped names and marks bounded compact omissions", () => {
+    const workspaceRow = {
+      ...row,
+      commit: {
+        ...commit,
+        subject: "An intentionally long current subject",
+        decorations: [
+          { kind: "head" as const, label: "@" },
+          { kind: "ref" as const, label: "@default" },
+          { kind: "ref" as const, label: "@日本語\u001b[2J\nwork" },
+          { kind: "ref" as const, label: "@very-long-workspace-name" },
+        ],
+      },
+    };
+    for (const width of [35, 45, 80]) {
+      const text = projectHistoryRow(workspaceRow, { ascii: false, color: false, width });
+      expect(measureTextWidth(text)).toBeLessThanOrEqual(width);
+      expect(text).toContain("(@");
+      expect(text).toContain("…)");
+      expect(text).not.toMatch(/[\u001b\n]/);
+    }
+    const complete = projectHistoryRow(workspaceRow, { ascii: false, color: false });
+    expect(complete).toContain("(@, @default, @日本語work, @very-long-workspace-name)");
+    expect(projectHistoryRecord(workspaceRow, { ascii: false, color: false }).join("\n")).toContain(
+      "(@, @default, @日本語work, @very-long-workspace-name)",
+    );
+  });
+
+  test("HK-92 keeps the empty marker whole and title colors off clipped workspace names", () => {
+    const theme = resolveHistoryTheme("github-dark-default");
+    const emptyRow = planHistoryPage([
+      {
+        ...commit,
+        parentRevisionIds: [],
+        subject: "(no description set)",
+        isEmpty: true,
+        decorations: [
+          { kind: "head", label: "@" },
+          { kind: "ref", label: "@default" },
+          { kind: "ref", label: "@feature" },
+        ],
+      },
+    ]).rows[0]!;
+    const prefix = `${renderHistoryGraph(emptyRow, true)}  ${commit.displayId}  `;
+    for (const budget of [8, 10, 11, 20, 30, 40]) {
+      const options = { ascii: true, theme, width: measureTextWidth(prefix) + budget };
+      const plain = projectHistoryRow(emptyRow, { ...options, color: false });
+      const colored = projectHistoryRow(emptyRow, { ...options, color: true });
+      expect(colored.replace(/\x1b\[[0-9;]*m/g, "")).toBe(plain);
+      expect(measureTextWidth(plain)).toBeLessThanOrEqual(options.width);
+      expect(plain.slice(prefix.length)).toStartWith("(empty)");
+      if (budget < 20) continue;
+      const names = plain.slice(plain.lastIndexOf(" (@"));
+      expect(names).toEndWith("…)");
+      expect(colored).toEndWith(`\x1b[0m${names}`);
+    }
+  });
+
   test("renders portable graph palettes", () => {
     expect(renderHistoryGraph(row, false)).toBe("●─┬");
     expect(renderHistoryGraph(row, true)).toBe("*-+");

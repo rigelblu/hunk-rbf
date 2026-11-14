@@ -44,6 +44,8 @@ export interface CommonOptions {
   watch?: boolean;
   /** Initial automatic refresh state for interactive history sessions. */
   historyAutoRefresh?: boolean;
+  /** Show provider-identified workspace heads in interactive history. */
+  historyWorkspaceNames?: boolean;
   /** Enable launch-scoped experimental review features. */
   experimental?: boolean;
   /** Offload eligible syntax highlighting for this launch. */
