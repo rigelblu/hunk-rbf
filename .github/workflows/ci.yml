@@ -103,6 +103,11 @@ jobs:
         with:
           bun-version: 1.4.2
 
+      - name: Install Jujutsu
+        uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2.87.14
+        with:
+          tool: jj-cli
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
