@@ -982,6 +982,87 @@ describe("LogController.replaceQuery rules", () => {
     await controller.close();
   });
 
+  test("pending-state observers can cancel before query source I/O starts", async () => {
+    const { controller, log } = await loadedController({
+      queries: { q: { entries: [{ revisionId: "n1" }] } },
+    });
+    const before = controller.getSnapshot();
+    const abort = new AbortController();
+    controller.subscribe(() => {
+      if (controller.getSnapshot().sourceTransitionPending) abort.abort();
+    });
+    expect(await controller.replaceQuery({ kind: "apply", expression: "q" }, abort.signal)).toEqual(
+      { status: "aborted" },
+    );
+    expect(log.opened).toEqual([]);
+    expect(log.accepted).toEqual([]);
+    expect(controller.getSnapshot().rows).toBe(before.rows);
+    expect(controller.getSnapshot().sourceTransitionPending).toBeFalse();
+    await controller.close();
+  });
+
+  test("quit from a pending-state observer obsoletes the query before source I/O", async () => {
+    const { controller, log } = await loadedController({
+      queries: { q: { entries: [{ revisionId: "n1" }] } },
+    });
+    let quitting: Promise<void> | undefined;
+    controller.subscribe(() => {
+      if (controller.getSnapshot().sourceTransitionPending) quitting = controller.close();
+    });
+    expect(await controller.replaceQuery({ kind: "apply", expression: "q" })).toEqual({
+      status: "obsolete",
+    });
+    await quitting;
+    expect(log.opened).toEqual([]);
+    expect(log.accepted).toEqual([]);
+  });
+
+  test("a newer query from a pending-state observer wins before the old opener runs", async () => {
+    const { controller, log } = await loadedController({
+      queries: {
+        q: { entries: [{ revisionId: "n1" }] },
+        newer: { entries: [{ revisionId: "n2" }] },
+      },
+    });
+    let replaced = false;
+    let newer: ReturnType<LogController["replaceQuery"]> | undefined;
+    controller.subscribe(() => {
+      if (controller.getSnapshot().sourceTransitionPending && !replaced) {
+        replaced = true;
+        newer = controller.replaceQuery({ kind: "apply", expression: "newer" });
+      }
+    });
+    expect(await controller.replaceQuery({ kind: "apply", expression: "q" })).toEqual({
+      status: "obsolete",
+    });
+    expect(await newer).toMatchObject({ status: "applied" });
+    expect(log.opened).toEqual(["newer"]);
+    expect(log.accepted).toEqual(["newer"]);
+    expect(subjects(controller)).toEqual(["n2"]);
+    await controller.close();
+  });
+
+  test("a throwing transition observer cannot interrupt Apply or hide the pending state from others", async () => {
+    const { controller } = await loadedController({
+      queries: { q: { entries: [{ revisionId: "n1" }] } },
+    });
+    const states: boolean[] = [];
+    controller.subscribe(() => {
+      if (controller.getSnapshot().sourceTransitionPending)
+        throw Error("transition subscriber failed");
+    });
+    controller.subscribe(() =>
+      states.push(Boolean(controller.getSnapshot().sourceTransitionPending)),
+    );
+    expect(await controller.replaceQuery({ kind: "apply", expression: "q" })).toMatchObject({
+      status: "applied",
+    });
+    expect(states[0]).toBeTrue();
+    expect(states.at(-1)).toBeFalse();
+    expect(controller.getSnapshot().rows[0]?.commit.revisionId).toBe("n1");
+    await controller.close();
+  });
+
   test("a throw after the view is published still reports the Apply as applied", async () => {
     const { controller, log } = await loadedController({
       queries: { q: { entries: [{ revisionId: "n1" }] } },

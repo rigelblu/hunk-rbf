@@ -939,6 +939,8 @@ describe("interactive hunk log", () => {
       git(cwd, ["commit", "-qam", "Third history commit"]);
       const history = await returnToHistory(session);
       expect(history).toContain("Second history commit");
+      // Wait for the return refresh before checking navigation against the new history.
+      await session.waitForText(/History refreshed\./, { timeout: 15_000 });
       await harness.pressAndWaitForText(session, "home", /Third history commit/, {
         timeout: 15_000,
       });
@@ -1886,7 +1888,10 @@ describe("HK-19.1 revset editor", () => {
         session.writeRaw(`L\x15${expression}\x1bOQ`);
         return harness.waitForSnapshot(
           session,
-          (text) => text.includes(`Revset: ${expression}`) && !text.includes("Edit revset"),
+          (text) =>
+            text.includes(`Revset: ${expression}`) &&
+            !text.includes("Edit revset") &&
+            !text.includes("[F2] Apply"),
           15_000,
         );
       };
@@ -1965,7 +1970,12 @@ describe("HK-19.1 revset editor", () => {
         session.sendKey("f3");
         const reset = await harness.waitForSnapshot(
           session,
-          (text) => text.includes("Launch policy · Limit: 100") && !text.includes("Edit revset"),
+          (text) =>
+            text.includes("Launch policy · Limit: 100") &&
+            text.includes("~ older history hidden") &&
+            !text.includes("Custom revset") &&
+            !text.includes("Edit revset") &&
+            !text.includes("[F2] Apply"),
           15_000,
         );
         expect(reset).toContain("Feature current work");

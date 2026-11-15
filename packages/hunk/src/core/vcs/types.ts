@@ -1,6 +1,7 @@
 import type {
   ExtensionReviewDescriptor,
   ExtensionVcsHistoryCommit,
+  ExtensionVcsHistoryGraphStyle,
   ExtensionVcsHistoryInput,
   ExtensionVcsHistoryPage,
   ExtensionVcsHistoryScope,
@@ -57,6 +58,12 @@ export interface VcsHistorySource {
   readonly scope?: ExtensionVcsHistoryScope;
   /** Exact accepted query text; absent when the provider omitted it or it failed validation. */
   readonly expression?: string;
+  readonly graphStyle?: ExtensionVcsHistoryGraphStyle;
+  readonly graphSnapshotId?: string;
+  openGraph?(
+    style: ExtensionVcsHistoryGraphStyle,
+    options?: { signal?: AbortSignal },
+  ): Promise<VcsHistorySource>;
   read(options: { limit: number; signal?: AbortSignal }): Promise<ExtensionVcsHistoryPage>;
   close(): Promise<void>;
 }

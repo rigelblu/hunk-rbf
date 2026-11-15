@@ -1,9 +1,11 @@
 import { fitText, measureTextWidth } from "../lib/text";
+import type { ExtensionVcsHistoryGraphStyle } from "../../extension-api/types";
 import type { LogQueryState } from "./controller";
 import {
   COMPACT_EDITOR_BELOW_HEIGHT,
   CUSTOM_REVSET_LABEL,
   CUSTOM_RESTRICTION,
+  CUSTOM_RESTRICTION_NATIVE,
   EXPRESSION_UNAVAILABLE,
   REVSET_FIELD_PREFIX,
   modeLine,
@@ -46,6 +48,7 @@ const EMPTY_VIEW: HistoryQueryView = { top: [], bottom: [], replacesScopeLine: f
 export function planHistoryQueryView(
   query: LogQueryState | undefined,
   terminal: { width: number; height: number },
+  graphStyle: ExtensionVcsHistoryGraphStyle = "default",
 ): HistoryQueryView {
   if (!query?.editable) return EMPTY_VIEW;
   const custom = query.mode === "custom";
@@ -72,9 +75,10 @@ export function planHistoryQueryView(
     { kind: "mode", text: fitText(modeLine(query.mode, query.limit), width, "…") },
     { kind: "blank" },
   );
+  const restriction = graphStyle === "native" ? CUSTOM_RESTRICTION_NATIVE : CUSTOM_RESTRICTION;
   return {
     top,
-    bottom: custom ? wrapNoticeText(CUSTOM_RESTRICTION, width) : [],
+    bottom: custom ? wrapNoticeText(restriction, width) : [],
     replacesScopeLine: custom,
   };
 }

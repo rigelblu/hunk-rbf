@@ -20,6 +20,7 @@ export interface LogResponsiveRow {
   graphWidth: number;
   cutoffs: string[];
   cutoffConvergence: string;
+  nativeAfter: string[];
   leftWidth: number;
   rightWidth: number;
   columnGap: number;
@@ -91,18 +92,32 @@ export function projectResponsiveLogRow({
   // Keep two cells clear of the terminal edge: ambiguous-width copy glyphs must never wrap a row.
   const contentWidth = Math.max(1, width - 4);
   const rawGraph = presentation.graph
-    ? renderHistoryGraph(row, !presentation.unicode)
+    ? row.commit.nativeGraph
+      ? row.commit.nativeGraph.body[0]
+      : renderHistoryGraph(row, !presentation.unicode)
     : presentation.unicode
       ? "│"
       : "|";
   const rawContinuation = presentation.graph
-    ? renderHistoryContinuation(row, !presentation.unicode)
+    ? row.commit.nativeGraph
+      ? row.commit.nativeGraph.body[1]
+      : renderHistoryContinuation(row, !presentation.unicode)
     : rawGraph;
   const renderedConvergence = presentation.graph
-    ? renderHistoryConvergence(row, !presentation.unicode)
+    ? row.commit.nativeGraph
+      ? row.commit.nativeGraph.body[2]
+      : renderHistoryConvergence(row, !presentation.unicode)
     : "";
   const hasConvergence = presentation.graph && row.convergences.length > 0;
-  const rawConvergence = hasConvergence ? renderedConvergence : rawContinuation;
+  const rawConvergence = row.commit.nativeGraph
+    ? presentation.graph
+      ? row.commit.nativeGraph.body[2]
+      : ""
+    : hasConvergence
+      ? renderedConvergence
+      : rawContinuation;
+  const rawNativeAfter =
+    presentation.graph && row.commit.nativeGraph ? row.commit.nativeGraph.after : [];
   const safeId = sanitizeTerminalLine(row.commit.displayId).replaceAll("\t", " ");
   const maxIdWidth = Math.max(
     1,
@@ -126,6 +141,9 @@ export function projectResponsiveLogRow({
   const continuation =
     graphContentWidth > 0 ? fitText(rawContinuation, graphContentWidth, "…") : "";
   const convergence = graphContentWidth > 0 ? fitText(rawConvergence, graphContentWidth, "…") : "";
+  const nativeAfter = rawNativeAfter.map((line) =>
+    graphContentWidth > 0 ? fitText(line, graphContentWidth, "…") : "",
+  );
   const graphWidth = graph
     ? Math.min(
         maximumGraphWidth,
@@ -133,6 +151,7 @@ export function projectResponsiveLogRow({
           measureTextWidth(graph),
           measureTextWidth(continuation),
           measureTextWidth(convergence),
+          ...nativeAfter.map((line) => measureTextWidth(line)),
         ) + 2,
       )
     : 0;
@@ -205,9 +224,12 @@ export function projectResponsiveLogRow({
   const metadataGap = rowTwoRightWidth ? Math.min(2, Math.max(0, textWidth - rowTwoRightWidth)) : 0;
   const metadataWidth = Math.max(0, textWidth - rowTwoRightWidth - metadataGap);
   const metadata = fitText([author, relativeTime].filter(Boolean).join(" · "), metadataWidth);
-  const textRowCount = refLine || hasConvergence ? 3 : 2;
-  const cutoffCount = row.cutoffLanes?.length ?? 0;
-  const compactionCount = presentation.graph && row.cutoffConvergences?.length ? 1 : 0;
+  // Native prefixes come from JJ’s fixed three-row template; default rows stay compact.
+  const nativeGraph = presentation.graph && Boolean(row.commit.nativeGraph);
+  const textRowCount = nativeGraph || refLine || hasConvergence ? 3 : 2;
+  const cutoffCount = row.commit.nativeGraph ? 0 : (row.cutoffLanes?.length ?? 0);
+  const compactionCount =
+    presentation.graph && !row.commit.nativeGraph && row.cutoffConvergences?.length ? 1 : 0;
   const separatorIndex = metadata.indexOf(" · ");
   const fittedAuthor = author
     ? separatorIndex >= 0
@@ -233,13 +255,14 @@ export function projectResponsiveLogRow({
     continuation,
     convergence,
     graphWidth,
-    cutoffs: (row.cutoffLanes ?? []).length
-      ? presentation.graph
-        ? renderHistoryCutoffs(row, !presentation.unicode).map((line) =>
-            graphContentWidth > 0 && measureTextWidth(line) <= graphContentWidth ? line : "~",
-          )
-        : (row.cutoffLanes ?? []).map(() => "~")
-      : [],
+    cutoffs:
+      !row.commit.nativeGraph && (row.cutoffLanes ?? []).length
+        ? presentation.graph
+          ? renderHistoryCutoffs(row, !presentation.unicode).map((line) =>
+              graphContentWidth > 0 && measureTextWidth(line) <= graphContentWidth ? line : "~",
+            )
+          : (row.cutoffLanes ?? []).map(() => "~")
+        : [],
     leftWidth,
     rightWidth,
     columnGap,
@@ -247,7 +270,7 @@ export function projectResponsiveLogRow({
     refLine,
     inlineRefLine,
     textRowCount,
-    commitHeight: textRowCount + cutoffCount + compactionCount,
+    commitHeight: textRowCount + cutoffCount + compactionCount + nativeAfter.length,
     metadataWidth,
     metadataGap,
     summaryGap,
@@ -259,5 +282,6 @@ export function projectResponsiveLogRow({
     displayId,
     copyIcon,
     secondary,
+    nativeAfter,
   };
 }

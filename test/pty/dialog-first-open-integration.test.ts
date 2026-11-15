@@ -197,8 +197,12 @@ for (const overlay of overlays) {
               } catch {
                 if (child.exitCode === null) child.kill("SIGKILL");
               }
-              await Promise.race([child.exited, Bun.sleep(500)]);
-              expect(child.exitCode).not.toBeNull();
+              // Signal termination can resolve exited while leaving the numeric exitCode null.
+              const exited = await Promise.race([
+                child.exited.then(() => true),
+                Bun.sleep(500).then(() => false),
+              ]);
+              expect(exited).toBeTrue();
             }
           } catch (error) {
             childCleanupFailure = { error };

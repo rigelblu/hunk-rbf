@@ -162,6 +162,8 @@ export type {
   ExtensionVcsHistoryCapability,
   ExtensionVcsHistoryCommit,
   ExtensionVcsHistoryDecoration,
+  ExtensionVcsHistoryGraphFragment,
+  ExtensionVcsHistoryGraphStyle,
   ExtensionVcsHistoryInput,
   ExtensionVcsExpressionHistoryInput,
   ExtensionVcsLegacyHistoryInput,

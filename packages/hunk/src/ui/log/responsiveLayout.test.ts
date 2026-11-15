@@ -415,3 +415,27 @@ test("workspace visibility filters explicit membership, preserving generic refs 
     expect(masterOff.refLine).toBe("");
   }
 });
+
+test("projects nativeGraph body and after lines", () => {
+  const nativeRow = {
+    ...row,
+    commit: {
+      ...row.commit,
+      nativeGraph: {
+        body: ["@  ", "│  ", "│  "] as [string, string, string],
+        after: ["├──", "│  "],
+      },
+    },
+  };
+  const projected = projectResponsiveLogRow({
+    row: nativeRow,
+    presentation,
+    width: 80,
+    now,
+  });
+  expect(projected.graph).toBe("@  ");
+  expect(projected.continuation).toBe("│  ");
+  expect(projected.convergence).toBe("│  ");
+  expect(projected.nativeAfter).toEqual(["├──", "│  "]);
+  expect(projected.graphWidth).toBeGreaterThan(0);
+});

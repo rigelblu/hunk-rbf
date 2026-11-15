@@ -29,6 +29,7 @@ import { toUserFacingError } from "../core/run/errors";
 import { toInternalVcsPatchResult } from "./vcsPatchResult";
 import type {
   ExtensionVcsHistoryCommit,
+  ExtensionVcsHistoryGraphStyle,
   ExtensionVcsHistoryInput,
   ExtensionVcsHistoryRangeSelection,
   ExtensionVcsMutationCapability,
@@ -384,6 +385,7 @@ function normalizeHistoryCommit(value: unknown): ExtensionVcsHistoryCommit {
     "logicalId",
     "isEmpty",
     "isImmutable",
+    "nativeGraph",
   ]);
   const required = (key: string) =>
     assertNonEmptyString(snapshot[key], `VCS history commit ${key} must be a non-empty string.`);
@@ -523,6 +525,47 @@ function normalizeHistoryCommit(value: unknown): ExtensionVcsHistoryCommit {
       : {}),
     ...(typeof snapshot.isEmpty === "boolean" ? { isEmpty: snapshot.isEmpty } : {}),
     ...(typeof snapshot.isImmutable === "boolean" ? { isImmutable: snapshot.isImmutable } : {}),
+    ...(() => {
+      if (snapshot.nativeGraph === undefined) return {};
+      if (!isPlainObject(snapshot.nativeGraph)) {
+        throw new Error("VCS history commit nativeGraph must be an object.");
+      }
+      const graphFields = snapshotProperties(snapshot.nativeGraph, ["body", "after"]);
+      if (!Array.isArray(graphFields.body) || graphFields.body.length !== 3) {
+        throw new Error("VCS history commit nativeGraph body must be an array of three lines.");
+      }
+      if (!Array.isArray(graphFields.after)) {
+        throw new Error("VCS history commit nativeGraph after must be an array.");
+      }
+      const bodyValues = snapshotArray(graphFields.body, 3);
+      const afterValues = snapshotArray(graphFields.after, 128);
+      const validateGraphLine = (line: unknown, context: string): string => {
+        if (typeof line !== "string") {
+          throw new Error(`VCS history commit nativeGraph ${context} must be a string.`);
+        }
+        if (line.length > 4096) {
+          throw new Error(`VCS history commit nativeGraph ${context} exceeds line limit.`);
+        }
+        if (/[\x00-\x1f\x7f-\x9f\u2028\u2029]/.test(line)) {
+          throw new Error(
+            `VCS history commit nativeGraph ${context} contains unsafe control characters.`,
+          );
+        }
+        return line;
+      };
+      const body = [
+        validateGraphLine(bodyValues[0], "body row 1"),
+        validateGraphLine(bodyValues[1], "body row 2"),
+        validateGraphLine(bodyValues[2], "body row 3"),
+      ] as [string, string, string];
+      const after = afterValues.map((line, idx) => validateGraphLine(line, `after row ${idx + 1}`));
+      const totalUnits =
+        body.reduce((sum, s) => sum + s.length, 0) + after.reduce((sum, s) => sum + s.length, 0);
+      if (totalUnits * 2 > 256 * 1024) {
+        throw new Error("VCS history commit nativeGraph total text exceeds entry budget.");
+      }
+      return { nativeGraph: { body, after } };
+    })(),
   };
 }
 
@@ -569,6 +612,29 @@ function normalizeHistoryReviewAction(value: unknown): ExtensionVcsHistoryReview
   throw new Error("VCS history planReview() returned an unsupported action kind.");
 }
 
+/** Snapshot an optional graph presentation style. */
+function normalizeHistoryGraphStyle(value: unknown): ExtensionVcsHistoryGraphStyle {
+  if (value === "default" || value === "native") return value;
+  throw new Error("VCS history graphStyle must be 'default' or 'native'.");
+}
+
+/** Snapshot and validate an immutable graph snapshot token. */
+function normalizeHistoryGraphSnapshotId(value: unknown): string {
+  const text = assertNonEmptyString(
+    value,
+    "VCS history graphSnapshotId must be a non-empty string.",
+  );
+  if (
+    text.length > 256 ||
+    text !== sanitizeTerminalLine(text) ||
+    text.includes("\t") ||
+    !text.trim()
+  ) {
+    throw new Error("VCS history graphSnapshotId must be a safe string of at most 256 characters.");
+  }
+  return text;
+}
+
 /** Wrap an extension history source with bounded reads, copying, cleanup, and error translation. */
 async function toInternalHistorySource(
   source: ExtensionVcsHistorySource,
@@ -578,9 +644,26 @@ async function toInternalHistorySource(
   if (!isPlainObject(source)) {
     throw new Error("VCS history open() must return a source object.");
   }
-  const sourceFields = snapshotProperties(source, ["read", "close"]);
+  let sourceFields: Record<string, unknown>;
+  let sourceClose: unknown;
+  try {
+    sourceClose = source.close;
+    sourceFields = snapshotProperties(source, [
+      "read",
+      "graphStyle",
+      "graphSnapshotId",
+      "openGraph",
+    ]);
+  } catch (error) {
+    if (typeof sourceClose === "function")
+      try {
+        await sourceClose.call(source);
+      } catch {
+        /* Preserve the invalid accessor error. */
+      }
+    throw error;
+  }
   const sourceRead = sourceFields.read;
-  const sourceClose = sourceFields.close;
   if (typeof sourceRead !== "function" || typeof sourceClose !== "function") {
     if (typeof sourceClose === "function") {
       try {
@@ -591,25 +674,55 @@ async function toInternalHistorySource(
     }
     throw new Error("VCS history open() must return a source with read() and close().");
   }
-  let closed = false;
+  let releasePromise: Promise<void> | undefined;
+  let disposed = false;
   let done = false;
   const acceptedIds = new Set<string>();
-  const close = async () => {
-    if (closed) return;
-    closed = true;
-    try {
-      await sourceClose.call(source);
-    } catch (error) {
-      throw toUserFacingError(error);
-    }
+  const release = () => {
+    releasePromise ??= Promise.resolve()
+      .then(() => sourceClose.call(source))
+      .catch((error) => {
+        throw toUserFacingError(error);
+      });
+    return releasePromise;
+  };
+
+  const close = () => {
+    disposed = true;
+    return release();
   };
 
   let scope: ReturnType<typeof normalizeHistoryScope>;
   let expression: string | undefined;
+  let graphStyle: ExtensionVcsHistoryGraphStyle | undefined;
+  let graphSnapshotId: string | undefined;
+  const sourceOpenGraph = sourceFields.openGraph;
+
   try {
     // A source opened for expression input makes no mainline claim, so its scope is not read.
     scope = expectedExpression === undefined ? normalizeHistoryScope(source.scope) : undefined;
     expression = normalizeHistorySourceExpression(source, expectedExpression);
+
+    if (sourceOpenGraph !== undefined) {
+      if (typeof sourceOpenGraph !== "function") {
+        throw new Error("VCS history openGraph must be a function.");
+      }
+      if (sourceFields.graphStyle === undefined) {
+        throw new Error("VCS history source with openGraph must declare graphStyle.");
+      }
+      graphStyle = normalizeHistoryGraphStyle(sourceFields.graphStyle);
+      if (sourceFields.graphSnapshotId === undefined) {
+        throw new Error("VCS history source with openGraph must declare graphSnapshotId.");
+      }
+      graphSnapshotId = normalizeHistoryGraphSnapshotId(sourceFields.graphSnapshotId);
+    } else {
+      if (sourceFields.graphStyle !== undefined) {
+        graphStyle = normalizeHistoryGraphStyle(sourceFields.graphStyle);
+      }
+      if (sourceFields.graphSnapshotId !== undefined) {
+        graphSnapshotId = normalizeHistoryGraphSnapshotId(sourceFields.graphSnapshotId);
+      }
+    }
   } catch (error) {
     try {
       await close();
@@ -622,8 +735,70 @@ async function toInternalHistorySource(
   return {
     ...(scope ? { scope } : {}),
     ...(expression !== undefined ? { expression } : {}),
+    ...(sourceOpenGraph && graphSnapshotId
+      ? {
+          graphStyle,
+          graphSnapshotId,
+          async openGraph(
+            style: ExtensionVcsHistoryGraphStyle,
+            options: { signal?: AbortSignal } = {},
+          ): Promise<VcsHistorySource> {
+            if (disposed) {
+              throw new Error("Cannot open graph from a closed history source.");
+            }
+            const requestedStyle = normalizeHistoryGraphStyle(style);
+            if (options.signal?.aborted) {
+              throw options.signal.reason ?? new Error("History openGraph aborted.");
+            }
+            let candidate: ExtensionVcsHistorySource;
+            try {
+              candidate = await sourceOpenGraph.call(source, requestedStyle, options);
+            } catch (error) {
+              throw toUserFacingError(error);
+            }
+            if (!isPlainObject(candidate)) {
+              throw new Error("VCS history openGraph must return a source object.");
+            }
+            const candidateInternal = await toInternalHistorySource(candidate, expectedExpression);
+            try {
+              if (candidateInternal.graphSnapshotId !== graphSnapshotId)
+                throw new Error("VCS history replacement source graphSnapshotId did not match.");
+              if (candidateInternal.graphStyle !== requestedStyle)
+                throw new Error(
+                  "VCS history replacement source graphStyle did not match requested style.",
+                );
+              if (options.signal?.aborted || disposed)
+                throw new Error("History graph request is no longer active.");
+              if (candidateInternal.expression !== expression) {
+                throw new Error("VCS history replacement source expression did not match.");
+              }
+              const candidateScope = candidateInternal.scope;
+              const matchesScope =
+                scope === undefined
+                  ? candidateScope === undefined
+                  : candidateScope !== undefined &&
+                    ((scope.kind === "bounded" &&
+                      candidateScope.kind === "bounded" &&
+                      candidateScope.boundaryRevisionId === scope.boundaryRevisionId) ||
+                      (scope.kind === "fallback" &&
+                        candidateScope.kind === "fallback" &&
+                        candidateScope.reason === scope.reason));
+              if (!matchesScope) {
+                throw new Error("VCS history replacement source scope did not match.");
+              }
+            } catch (err) {
+              await candidateInternal.close();
+              throw err;
+            }
+            return candidateInternal;
+          },
+        }
+      : {
+          ...(graphStyle ? { graphStyle } : {}),
+          ...(graphSnapshotId ? { graphSnapshotId } : {}),
+        }),
     async read({ limit, signal }) {
-      if (closed || done) return { commits: [], done: true };
+      if (disposed || done) return { commits: [], done: true };
       if (!Number.isSafeInteger(limit) || limit <= 0) {
         throw new Error("VCS history reads require a positive integer limit.");
       }
@@ -645,6 +820,16 @@ async function toInternalHistorySource(
         }
         const commits = commitValues.map((commit) => normalizeHistoryCommit(commit));
         for (const commit of commits) {
+          if (graphStyle === "native" && !commit.nativeGraph) {
+            throw new Error(
+              `VCS history native source returned commit ${commit.revisionId} without nativeGraph fragment.`,
+            );
+          }
+          if (graphStyle === "default" && commit.nativeGraph) {
+            throw new Error(
+              `VCS history default source returned commit ${commit.revisionId} with unexpected nativeGraph fragment.`,
+            );
+          }
           if (acceptedIds.has(commit.revisionId)) {
             throw new Error(`VCS history returned duplicate revision ${commit.revisionId}.`);
           }
@@ -657,11 +842,12 @@ async function toInternalHistorySource(
           acceptedIds.add(commit.revisionId);
         }
         done = pageFields.done;
-        if (done) await close();
+        if (done) await release();
         return { commits, done };
       } catch (error) {
         try {
-          await close();
+          done = true;
+          await release();
         } catch {
           // Preserve the read/validation failure as the primary error.
         }

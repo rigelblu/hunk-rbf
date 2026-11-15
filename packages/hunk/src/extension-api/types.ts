@@ -837,6 +837,21 @@ export interface ExtensionVcsHistoryCommit {
   isEmpty?: boolean;
   /** The provider refuses to rewrite this revision. `undefined` when the provider does not say. Added in API 33. */
   isImmutable?: boolean;
+  /**
+   * Optional provider-drawn graph fragment when a source returns native graph rows.
+   */
+  nativeGraph?: ExtensionVcsHistoryGraphFragment;
+}
+
+/** Desired or active provider history graph presentation style. */
+export type ExtensionVcsHistoryGraphStyle = "default" | "native";
+
+/** Provider-drawn graph column content presented alongside commit details. */
+export interface ExtensionVcsHistoryGraphFragment {
+  /** Prefixes beside Hunk's three body rows. */
+  body: [string, string, string];
+  /** Complete graph-only rows after this revision. */
+  after: string[];
 }
 
 /** Provider-neutral history traversal accepted by `hunk log`, selected by flags and filters. */
@@ -911,6 +926,23 @@ export interface ExtensionVcsHistorySource {
    * dropped, and the source stays open without it.
    */
   readonly expression?: string;
+  /**
+   * Active graph presentation style when this source supports provider-native graph presentation.
+   */
+  readonly graphStyle?: ExtensionVcsHistoryGraphStyle;
+  /**
+   * Immutable token identifying the exact captured operation, input, scope, limit, and configuration.
+   * Required when `openGraph` is advertised.
+   */
+  readonly graphSnapshotId?: string;
+  /**
+   * Open a new regular history cursor for the exact captured input, scope, limit, operation,
+   * and configuration context under the requested graph style.
+   */
+  openGraph?(
+    style: ExtensionVcsHistoryGraphStyle,
+    options?: { signal?: AbortSignal },
+  ): ExtensionVcsHistorySource | Promise<ExtensionVcsHistorySource>;
   /** Read the next page while preserving the source-wide topological order. */
   read(options: { limit: number; signal?: AbortSignal }): Promise<ExtensionVcsHistoryPage>;
   close(): void | Promise<void>;

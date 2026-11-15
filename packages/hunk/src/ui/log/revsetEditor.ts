@@ -15,6 +15,7 @@ export const REVSET_FIELD_PREFIX = "Revset: ";
 export const LAUNCH_POLICY_LABEL = "Launch policy";
 export const CUSTOM_REVSET_LABEL = "Custom revset";
 export const CUSTOM_RESTRICTION = "Custom revset: range review unavailable. ~ omitted parent";
+export const CUSTOM_RESTRICTION_NATIVE = "Custom revset: range review unavailable.";
 export const PREVIOUS_INPUTS_LABEL = "Previous inputs";
 export const NO_PREVIOUS_INPUTS = "No previous inputs yet.";
 export const EXPRESSION_UNAVAILABLE = "Active revset unavailable. Enter a new revset or Reset.";

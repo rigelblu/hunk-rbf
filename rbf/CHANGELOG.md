@@ -44,6 +44,26 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 - 2026-10-12 - fix (ux) | give a narrow static history row's cells to the subject when its ref list is clipped too far to name any ref (#hk-92)
 - 2026-10-12 - fix (ux) | never move a history mark to a different revision under a revision expression or `--first-parent`; the cost is that a mark on a rewritten revision shows as incomplete there and is not followed (#hk-27)
 
+# 🔵⋯ v0.15.0 (2026-10-22)
+
+Local HK-98 release records; remote integration and publication remain pending. Includes the previously cut HK-19.1; installation follows staged binary verification.
+
+## 🟠⋯ Fixed for Builders
+
+- 2026-10-22 - fix (technical) | avoid false terminal-test failures after signal termination or partial startup output (#hk-98)
+
+## 🟠⋯ Improved for End Users
+
+- 2026-10-14 - improve (ux) | identify the JJ presentation choice in View as “Graph view (jj style)”; keep Ctrl+G and the remembered style preference (#hk-98)
+
+## 🟠⋯ Fixed for End Users
+
+- 2026-10-22 - fix (ux) | check only the active graph style in View and select Hunk's graph with Graph view (#hk-98)
+
+## 🟠⋯ Fixed for Technical Users
+
+- 2026-10-22 - fix (technical) | restore native history parser budget coverage and wait for accepted history state in terminal tests (#hk-98)
+
 # 🔵⋯ v0.14.0 (2026-10-22)
 
 Local HK-19.1 release records; remote integration and publication remain pending. This metadata cut is not separately installed; the combined successor is installed once.

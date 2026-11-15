@@ -91,6 +91,16 @@ const HISTORY_COMMANDS = [
     group: "view",
   },
   {
+    id: "hunk.history.toggleNativeGraph",
+    title: "Graph view (jj style)",
+    category: "history",
+    defaultKeys: ["ctrl+g"],
+    locus: "client-local",
+    publicToExtensions: false,
+    group: "view",
+    helpSection: "Application",
+  },
+  {
     id: "hunk.history.toggleUnicode",
     title: "Unicode lines",
     category: "history",

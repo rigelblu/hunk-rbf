@@ -1,9 +1,11 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 import {
   HunkExtensionUserError,
   type ExtensionVcsHistoryCommit,
   type ExtensionVcsHistoryDecoration,
+  type ExtensionVcsHistoryGraphStyle,
   type ExtensionVcsHistoryInput,
   type ExtensionVcsLegacyHistoryInput,
   type ExtensionVcsHistoryRangeReviewAction,
@@ -14,6 +16,7 @@ import {
 } from "hunkdiff/extension";
 import { runAbortableCommand } from "@hunk/vcs/async-process";
 import { normalizePathForOS } from "@hunk/vcs/path";
+import { NativeHistoryParser } from "./nativeHistoryParser";
 
 const HISTORY_FIELDS_PER_COMMIT = 16;
 const REF_SEPARATOR = "\x1f";
@@ -41,6 +44,63 @@ const JJ_HISTORY_TEMPLATE =
     'working_copies.map(|w| w.name().escape_json()).join("\\x1f")',
     'if(immutable, "true", "false")',
   ].join(' ++ "\\0" ++ ') + ' ++ "\\0"';
+
+/** Emits distinguished native graph body records and escaped machine fields. */
+function buildNativeHistoryTemplate(
+  fieldsPerCommit: number,
+  scope?: ExtensionVcsHistoryScope,
+  input?: ExtensionVcsHistoryInput,
+): string {
+  const fields = [
+    "commit_id",
+    "change_id.short(8)",
+    "change_id",
+    'parents.map(|p| p.commit_id()).join(" ")',
+    "author.name().escape_json()",
+    "stringify(author.email()).escape_json()",
+    'author.timestamp().format("%Y-%m-%dT%H:%M:%S%:z")',
+    "description.escape_json()",
+    'if(current_working_copy, "1", "0")',
+    'local_bookmarks.map(|r| stringify(r.name()).escape_json()).join("\\x1f")',
+    'remote_bookmarks.map(|r| stringify(r.name() ++ "@" ++ r.remote()).escape_json()).join("\\x1f")',
+    'local_tags.map(|r| stringify(r.name()).escape_json()).join("\\x1f")',
+    'remote_tags.map(|r| stringify(r.name() ++ "@" ++ r.remote()).escape_json()).join("\\x1f")',
+    'if(empty, "true", "false")',
+    'working_copies.map(|w| w.name().escape_json()).join("\\x1f")',
+    'if(immutable, "true", "false")',
+  ];
+  if (input?.kind === "expression" && fieldsPerCommit > HISTORY_FIELDS_PER_COMMIT) {
+    const selected = `(${input.expression}) | root()`;
+    fields.push(
+      `parents.filter(|p| !p.contained_in(${JSON.stringify(selected)})).map(|p| p.commit_id()).join(" ")`,
+    );
+  } else if (scope?.kind === "bounded") {
+    const boundaryRevisionId = scope.boundaryRevisionId;
+    const excluded = `ancestors(${boundaryRevisionId}) ~ (${boundaryRevisionId} | root())`;
+    fields.push(
+      `parents.filter(|p| p.contained_in(${JSON.stringify(excluded)})).map(|p| p.commit_id()).join(" ")`,
+    );
+  }
+  if (fields.length !== fieldsPerCommit)
+    throw new Error("Jujutsu native history template field count does not match its parser.");
+  const machineFields = fields.join(' ++ "\\0" ++ ');
+  return (
+    `"\\x02HUNK:B1\\x1e" ++ ${machineFields} ++ "\\x1eHUNK:E1\\x03\\n" ++ ` +
+    `"\\x02HUNK:B2\\x1e\\x1eHUNK:E2\\x03\\n" ++ ` +
+    `"\\x02HUNK:B3\\x1e\\x1eHUNK:E3\\x03\\n"`
+  );
+}
+
+/** Decode an escaped JSON string field. */
+function decodeEscapedJsonField(field: string): string {
+  try {
+    const value: unknown = JSON.parse(field);
+    if (typeof value === "string") return value;
+  } catch {
+    /* Reject malformed private data without including its contents. */
+  }
+  throw new Error("Jujutsu returned an invalid escaped history field.");
+}
 
 export interface JjHistoryOptions {
   cwd: string;
@@ -152,35 +212,70 @@ function buildJjRevisionArgs(revset: string) {
   return revset.startsWith("-") ? [`--revisions=${revset}`] : ["--revisions", revset];
 }
 
+/** Fingerprint the effective Jujutsu configuration. */
+export async function getJjConfigFingerprint(options: JjHistoryOptions): Promise<string> {
+  try {
+    const output = await runJjHistoryQuery(["config", "list"], options);
+    return createHash("sha256").update(output).digest("hex");
+  } catch (error) {
+    if (options.signal?.aborted) throw error;
+    throw new HunkExtensionUserError(
+      "Could not attest JJ configuration. Refresh history before switching graph.",
+    );
+  }
+}
+
 /** Build one deterministic, non-mutating `jj log` invocation. */
-export function buildJjHistoryArgs(input: ExtensionVcsHistoryInput, prepared?: PreparedJjHistory) {
+export function buildJjHistoryArgs(
+  input: ExtensionVcsHistoryInput,
+  prepared?: PreparedJjHistory,
+  graphStyle: ExtensionVcsHistoryGraphStyle = "default",
+) {
+  const isNative = graphStyle === "native";
   const args = [
     "--ignore-working-copy",
     ...(prepared ? ["--at-op", prepared.operationId] : []),
     "--no-pager",
     "--color",
     "never",
-    "log",
-    "--no-graph",
-    ...buildJjRevisionArgs(buildJjHistoryRevset(input, prepared?.scope)),
-    "--template",
-    prepared?.template ?? JJ_HISTORY_TEMPLATE,
   ];
+  if (isNative) {
+    args.push("--config", "ui.log-word-wrap=false");
+  }
+  args.push("log");
+  if (!isNative) {
+    args.push("--no-graph");
+  }
+  args.push(...buildJjRevisionArgs(buildJjHistoryRevset(input, prepared?.scope)));
+  args.push(
+    "--template",
+    isNative
+      ? (prepared?.nativeTemplate ??
+          buildNativeHistoryTemplate(
+            prepared?.fieldsPerCommit ?? HISTORY_FIELDS_PER_COMMIT,
+            prepared?.scope,
+            input,
+          ))
+      : (prepared?.template ?? JJ_HISTORY_TEMPLATE),
+  );
   if (input.maxCount !== undefined) args.push("--limit", String(input.maxCount));
   if (input.kind !== "expression" && input.pathspecs?.length) args.push("--", ...input.pathspecs);
   return args;
 }
 
 /** One immutable operation and boundary shared by selection and cutoff classification. */
-interface PreparedJjHistory {
+export interface PreparedJjHistory {
   operationId: string;
+  configFingerprint: string;
+  graphSnapshotId: string;
   scope?: ExtensionVcsHistoryScope;
   template: string;
+  nativeTemplate: string;
   fieldsPerCommit: number;
 }
 
 /** Resolve configured mainline once and keep all subsequent queries on that repository operation. */
-async function prepareJjHistory(
+export async function prepareJjHistory(
   input: ExtensionVcsHistoryInput,
   options: JjHistoryOptions,
 ): Promise<PreparedJjHistory> {
@@ -194,9 +289,13 @@ async function prepareJjHistory(
   ).trim();
   if (!/^[0-9a-f]{128}$/.test(operationId))
     throw new Error("Jujutsu returned an invalid operation identity.");
+  const configFingerprint = await getJjConfigFingerprint(options);
   const plan: PreparedJjHistory = {
     operationId,
+    configFingerprint,
+    graphSnapshotId: "",
     template: JJ_HISTORY_TEMPLATE,
+    nativeTemplate: "",
     fieldsPerCommit: HISTORY_FIELDS_PER_COMMIT,
   };
   // Custom membership is independent of loaded pages and row caps. Pin it to the same operation
@@ -205,9 +304,21 @@ async function prepareJjHistory(
     const selected = `(${input.expression}) | root()`;
     plan.template += ` ++ parents.filter(|p| !p.contained_in(${JSON.stringify(selected)})).map(|p| p.commit_id()).join(" ") ++ "\\0"`;
     plan.fieldsPerCommit += 1;
+  }
+  if (input.kind === "expression" || input.revision || input.all) {
+    plan.nativeTemplate = buildNativeHistoryTemplate(plan.fieldsPerCommit, plan.scope, input);
+    plan.graphSnapshotId = createHash("sha256")
+      .update(
+        JSON.stringify({
+          operationId,
+          configFingerprint,
+          input,
+          scope: plan.scope,
+        }),
+      )
+      .digest("hex");
     return plan;
   }
-  if (input.revision || input.all) return plan;
   const output = await runJjHistoryQuery(
     [
       "--at-op",
@@ -231,6 +342,17 @@ async function prepareJjHistory(
       kind: "fallback",
       reason: boundaries.length > 1 ? "ambiguous" : "unavailable",
     });
+    plan.nativeTemplate = buildNativeHistoryTemplate(plan.fieldsPerCommit, plan.scope, input);
+    plan.graphSnapshotId = createHash("sha256")
+      .update(
+        JSON.stringify({
+          operationId,
+          configFingerprint,
+          input,
+          scope: plan.scope,
+        }),
+      )
+      .digest("hex");
     return plan;
   }
   const boundaryRevisionId = boundaries[0]!;
@@ -238,6 +360,17 @@ async function prepareJjHistory(
   const excluded = `ancestors(${boundaryRevisionId}) ~ (${boundaryRevisionId} | root())`;
   plan.template += ` ++ parents.filter(|p| p.contained_in(${JSON.stringify(excluded)})).map(|p| p.commit_id()).join(" ") ++ "\\0"`;
   plan.fieldsPerCommit += 1;
+  plan.nativeTemplate = buildNativeHistoryTemplate(plan.fieldsPerCommit, plan.scope, input);
+  plan.graphSnapshotId = createHash("sha256")
+    .update(
+      JSON.stringify({
+        operationId,
+        configFingerprint,
+        input,
+        scope: plan.scope,
+      }),
+    )
+    .digest("hex");
   return plan;
 }
 
@@ -251,6 +384,7 @@ export async function getJjHistoryWatchSignature(
   const result = await runAbortableCommand([jjExecutable, ...buildJjHistoryArgs(input, prepared)], {
     cwd,
     signal,
+    env: { ...process.env },
   });
   if (result.exitCode !== 0) {
     throw new Error(
@@ -279,9 +413,10 @@ function appendDecorations(
   target: ExtensionVcsHistoryDecoration[],
   field: string,
   kind: ExtensionVcsHistoryDecoration["kind"],
+  escaped = false,
 ) {
   for (const label of field.split(REF_SEPARATOR)) {
-    if (label) target.push({ kind, label });
+    if (label) target.push({ kind, label: escaped ? decodeEscapedJsonField(label) : label });
   }
 }
 
@@ -309,6 +444,7 @@ export function parseJjHistory(
   firstParent = false,
   omitGraphParents = false,
   fieldsPerCommit = HISTORY_FIELDS_PER_COMMIT,
+  decodeEscapedJson = false,
 ): ExtensionVcsHistoryCommit[] {
   if (!text) return [];
   const fields = text.split("\0");
@@ -323,10 +459,14 @@ export function parseJjHistory(
     const displayId = fields[offset + 1]!;
     const logicalId = fields[offset + 2]!;
     const parents = fields[offset + 3]!;
-    const authorName = fields[offset + 4]!;
-    const authorEmail = fields[offset + 5]!;
+    const rawAuthorName = fields[offset + 4]!;
+    const authorName = decodeEscapedJson ? decodeEscapedJsonField(rawAuthorName) : rawAuthorName;
+    const authorEmail = decodeEscapedJson
+      ? decodeEscapedJsonField(fields[offset + 5]!)
+      : fields[offset + 5]!;
     const authoredAt = fields[offset + 6]!;
-    const description = fields[offset + 7]!;
+    const rawDescription = fields[offset + 7]!;
+    const description = decodeEscapedJson ? decodeEscapedJsonField(rawDescription) : rawDescription;
     const currentWorkingCopy = fields[offset + 8]!;
     const localBookmarks = fields[offset + 9]!;
     const remoteBookmarks = fields[offset + 10]!;
@@ -375,10 +515,10 @@ export function parseJjHistory(
     for (const name of decodeWorkspaceNames(workspaceNames)) {
       decorations.push({ kind: "ref", label: `@${name}`, workspaceName: name });
     }
-    appendDecorations(decorations, localBookmarks, "local-branch");
-    appendDecorations(decorations, remoteBookmarks, "remote-branch");
-    appendDecorations(decorations, localTags, "tag");
-    appendDecorations(decorations, remoteTags, "tag");
+    appendDecorations(decorations, localBookmarks, "local-branch", decodeEscapedJson);
+    appendDecorations(decorations, remoteBookmarks, "remote-branch", decodeEscapedJson);
+    appendDecorations(decorations, localTags, "tag", decodeEscapedJson);
+    appendDecorations(decorations, remoteTags, "tag", decodeEscapedJson);
 
     commits.push({
       revisionId,
@@ -464,7 +604,7 @@ async function runJjHistoryQuery(
   try {
     result = await runAbortableCommand(
       [jjExecutable, "--ignore-working-copy", "--no-pager", "--color", "never", ...args],
-      { cwd, signal },
+      { cwd, signal, env: { ...process.env } },
     );
   } catch (error) {
     if (signal?.aborted) throw error;
@@ -536,7 +676,7 @@ function resolveHistoryRepoRoot(
   try {
     result = Bun.spawnSync(
       [jjExecutable, "--ignore-working-copy", "--no-pager", "--color", "never", "root"],
-      { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+      { cwd, env: { ...process.env }, stdin: "ignore", stdout: "pipe", stderr: "pipe" },
     );
   } catch {
     throw new HunkExtensionUserError(`Could not run ${jjExecutable}.`, {
@@ -576,19 +716,50 @@ export function jjHistoryUsesBoundaryTopology(input: ExtensionVcsHistoryInput) {
 /** Open a bounded, cancellable cursor over one long-lived `jj log` process. */
 export async function openJjHistory(
   input: ExtensionVcsHistoryInput,
-  options: JjHistoryOptions,
+  options: JjHistoryOptions & { graphStyle?: ExtensionVcsHistoryGraphStyle },
+  existingPrepared?: PreparedJjHistory,
+  requestedGraphStyle?: ExtensionVcsHistoryGraphStyle,
 ): Promise<ExtensionVcsHistorySource & { repoRoot: string }> {
   const { cwd, jjExecutable = "jj", signal } = options;
   signal?.throwIfAborted();
   const repoRoot = resolveHistoryRepoRoot({ cwd, jjExecutable }, input.kind === "expression");
-  const prepared = await prepareJjHistory(input, { ...options, cwd: repoRoot });
+  const graphStyle: ExtensionVcsHistoryGraphStyle =
+    requestedGraphStyle ?? options.graphStyle ?? "default";
+  const prepared =
+    existingPrepared ?? (await prepareJjHistory(input, { ...options, cwd: repoRoot }));
   signal?.throwIfAborted();
   const expression =
     input.kind === "expression"
       ? input.expression
       : buildJjHistoryExpression(input, prepared.scope);
+
+  /** Refuse configuration drift without exposing the captured private configuration. */
+  const assertContext = async (signal?: AbortSignal) => {
+    signal?.throwIfAborted();
+    const fingerprint = await getJjConfigFingerprint({ ...options, cwd: repoRoot, signal });
+    if (fingerprint !== prepared.configFingerprint)
+      throw new HunkExtensionUserError(
+        "JJ configuration changed. Refresh history before switching graph.",
+      );
+    signal?.throwIfAborted();
+  };
+  if (existingPrepared) await assertContext(signal);
+
+  const reopener = async (
+    targetStyle: ExtensionVcsHistoryGraphStyle,
+    reopenerOptions: { signal?: AbortSignal } = {},
+  ) => {
+    reopenerOptions.signal?.throwIfAborted();
+    await assertContext(reopenerOptions.signal);
+    return openJjHistory(
+      input,
+      { ...options, cwd: repoRoot, signal: reopenerOptions.signal },
+      prepared,
+      targetStyle,
+    );
+  };
+
   if (input.maxCount === 0) {
-    // JJ validates the revset even for zero rows, so a bad expression fails here, not as empty.
     if (input.kind === "expression") {
       await runJjHistoryQuery(
         [
@@ -608,9 +779,13 @@ export async function openJjHistory(
     }
     return {
       repoRoot,
+      graphStyle,
+      graphSnapshotId: prepared.graphSnapshotId,
       ...(prepared.scope ? { scope: prepared.scope } : {}),
       ...(expression !== undefined ? { expression } : {}),
-      async read() {
+      openGraph: reopener,
+      async read({ signal }) {
+        await assertContext(signal);
         return { commits: [], done: true };
       },
       close() {},
@@ -618,13 +793,30 @@ export async function openJjHistory(
   }
 
   const omitGraphParents = jjHistoryUsesBoundaryTopology(input);
-  const child = spawn(jjExecutable, buildJjHistoryArgs(input, prepared), {
+  const isNative = graphStyle === "native";
+
+  // Use the same explicit environment as preparation and configuration attestation.
+  const child = spawn(jjExecutable, buildJjHistoryArgs(input, prepared, graphStyle), {
     cwd: repoRoot,
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
+    env: { ...process.env },
   });
   const decoder = new StringDecoder("utf8");
   const queue: ExtensionVcsHistoryCommit[] = [];
+  const nativeParser = isNative
+    ? new NativeHistoryParser((record) => {
+        const commits = parseJjHistory(
+          `${record}\0`,
+          input.firstParent,
+          omitGraphParents,
+          prepared.fieldsPerCommit,
+          true,
+        );
+        if (commits.length !== 1) throw new Error("Jujutsu returned an invalid history record.");
+        return commits[0]!;
+      })
+    : undefined;
   const fields: string[] = [];
   const waiters = new Set<() => void>();
   let buffered = "";
@@ -633,17 +825,26 @@ export async function openJjHistory(
   let closed = false;
   let reading = false;
   let failure: unknown;
+  let resolveReaped!: () => void;
+  const reaped = new Promise<void>((resolve) => {
+    resolveReaped = resolve;
+  });
 
   const wake = () => {
     for (const waiter of waiters) waiter();
     waiters.clear();
   };
+  /** Terminate the cursor and join process cleanup, including paused output. */
   const stop = () => {
-    if (closed) return;
-    closed = true;
-    if (!completed) child.kill();
-    wake();
+    if (!closed) {
+      closed = true;
+      if (!completed) child.kill();
+      child.stdout!.resume();
+      wake();
+    }
+    return reaped;
   };
+
   const consume = (text: string) => {
     buffered += text;
     for (;;) {
@@ -667,9 +868,16 @@ export async function openJjHistory(
   };
 
   child.stdout!.on("data", (chunk: Buffer) => {
+    if (closed) return;
     try {
-      consume(decoder.write(chunk));
-      if (queue.length >= 512) child.stdout!.pause();
+      if (nativeParser) {
+        nativeParser.push(chunk);
+        if (nativeParser.pressured) child.stdout!.pause();
+        wake();
+      } else {
+        consume(decoder.write(chunk));
+        if (queue.length >= 512) child.stdout!.pause();
+      }
     } catch (error) {
       failure = error;
       completed = true;
@@ -689,18 +897,23 @@ export async function openJjHistory(
     wake();
   });
   child.once("close", (code) => {
-    if (!failure) {
+    resolveReaped();
+    if (!failure && !closed) {
       try {
-        consume(decoder.end());
+        if (nativeParser) nativeParser.finish();
+        else consume(decoder.end());
       } catch (error) {
         failure = error;
       }
     }
-    if (!failure && (fields.length > 0 || buffered.length > 0)) {
+    if (!failure && !nativeParser && (fields.length > 0 || buffered.length > 0)) {
       failure = new Error("Jujutsu returned a truncated history record.");
     } else if (!failure && code !== 0 && !closed) {
-      failure =
-        input.kind === "expression"
+      failure = isNative
+        ? new HunkExtensionUserError(
+            "Jujutsu could not read native history. Refresh history or switch to Hunk graph.",
+          )
+        : input.kind === "expression"
           ? new HunkExtensionUserError(
               filterJjExpressionError(stderr) || "Jujutsu could not read this history.",
             )
@@ -733,10 +946,19 @@ export async function openJjHistory(
       signal?.addEventListener("abort", abort, { once: true });
     });
 
+  try {
+    await assertContext(signal);
+  } catch (error) {
+    await stop();
+    throw error;
+  }
   return {
     repoRoot,
+    graphStyle,
+    graphSnapshotId: prepared.graphSnapshotId,
     ...(prepared.scope ? { scope: prepared.scope } : {}),
     ...(expression !== undefined ? { expression } : {}),
+    openGraph: reopener,
     async read({ limit, signal }) {
       if (reading) throw new Error("Concurrent Jujutsu history reads are not supported.");
       if (signal?.aborted) {
@@ -745,13 +967,26 @@ export async function openJjHistory(
       }
       reading = true;
       try {
+        if (existingPrepared || nativeParser) await assertContext(signal);
         const target = Math.min(Math.max(1, limit), 256);
-        while (queue.length < target && !completed && !closed) await waitForData(signal);
+        while (
+          (nativeParser?.count ?? queue.length) < target &&
+          !completed &&
+          !closed &&
+          !nativeParser?.pressured
+        )
+          await waitForData(signal);
         if (signal?.aborted) throw signal.reason ?? new Error("History read aborted.");
         if (failure) throw failure;
-        const commits = queue.splice(0, target);
-        if (!completed && !closed && queue.length < 256) child.stdout!.resume();
-        return { commits, done: (completed || closed) && queue.length === 0 };
+        if (existingPrepared || nativeParser) await assertContext(signal);
+        const commits = nativeParser ? nativeParser.read(target) : queue.splice(0, target);
+        if (!completed && !closed && (nativeParser ? !nativeParser.pressured : queue.length < 256))
+          child.stdout!.resume();
+        return {
+          commits,
+          done:
+            (completed || closed) && (nativeParser ? nativeParser.exhausted : queue.length === 0),
+        };
       } finally {
         reading = false;
       }

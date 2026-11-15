@@ -84,7 +84,7 @@ function classifyBlock(block: string): DocExample["wrapper"] {
   const trimmed = block.trim();
 
   // A block that imports or default-exports is already a whole extension file.
-  if (/^import\b/.test(trimmed) || /^export default\b/m.test(trimmed)) {
+  if (/^import\b/.test(trimmed) || /^export\b/m.test(trimmed)) {
     return "module";
   }
 

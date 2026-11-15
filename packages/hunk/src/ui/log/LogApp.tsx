@@ -111,6 +111,13 @@ const LOG_MARK_COLUMN_WIDTH = LOG_FOCUS_CELLS_WIDTH + LOG_REVISION_MARK_WIDTH;
 
 /** Render graph cells with stable semantic colors from the active Hunk theme. */
 function HistoryGraphLine({ text, colors }: { text: string; colors: readonly string[] }) {
+  if (colors.length === 1) {
+    return (
+      <text style={{ height: 1, flexShrink: 0 }} fg={colors[0]}>
+        {text}
+      </text>
+    );
+  }
   return (
     <text style={{ height: 1, flexShrink: 0 }}>
       {Array.from({ length: Math.ceil(text.length / 2) }, (_, lane) => (
@@ -218,14 +225,18 @@ export function LogApp({
     ? themeSelector.baseTheme
     : monochromeLogTheme(themeSelector.baseTheme, terminalThemeMode);
   const logPalette = resolveInteractiveLogPalette(theme);
-  const graphColors = snapshot.presentation.graph ? logPalette.graphLanes : [logPalette.timeline];
+  const graphColors =
+    snapshot.presentation.graph && snapshot.graphStyle !== "native"
+      ? logPalette.graphLanes
+      : [logPalette.timeline];
   const selection = controller.getSelection();
   const parentRow = selection?.oldest;
   const scopeText = historyScopeText(
     snapshot.scope,
     snapshot.rows.some((row) => Boolean(row.cutoffLanes?.length)),
+    snapshot.graphStyle,
   );
-  const queryView = planHistoryQueryView(snapshot.query, terminal);
+  const queryView = planHistoryQueryView(snapshot.query, terminal, snapshot.graphStyle);
   let scopeLines =
     scopeText && !queryView.replacesScopeLine
       ? wrapText(scopeText, Math.max(1, terminal.width - 2))
@@ -742,6 +753,7 @@ export function LogApp({
     "hunk.view.openThemeSelector": () => themeSelector.openThemeSelector(),
     "hunk.history.editRevset": () => openEditor(),
     "hunk.history.toggleGraph": () => controller.togglePresentation("graph"),
+    "hunk.history.toggleNativeGraph": () => controller.toggleNativeGraph(),
     "hunk.history.toggleUnicode": () => controller.togglePresentation("unicode"),
     "hunk.history.toggleAuthor": () => controller.togglePresentation("author"),
     "hunk.history.toggleDate": () => controller.togglePresentation("date"),
@@ -870,7 +882,12 @@ export function LogApp({
     view: [
       commandItem("hunk.view.openThemeSelector"),
       { kind: "separator" },
-      commandItem("hunk.history.toggleGraph", { checked: snapshot.presentation.graph }),
+      commandItem("hunk.history.toggleGraph", {
+        checked: snapshot.presentation.graph && snapshot.graphStyle === "default",
+      }),
+      commandItem("hunk.history.toggleNativeGraph", {
+        checked: snapshot.presentation.graph && snapshot.graphStyle === "native",
+      }),
       commandItem("hunk.history.toggleUnicode", { checked: snapshot.presentation.unicode }),
       commandItem("hunk.history.toggleAuthor", { checked: snapshot.presentation.author }),
       commandItem("hunk.history.toggleDate", { checked: snapshot.presentation.date }),
@@ -1246,6 +1263,13 @@ export function LogApp({
       setMarksDialogIndex(0);
       consume();
       return;
+    }
+    if (snapshot.stagingGraph) {
+      if (name === "escape") {
+        controller.cancelStagingGraph();
+        consume();
+        return;
+      }
     }
     const command = dispatchAppCommand(commands, key);
     if (!command) return;
@@ -1760,6 +1784,13 @@ export function LogApp({
                       paddingLeft: markColumnWidth,
                     }}
                   >
+                    {projected.nativeAfter.map((line, afterIndex) => (
+                      <HistoryGraphLine
+                        key={`after-${afterIndex}`}
+                        text={line}
+                        colors={graphColors}
+                      />
+                    ))}
                     {projected.cutoffs.map((line, cut) => (
                       <HistoryGraphLine key={cut} text={line} colors={graphColors} />
                     ))}

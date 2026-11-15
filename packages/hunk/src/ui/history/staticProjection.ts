@@ -1,5 +1,9 @@
 import type { HistoryGraphRow } from "../../core/history/types";
-import type { ExtensionVcsHistoryScope, NamedCustomThemeConfig } from "../../extension-api/types";
+import type {
+  ExtensionVcsHistoryGraphStyle,
+  ExtensionVcsHistoryScope,
+  NamedCustomThemeConfig,
+} from "../../extension-api/types";
 import { sanitizeTerminalLine, sanitizeTerminalText } from "../../lib/terminalText";
 import { fitText, measureTextWidth } from "../lib/text";
 import { resolveTheme, type AppTheme } from "../themes";
@@ -15,11 +19,17 @@ export interface HistoryProjectionOptions {
 }
 
 /** Explain only accepted scope, keeping cutoff and fallback meanings separate from transient notices. */
-export function historyScopeText(scope: ExtensionVcsHistoryScope | undefined, hasCutoffs: boolean) {
+export function historyScopeText(
+  scope: ExtensionVcsHistoryScope | undefined,
+  hasCutoffs: boolean,
+  graphStyle: ExtensionVcsHistoryGraphStyle = "default",
+) {
   if (scope?.kind === "fallback")
     return scope.reason === "ambiguous"
       ? "Mainline ambiguous; showing visible history."
       : "Mainline unavailable; showing visible history.";
+  if (graphStyle === "native")
+    return scope?.kind === "bounded" ? "Older mainline history hidden." : "";
   return scope?.kind === "bounded" && hasCutoffs ? "~ older history hidden" : "";
 }
 
