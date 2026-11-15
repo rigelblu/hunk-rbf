@@ -11,6 +11,8 @@ import type { ExtensionLoadResult } from "../extensions/types";
 
 export interface ResolveConfiguredExtensionsOptions {
   runtimeInput: CliInput;
+  /** Preserve root-only configuration when a borrowed review input drives discovery. */
+  includeCommandConfig?: boolean;
   cwd: string;
   env?: NodeJS.ProcessEnv;
   baseVcsCatalog: VcsCatalog;
@@ -58,6 +60,7 @@ export async function resolveConfiguredExtensions(
     resolveConfiguredCliInputImpl(options.runtimeInput, {
       cwd: options.cwd,
       env: options.env,
+      includeCommandConfig: options.includeCommandConfig,
       vcsCatalog: options.discoveryCatalog ?? options.baseVcsCatalog,
     });
 
@@ -72,6 +75,7 @@ export async function resolveConfiguredExtensions(
       configured = resolveConfiguredCliInputImpl(options.runtimeInput, {
         cwd: options.cwd,
         env: options.env,
+        includeCommandConfig: options.includeCommandConfig,
         vcsCatalog: catalog,
       });
     }
@@ -114,6 +118,7 @@ export async function resolveConfiguredExtensions(
       configured = resolveConfiguredCliInputImpl(options.runtimeInput, {
         cwd: options.cwd,
         env: options.env,
+        includeCommandConfig: options.includeCommandConfig,
         vcsCatalog: provisionalCatalog,
       });
       options.assertActive?.();

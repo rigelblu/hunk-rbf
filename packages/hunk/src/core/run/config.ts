@@ -159,6 +159,8 @@ const PERSISTED_VIEW_PREFERENCE_KEYS: Array<{
 ];
 
 export interface ConfigResolutionOptions {
+  /** False for surfaces that borrow a review input only for root configuration discovery. */
+  includeCommandConfig?: boolean;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   /** Base catalog available before user extensions load. */
@@ -1182,11 +1184,15 @@ function mergeOptions(
 function resolveConfigLayer(
   source: Record<string, unknown>,
   input: CliInput,
-  { includeUserOnly = true }: { includeUserOnly?: boolean } = {},
+  {
+    includeUserOnly = true,
+    includeCommandConfig = true,
+  }: { includeUserOnly?: boolean; includeCommandConfig?: boolean } = {},
 ): ConfiguredCommonOptions {
   let resolved = readConfigPreferences(source, { includeUserOnly });
 
-  const commandSection = CONFIG_COMMAND_SECTIONS[input.kind] ? source[input.kind] : undefined;
+  const commandSection =
+    includeCommandConfig && CONFIG_COMMAND_SECTIONS[input.kind] ? source[input.kind] : undefined;
   if (isRecord(commandSection)) {
     resolved = mergeOptions(
       resolved,
@@ -1378,6 +1384,7 @@ export function resolveConfiguredCliInput(
     cwd = process.cwd(),
     env = process.env,
     vcsCatalog = EMPTY_CONFIG_VCS_CATALOG,
+    includeCommandConfig = true,
   }: ConfigResolutionOptions = {},
 ): HunkConfigResolution {
   const sources = readConfigSources(cwd, env, vcsCatalog);
@@ -1415,7 +1422,7 @@ export function resolveConfiguredCliInput(
 
   if (userConfigPath && sources.userConfig) {
     const userConfig = sources.userConfig;
-    const userLayer = resolveConfigLayer(userConfig, input);
+    const userLayer = resolveConfigLayer(userConfig, input, { includeCommandConfig });
     explicitVcsId = userLayer.vcs ?? explicitVcsId;
     resolvedOptions = mergeOptions(resolvedOptions, userLayer);
     applyCustomThemeLayer(readCustomThemes(userConfig));
@@ -1425,7 +1432,10 @@ export function resolveConfiguredCliInput(
 
   if (repoConfigPath && sources.repoConfig) {
     const repoConfig = sources.repoConfig;
-    const repoLayer = resolveConfigLayer(repoConfig, input, { includeUserOnly: false });
+    const repoLayer = resolveConfigLayer(repoConfig, input, {
+      includeUserOnly: false,
+      includeCommandConfig,
+    });
     explicitVcsId = repoLayer.vcs ?? explicitVcsId;
     resolvedOptions = mergeOptions(resolvedOptions, repoLayer);
     applyCustomThemeLayer(readCustomThemes(repoConfig));

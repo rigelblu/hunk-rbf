@@ -61,7 +61,7 @@ Sapling history are unchanged. HK-93 is recorded in the local Hunk RBF 0.11.0 re
 
 # 🔵⋯ Start history auto-refresh from config
 
-Put `history_auto_refresh = true` at the top level of `~/.config/hunk/config.toml` or a repository's `.hunk/config.toml` to start interactive `hunk log` with automatic refresh on. The built-in default is off. Repository config takes precedence over user config.
+Put `history_auto_refresh = true` at the top level of `~/.config/hunk/config.toml` or a repository's `.hunk/config.toml` to start interactive `hunk log` with automatic refresh on. The built-in default is off. Repository config takes precedence over user config. Write the key above the first `[table]` header in the file: below a header, TOML assigns it to that table, where Hunk ignores it or rejects it.
 
 F10 can turn automatic refresh on or off for the current log session without changing either config file. This setting applies only to interactive history; review `watch` is separate. If a history provider cannot report changes, manual Refresh remains available.
 
@@ -76,6 +76,21 @@ theme = { light = "catppuccin-latte", dark = "nord" }
 ```
 
 Both members are required and must name available themes, including built-in, named custom, and `terminal` themes. Each config layer replaces the whole `theme` value, so a later scalar or complete pair wins without inheriting one member from an earlier pair. Hunk switches between the configured members as the authoritative appearance changes. A failed native refresh keeps the last known appearance; when neither native nor terminal appearance is available at startup, Hunk selects the configured dark member.
+
+# 🔵⋯ Configure the history theme
+
+`hunk log` reads the root `theme` value from global and repository configuration. A `[show]` theme applies to `hunk show` and leaves history's palette unchanged. A review opened from history keeps the theme history is showing. An explicit `hunk log --theme <id>` takes precedence over configuration.
+
+For example, this configuration opens history and the reviews opened from it in Nord, and `hunk show` in GitHub Dark Dimmed:
+
+```toml
+theme = "nord"
+
+[show]
+theme = "github-dark-dimmed"
+```
+
+History retains its existing startup behavior for complete appearance pairs: it selects the configured dark member. Press `t` to inspect or change the active history theme. Color suppression, including `--color never`, still applies.
 
 # 🔵⋯ Use the terminal palette
 
@@ -141,15 +156,15 @@ removedContentBg = "#78081acc"
 
 Hunk composites partial alpha over the actual ordinary or moved diff row, then applies selection and readable foreground contrast. Existing six-digit colors remain exact, and opaque eight-digit colors are accepted anywhere a custom-theme color is valid. Partial alpha is intentionally limited to `addedContentBg` and `removedContentBg`; validation errors name any unsupported key.
 
-# 🔵⋯ Empty JJ revisions in the HK-91 candidate
+# 🔵⋯ Empty JJ revisions
 
-The isolated HK-91 candidate shows `(empty)` before a JJ revision's description in interactive, compact, and medium history. JJ reports whether the whole revision contributes changes against its auto-merged parents. A described revision can be empty; an undescribed revision can contain changes. Ref, graph, and ASCII controls leave the empty label visible.
+Since Hunk RBF 0.10.0, Hunk shows `(empty)` before a JJ revision's description in interactive, compact, and medium history. JJ reports whether the whole revision contributes changes against its auto-merged parents. A described revision can be empty; an undescribed revision can contain changes. Ref, graph, and ASCII controls leave the empty label visible.
 
-Git reporting remains unknown in this slice. Hunk RBF product work covers JJ and Git; Sapling is out of scope. This candidate is separate from the installed release.
+Git reporting remains unknown in this slice. Hunk RBF product work covers JJ and Git; Sapling is out of scope.
 
 # 🔵⋯ Identify workspace heads in JJ history
 
-HK-92 is recorded in local Hunk RBF 0.12.0. The accepted candidate is built and verified; installation and public delivery remain pending.
+Run `hunk log --vcs jj` to see where each workspace's recorded head sits in history. The default view labels every workspace head it includes; add `--all` to reach heads on the older history that view hides. Repositories with multiple workspaces show names such as `@default` and `@feature` on their revisions. A repository with one workspace shows only the current-revision marker `@`.
 
 Run `hunk log --vcs jj --all` to see where each workspace's recorded head sits in history. Repositories with multiple workspaces show names such as `@default` and `@feature` on their revisions. A repository with one workspace shows only the current-revision marker `@`.
 
@@ -157,7 +172,7 @@ Several workspace names can share a revision. The separate `@` marker identifies
 
 Interactive history uses two rows normally. Workspace names fit beside author/time when possible, with a separate current/bookmark group such as `(@, main)`. Names that need more space use one extra row, shared with any real graph join. Plain graph continuations add no row. An ending `…` marks a clipped list. **View → Decorations** controls their visibility. Press `r` to refresh, or enable **File → Auto-refresh history** to follow workspace moves. Refresh keeps the focused revision near its previous screen row; press **Home** to see new commits above it.
 
-`hunk log --vcs jj --all --static` uses the existing scrollback format. Terminal output fits the terminal width; output piped to a file includes every name.
+`hunk log --vcs jj --static` uses the existing scrollback format. Terminal output fits the terminal width; output piped to a file includes every name.
 
 ### Workspace-name visibility
 

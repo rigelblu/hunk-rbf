@@ -448,7 +448,7 @@ describe("Jujutsu history production", () => {
       "",
       "",
       "",
-      // missing 14th field
+      // missing 14th and 15th fields
     ];
     expect(() => parseJjHistory(fields.join("\0"))).toThrow(
       "Jujutsu returned a truncated history record.",

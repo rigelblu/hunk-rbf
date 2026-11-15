@@ -109,3 +109,90 @@ describe("history bootstrap cursor ownership", () => {
     }
   });
 });
+
+describe("history theme configuration scope", () => {
+  for (const scenario of [
+    { name: "user root", user: 'theme = "nord"', repo: "", cli: undefined, expected: "nord" },
+    {
+      name: "repository root",
+      user: 'theme = "nord"',
+      repo: 'theme = "dracula"',
+      cli: undefined,
+      expected: "dracula",
+    },
+    {
+      name: "explicit CLI",
+      user: 'theme = "nord"',
+      repo: 'theme = "dracula"',
+      cli: "one-dark-pro",
+      expected: "one-dark-pro",
+    },
+    {
+      name: "complete pair",
+      user: 'theme = { light = "github-light", dark = "nord" }',
+      repo: "",
+      cli: undefined,
+      expected: "nord",
+    },
+    { name: "default", user: "", repo: "", cli: undefined, expected: "github-dark-default" },
+  ]) {
+    test(`ignores show overrides while preserving ${scenario.name}`, async () => {
+      const cwd = mkdtempSync(join(tmpdir(), "hunk-history-theme-repo-"));
+      const configHome = mkdtempSync(join(tmpdir(), "hunk-history-theme-config-"));
+      mkdirSync(join(configHome, "hunk"), { recursive: true });
+      writeFileSync(
+        join(configHome, "hunk", "config.toml"),
+        `${scenario.user}\n[show]\ntheme = "github-dark-dimmed"\n`,
+      );
+      mkdirSync(join(cwd, ".hunk"), { recursive: true });
+      writeFileSync(
+        join(cwd, ".hunk", "config.toml"),
+        `${scenario.repo}\n[show]\ntheme = "github-dark-dimmed"\n`,
+      );
+      const catalog: VcsCatalog = {
+        defaultAdapterId: "test",
+        reservedIds: new Set(["test"]),
+        adapters: [
+          {
+            id: "test",
+            name: "Test",
+            detect: () => ({ id: "test", repoRoot: cwd }),
+            operations: {},
+            history: {
+              async open() {
+                return {
+                  async read() {
+                    return { commits: [], done: true };
+                  },
+                  async close() {},
+                };
+              },
+              async planReview(commit) {
+                return { kind: "revision-show", revisionId: commit.revisionId };
+              },
+            },
+          },
+        ],
+      };
+      try {
+        const bootstrap = await loadHistoryBootstrap({
+          input: { ...input, theme: scenario.cli },
+          cwd,
+          env: { XDG_CONFIG_HOME: configHome },
+          baseVcsCatalog: catalog,
+        });
+        try {
+          expect(bootstrap.input.theme).toBe(scenario.expected);
+          expect(bootstrap.initialization.theme.initialTheme).toBe(scenario.expected);
+          expect(bootstrap.initialViewPreferences.theme).toBe(scenario.expected);
+        } finally {
+          await bootstrap.close();
+          await bootstrap.extensionSession.shutdown();
+        }
+      } finally {
+        rmSync(cwd, { recursive: true, force: true });
+        rmSync(configHome, { recursive: true, force: true });
+      }
+    });
+  }
+});
