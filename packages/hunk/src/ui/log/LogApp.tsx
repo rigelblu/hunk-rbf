@@ -1,5 +1,17 @@
-import type { KeyEvent, MouseEvent as TuiMouseEvent } from "@opentui/core";
-import { flushSync, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
+import { HistoryResultNotice, historyResultNoticeLayout } from "./HistoryOperationView";
+import {
+  MouseButton,
+  TextAttributes,
+  type KeyEvent,
+  type MouseEvent as TuiMouseEvent,
+} from "@opentui/core";
+import {
+  flushSync,
+  useKeyboard,
+  usePaste,
+  useRenderer,
+  useTerminalDimensions,
+} from "@opentui/react";
 import { basename } from "node:path";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { APP_COMMAND_NAMES } from "../../core/run/commandCatalog";
@@ -25,8 +37,12 @@ import {
   type ViewPreferenceQuitScheduler,
 } from "../hooks/useViewPreferenceQuitController";
 import { fitText, measureTextWidth, wrapText } from "../lib/text";
+import { blendHex } from "../lib/color";
+import { DialogActionRow } from "../components/chrome/ConfirmDialog";
+import { planHistorySelectionFooter } from "./historySelectionFooter";
 import { handleViewPreferenceQuitPromptKey } from "../lib/viewPreferenceQuitKeys";
 import type { ThemeController } from "../theme/controller";
+import type { PreviousInputs } from "../session/previousInputs";
 import { StatusLine } from "../statusLine/StatusLine";
 import type { StatusItem } from "../statusLine/types";
 import { useStatusLine } from "../statusLine/useStatusLine";
@@ -40,19 +56,58 @@ import { buildSessionCommands } from "../lib/sessionRegistrations";
 import {
   buildHistoryCommands,
   buildHistoryHelpSections,
-  historyCommand,
   historyCommandKeyDefaults,
   type HistoryCommandHandlers,
   type HistoryCommandId,
 } from "./commands";
+import {
+  RevisionMarksDialog,
+  revisionMarksEntries,
+  revisionMarksVisibleCount,
+} from "./RevisionMarksDialog";
 import { ParentSelectorDialog } from "./ParentSelectorDialog";
-import { monochromeLogTheme, resolveInteractiveLogPalette } from "./colorPolicy";
-import { splitHistoryTitle } from "../history/title";
+import {
+  monochromeLogTheme,
+  resolveInteractiveLogPalette,
+  resolveSquashRolePalette,
+} from "./colorPolicy";
+import { formatHistoryTitle, splitHistoryTitle } from "../history/title";
 import { resolveHistoryTitlePalette } from "../history/titlePalette";
 import { formatHistoryDay } from "./formatting";
 import { LOG_DAY_HEADER_HEIGHT } from "./geometry";
 import { projectResponsiveLogRow, resolveLogViewportBodyHeight } from "./responsiveLayout";
+import { historyQueryViewRows, planHistoryQueryView } from "./historyQueryView";
+import { RevsetEditorDialog, type FieldHandle } from "./RevsetEditorDialog";
+import {
+  beginRequest,
+  decideApply,
+  editDraft,
+  editRevsetStatusHint,
+  endRequest,
+  failureNotice,
+  highlightRow,
+  insertHighlighted,
+  moveHighlight,
+  openRevsetEditor,
+  planRevsetEditor,
+  scrollNotice,
+  type EditorActionId,
+  type RevsetEditorState,
+} from "./revsetEditor";
+import {
+  HistoryMutationFlowController,
+  type HistoryInspectionToken,
+} from "./HistoryMutationFlowController";
+import type { HistoryMutationModalFrame } from "./mutationFlow";
+import { RevisionSourceMark } from "./RevisionSourcePanel";
 import { historyScopeText } from "../history/staticProjection";
+
+/** Reserve the review-range rail and Rebase-only focus marker before revision rows. */
+const LOG_FOCUS_CELLS_WIDTH = 2;
+/** Cells for operation membership, between the focus cells and graph. */
+const LOG_REVISION_MARK_WIDTH = 4;
+/** Cells every revision row spends before its graph; lines drawn under the graph skip them too. */
+const LOG_MARK_COLUMN_WIDTH = LOG_FOCUS_CELLS_WIDTH + LOG_REVISION_MARK_WIDTH;
 
 /** Render graph cells with stable semantic colors from the active Hunk theme. */
 function HistoryGraphLine({ text, colors }: { text: string; colors: readonly string[] }) {
@@ -76,6 +131,7 @@ export type LogAppOutcome =
       commits: readonly ExtensionVcsHistoryCommit[];
       count: number;
       parentRevisionId?: string;
+      inspectionToken?: HistoryInspectionToken;
     };
 
 /** Render the bounded history list inside Hunk's shared desktop chrome. */
@@ -91,8 +147,12 @@ export function LogApp({
   themeController,
   useColor,
   quitScheduler,
+  previousInputs,
+  claimInterrupt,
+  mutationFlow,
 }: {
   controller: LogController;
+  mutationFlow?: HistoryMutationFlowController;
   runtime: InteractiveHistoryRuntime;
   onOutcome: (outcome: LogAppOutcome) => void | Promise<void>;
   /** Latest review preferences retained by the routed interactive session. */
@@ -104,11 +164,27 @@ export function LogApp({
   themeController: ThemeController;
   useColor: boolean;
   quitScheduler?: ViewPreferenceQuitScheduler;
+  /** Session-lifetime list of applied revsets the editor offers again. */
+  previousInputs?: PreviousInputs;
+  /** Registers this surface's claim on raw-mode Ctrl-C, which would otherwise quit the session. */
+  claimInterrupt?: (claim: () => boolean) => () => void;
 }) {
   const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
+  const [localMutationFlow] = useState(
+    () => mutationFlow ?? new HistoryMutationFlowController(controller, runtime.mutations),
+  );
+  const operations = mutationFlow ?? localMutationFlow;
+  const operation = useSyncExternalStore(operations.subscribe, operations.getSnapshot);
+  useEffect(() => {
+    if (!mutationFlow)
+      return () => {
+        void operations.shutdown();
+      };
+  }, [mutationFlow, operations]);
   const terminal = useTerminalDimensions();
   const renderer = useRenderer();
   const [showHelp, setShowHelp] = useState(false);
+  const [marksDialogIndex, setMarksDialogIndex] = useState<number | null>(null);
   const [parentSelectorIndex, setParentSelectorIndex] = useState<number | null>(null);
   const [transientNotice, setTransientNotice] = useState("");
   const [relativeTimeNow, setRelativeTimeNow] = useState(() => Date.now());
@@ -118,6 +194,7 @@ export function LogApp({
     count: number;
   } | null>(null);
   const lastClick = useRef({ index: -1, at: 0 });
+  const selectionMenuIdentity = useRef<string | null>(null);
   // Lock synchronously before requesting review preparation so coalesced input cannot
   // open two child reviews. Quit remains available while the host settles pending work.
   const reviewPending = useRef(false);
@@ -148,8 +225,155 @@ export function LogApp({
     snapshot.scope,
     snapshot.rows.some((row) => Boolean(row.cutoffLanes?.length)),
   );
-  const scopeLines = scopeText ? wrapText(scopeText, Math.max(1, terminal.width - 2)) : [];
-  const viewportBodyHeight = resolveLogViewportBodyHeight(terminal.height - scopeLines.length);
+  const queryView = planHistoryQueryView(snapshot.query, terminal);
+  let scopeLines =
+    scopeText && !queryView.replacesScopeLine
+      ? wrapText(scopeText, Math.max(1, terminal.width - 2))
+      : [];
+  const inactiveHistoryCommandNames = useMemo(() => {
+    const names = new Set(APP_COMMAND_NAMES);
+    for (const registered of buildSessionCommands(runtime.extensionSession.current.registry)) {
+      names.add(`${registered.extensionId}.${registered.command.id}`);
+    }
+    return names;
+  }, [runtime.extensionSession]);
+  const historyKeymap = useMemo(
+    () =>
+      resolveCommandKeys({
+        defaults: historyCommandKeyDefaults(),
+        inactiveCommandNames: inactiveHistoryCommandNames,
+        userBindings: runtime.keybindings,
+      }),
+    [inactiveHistoryCommandNames, runtime.keybindings],
+  );
+  const operationFrame = (): HistoryMutationModalFrame => {
+    const visit = operations.getSnapshot().visit;
+    return {
+      theme,
+      terminalWidth: renderer.width,
+      terminalHeight: renderer.height,
+      historyHeaderRows: queryRows + historyContextLines.length,
+      highlighted: controller.getSelectedRow()?.commit ?? null,
+      inspectHighlighted: () => {
+        void requestInspectHighlighted(visit);
+      },
+      reviewMarks: () => {
+        if (operations.getSnapshot().visit === visit) setMarksDialogIndex(0);
+      },
+    };
+  };
+  const operationDocked = operation.modal?.presentation === "docked" && !operation.suspended;
+  const replacesStatus =
+    operationDocked &&
+    (operation.phase !== "destination" || operation.operation === "squash") &&
+    !statusLineState.prompt;
+  const resultNotice = !operation.modal ? operation.resultNotice : null;
+  const resultNoticeRows = resultNotice
+    ? historyResultNoticeLayout(resultNotice, terminal.width).rows
+    : 0;
+  const selectionFooter =
+    !operation.modal && !statusLineState.prompt
+      ? planHistorySelectionFooter(
+          snapshot,
+          terminal.width,
+          historyKeymap.keys,
+          (id) => executeCommand(id),
+          () => menu.openMenu("file"),
+          () => setMarksDialogIndex(0),
+          snapshot.selectionAnchor !== null || snapshot.visualSelectionActive
+            ? (selection?.count ?? 0)
+            : null,
+          {
+            provider: runtime.providerName,
+            editableQuery: Boolean(snapshot.query?.editable),
+          },
+        )
+      : null;
+  const squashContext =
+    operationDocked &&
+    operation.operation === "squash" &&
+    (operation.phase === "destination" || operation.phase === "preparing") &&
+    !operation.details;
+  const historyContextLines = squashContext
+    ? ["Squash"]
+    : selectionFooter
+      ? wrapText(selectionFooter.status, Math.max(1, terminal.width - 2))
+      : [];
+  // Reuse the query's trailing breathing row for context instead of adding another blank row.
+  const queryTop = queryView.top.filter(
+    (row, index) =>
+      !(historyContextLines.length && row.kind === "blank" && index === queryView.top.length - 1),
+  );
+  const queryRows = historyQueryViewRows(queryView) - (queryView.top.length - queryTop.length);
+  const operationRows = operationDocked ? (operation.modal?.rows?.(operationFrame()) ?? 0) : 0;
+  const selectionStatusLines: string[] = [];
+  if (selectionFooter && (snapshot.search || transientNotice || snapshot.notice)) {
+    const room = Math.max(
+      0,
+      terminal.height -
+        scopeLines.length -
+        queryRows -
+        selectionFooter.actionRows.length -
+        resultNoticeRows -
+        historyContextLines.length -
+        2 -
+        5,
+    );
+    const notice = [
+      ...(snapshot.search
+        ? [
+            fitText(
+              `/${sanitizeTerminalLine(snapshot.search)}`,
+              Math.max(1, terminal.width - 2),
+              "…",
+            ),
+          ]
+        : []),
+      ...(transientNotice || snapshot.notice
+        ? wrapText(transientNotice || snapshot.notice, Math.max(1, terminal.width - 2))
+        : []),
+    ];
+    const visible = notice.slice(0, room);
+    if (visible.length && notice.length > visible.length)
+      visible[visible.length - 1] = fitText(
+        notice.slice(visible.length - 1).join(" "),
+        terminal.width - 2,
+        "…",
+      );
+    selectionStatusLines.push(...visible);
+  }
+  if (resultNotice) {
+    // Yield repeated launch context before required actions or the complete focused entry.
+    const scopeBudget = Math.max(
+      0,
+      terminal.height -
+        queryRows -
+        operationRows -
+        resultNoticeRows -
+        (selectionFooter?.actionRows.length ?? 0) -
+        selectionStatusLines.length -
+        historyContextLines.length -
+        5,
+    );
+    scopeLines = scopeLines.slice(0, scopeBudget);
+  }
+  const markColumnWidth =
+    operation.visit && operation.operation === "rebase"
+      ? LOG_MARK_COLUMN_WIDTH
+      : LOG_FOCUS_CELLS_WIDTH;
+  // Render and measure the same effective width when Rebase adds its source rail.
+  const rowProjectionWidth = terminal.width - markColumnWidth + LOG_FOCUS_CELLS_WIDTH;
+  const viewportBodyHeight = resolveLogViewportBodyHeight(
+    terminal.height -
+      scopeLines.length -
+      queryRows -
+      operationRows -
+      resultNoticeRows -
+      (selectionFooter?.actionRows.length ?? 0) -
+      selectionStatusLines.length -
+      historyContextLines.length +
+      (replacesStatus || selectionFooter ? 1 : 0),
+  );
   const currentViewPreferences = useMemo(
     () => ({
       ...sessionViewPreferences,
@@ -187,6 +411,13 @@ export function LogApp({
     quitScheduler,
   });
 
+  /** Copy the retained original identity even when its mark no longer resolves. */
+  const copyMark = (revisionId: string) => {
+    if (renderer.isOsc52Supported?.() && typeof renderer.copyToClipboardOSC52 === "function") {
+      renderer.copyToClipboardOSC52(revisionId);
+      setTransientNotice(`Copied ${sanitizeTerminalLine(revisionId.slice(0, 8))}`);
+    } else setTransientNotice("Clipboard is unavailable in this terminal.");
+  };
   const copySelected = (row = controller.getSelectedRow()) => {
     const currentRow = row;
     if (!currentRow) return;
@@ -197,13 +428,21 @@ export function LogApp({
       setTransientNotice("Clipboard is unavailable in this terminal.");
     }
   };
-  const openSelected = async (parentRevisionId?: string, pending = false) => {
+  const openSelected = async (
+    parentRevisionId?: string,
+    pending = false,
+    inspectionToken?: HistoryInspectionToken,
+  ) => {
     if (reviewPending.current && !pending) return;
     reviewPending.current = true;
     interactionActive.current = true;
     reviewQuitEnabled.current = false;
     await controller.settleNavigation();
-    const currentSelection = controller.getSelection();
+    const highlighted = controller.getSelectedRow();
+    const currentSelection =
+      inspectionToken && highlighted
+        ? { newest: highlighted, oldest: highlighted, focus: highlighted, count: 1 }
+        : controller.getSelection();
     if (!currentSelection) {
       reviewPending.current = false;
       return;
@@ -224,7 +463,10 @@ export function LogApp({
           newestCommit: currentSelection.newest.commit,
           oldestCommit: currentSelection.oldest.commit,
         },
-        commits: controller.getSelectedRows(8).map((row) => row.commit),
+        commits: inspectionToken
+          ? [currentSelection.focus.commit]
+          : controller.getSelectedRows(8).map((row) => row.commit),
+        ...(inspectionToken ? { inspectionToken } : {}),
         count: currentSelection.count,
         ...(parentRevisionId === undefined ? {} : { parentRevisionId }),
       });
@@ -291,22 +533,199 @@ export function LogApp({
     }
     await openSelected(undefined, true);
   };
-  const inactiveHistoryCommandNames = useMemo(() => {
-    const names = new Set(APP_COMMAND_NAMES);
-    for (const registered of buildSessionCommands(runtime.extensionSession.current.registry)) {
-      names.add(`${registered.extensionId}.${registered.command.id}`);
+  /** Inspect only the highlight, retaining any unrelated review range and operation sources. */
+  const requestInspectHighlighted = async (expectedVisit: symbol | null) => {
+    if (reviewPending.current || !expectedVisit) return;
+    operations.inspectSource(expectedVisit, async (token) => {
+      if (!controller.getSelectedRow()) {
+        operations.finishInspection(token);
+        return;
+      }
+      await openSelected(undefined, false, token);
+    });
+  };
+  // The revset editor. Its state lives here while it is open; applying goes through the controller.
+  const queryGeneration = snapshot.query?.generation ?? 0;
+  const watchedQueryGeneration = useRef(queryGeneration);
+  const [editor, setEditor] = useState<RevsetEditorState | null>(null);
+  // Keys in one stdin chunk read the draft the previous key wrote without waiting for a render.
+  // Opening and closing commit synchronously so those keys reach the correct native field.
+  const editorRef = useRef<RevsetEditorState | null>(null);
+  const editorAbort = useRef<AbortController | null>(null);
+  const editorField = useRef<FieldHandle | null>(null);
+  const updateEditor = (
+    next:
+      | RevsetEditorState
+      | null
+      | ((current: RevsetEditorState | null) => RevsetEditorState | null),
+  ) => {
+    const value = typeof next === "function" ? next(editorRef.current) : next;
+    editorRef.current = value;
+    // Close before a later opening key can reuse the old native field and its caret.
+    if (value === null) flushSync(() => setEditor(null));
+    else setEditor(value);
+    // The field has its own buffer, which only follows React at the next commit. Keep it level
+    // with the draft now, so a key later in the same chunk edits the text this change made.
+    const field = editorField.current;
+    if (value && field) {
+      // The input puts its caret after the text it is given.
+      if (field.value !== value.draft) field.value = value.draft;
+      if (value.phase === "editing") field.focus();
+      else field.blur();
     }
-    return names;
-  }, [runtime.extensionSession]);
-  const historyKeymap = useMemo(
+  };
+  const editorLayout = editor ? planRevsetEditor(editor, terminal) : null;
+  const openEditor = () => {
+    const query = controller.getSnapshot().query;
+    if (!query?.editable || editorRef.current || reviewPending.current) return;
+    // Mount and focus the native input before the next key or paste in this stdin chunk.
+    flushSync(() => updateEditor(openRevsetEditor(query, previousInputs?.list() ?? [])));
+  };
+  /** Esc, Ctrl+C and an outside click: abort a busy request first, close the editor second. */
+  const cancelEditor = () => {
+    const current = editorRef.current;
+    if (!current) return;
+    if (current.phase === "editing") {
+      updateEditor(null);
+      return;
+    }
+    editorAbort.current?.abort();
+    editorAbort.current = null;
+    updateEditor(endRequest(current));
+  };
+  // Raw-mode Ctrl-C reaches the session before any key handler, so an open editor claims it there.
+  const cancelEditorRef = useRef(cancelEditor);
+  cancelEditorRef.current = cancelEditor;
+  useEffect(
     () =>
-      resolveCommandKeys({
-        defaults: historyCommandKeyDefaults(),
-        inactiveCommandNames: inactiveHistoryCommandNames,
-        userBindings: runtime.keybindings,
+      claimInterrupt?.(() => {
+        if (reviewPending.current) return false;
+        const currentOperation = operations.getSnapshot();
+        if (currentOperation.modal) {
+          if (currentOperation.visit) void operations.cancelVisit(currentOperation.visit);
+          else operations.closeResult();
+          return true;
+        }
+        if (!editorRef.current) return false;
+        cancelEditorRef.current();
+        return true;
       }),
-    [inactiveHistoryCommandNames, runtime.keybindings],
+    [claimInterrupt, operations],
   );
+  /** Read current bounds for input events that precede React's resize commit. */
+  const planEditorForInput = (state: RevsetEditorState) =>
+    planRevsetEditor(state, { width: renderer.width, height: renderer.height });
+  const runEditorRequest = (request: Parameters<typeof beginRequest>[1]) => {
+    const current = editorRef.current;
+    if (!current || current.phase !== "editing") return;
+    const layout = planEditorForInput(current);
+    if (layout.kind === "too-small") return;
+    const abort = new AbortController();
+    editorAbort.current = abort;
+    updateEditor(
+      beginRequest(current, request, {
+        height: layout.frame.height,
+        top: layout.frame.top,
+        compact: layout.compact,
+      }),
+    );
+    void controller.replaceQuery(request, abort.signal).then((result) => {
+      if (editorAbort.current === abort) editorAbort.current = null;
+      // An Esc already returned the editor to its draft.
+      if (abort.signal.aborted) return;
+      if (result.status === "applied") {
+        previousInputs?.recordOutcome(request, result);
+        updateEditor(null);
+      } else if (result.status === "failed") {
+        updateEditor(
+          (latest) => latest && endRequest(latest, failureNotice(request, result.reason)),
+        );
+      } else {
+        updateEditor((latest) => latest && endRequest(latest));
+      }
+    });
+  };
+  const applyEditor = () => {
+    const current = editorRef.current;
+    if (!current || current.phase !== "editing") return;
+    if (planEditorForInput(current).kind === "too-small") return;
+    const decision = decideApply(current);
+    if (decision.kind === "reject")
+      updateEditor({ ...current, notice: decision.notice, noticeOffset: 0 });
+    else if (decision.kind === "noop") updateEditor(null);
+    else runEditorRequest(decision.request);
+  };
+  const runEditorAction = (id: EditorActionId) => {
+    if (id === "cancel") cancelEditor();
+    else if (id === "apply") applyEditor();
+    else runEditorRequest({ kind: "reset" });
+  };
+  const insertEditorRow = (index: number) => {
+    const current = editorRef.current;
+    if (!current || current.phase !== "editing") return;
+    if (planEditorForInput(current).kind === "too-small") return;
+    updateEditor(insertHighlighted(highlightRow(current, index)));
+    // Insertion places the caret at the end even when the field already held this text.
+    editorField.current?.gotoBufferEnd();
+  };
+  /** Handle one key for the open editor; false leaves it to the focused field. */
+  const handleEditorKey = (key: KeyEvent) => {
+    const current = editorRef.current;
+    if (!current) return false;
+    const layout = planEditorForInput(current);
+    const name = key.name;
+    const busy = current.phase !== "editing";
+    if (name === "escape" || (key.ctrl && name === "c")) return (cancelEditor(), true);
+    // The too-small screen has no field: nothing edits the draft or acts on it, and only a cancel
+    // gets through. The draft is kept for when the terminal grows again.
+    if (layout.kind === "too-small") return true;
+    if (name === "f2") return (applyEditor(), true);
+    if (name === "f3") return (runEditorAction("reset"), true);
+    if (name === "return" || name === "enter") {
+      if (busy) return true;
+      if (current.highlight !== null) insertEditorRow(current.highlight);
+      else applyEditor();
+      return true;
+    }
+    const step =
+      name === "tab"
+        ? key.shift
+          ? -1
+          : 1
+        : name === "down" || (key.ctrl && name === "n")
+          ? 1
+          : name === "up" || (key.ctrl && name === "p")
+            ? -1
+            : 0;
+    if (step !== 0) {
+      if (!busy && layout.kind === "layout" && layout.listVisible)
+        updateEditor(moveHighlight(current, step));
+      return true;
+    }
+    if (name === "pageup" || name === "pagedown") {
+      if (layout.kind === "layout" && layout.noticeScroll) {
+        const page = layout.noticeScroll.visible;
+        updateEditor(scrollNotice(current, layout, name === "pageup" ? -page : page));
+      }
+      return true;
+    }
+    // While busy the field is read-only, and a key that follows Apply in the same chunk must not
+    // edit it before the field loses focus.
+    if (busy) return true;
+    // A layout without a field consumes editing keys; the native field handles every other edit.
+    return !editorField.current;
+  };
+  // Keep paste away from a busy or hidden field, including one awaiting the resize commit.
+  usePaste((event) => {
+    const current = editorRef.current;
+    if (!current) return;
+    if (
+      current.phase !== "editing" ||
+      planEditorForInput(current).kind === "too-small" ||
+      !editorField.current
+    )
+      event.preventDefault();
+  });
   /** Open the host prompt on the status line; Enter selects the next match of the typed query. */
   const beginSearch = () => {
     void statusLineStore
@@ -321,6 +740,7 @@ export function LogApp({
     "hunk.history.refresh": () => void controller.refresh(),
     "hunk.app.quit": (key) => requestLogQuit(key.ctrl && key.name === "c" ? 130 : undefined),
     "hunk.view.openThemeSelector": () => themeSelector.openThemeSelector(),
+    "hunk.history.editRevset": () => openEditor(),
     "hunk.history.toggleGraph": () => controller.togglePresentation("graph"),
     "hunk.history.toggleUnicode": () => controller.togglePresentation("unicode"),
     "hunk.history.toggleAuthor": () => controller.togglePresentation("author"),
@@ -336,14 +756,41 @@ export function LogApp({
       });
     },
     "hunk.history.startVisualSelection": () => controller.beginVisualSelection(),
-    "hunk.history.clearSelection": () => void controller.clearSelection(),
+    "hunk.history.squash": () => {
+      void operations.beginSources("squash");
+    },
+    "hunk.history.rebase": () => {
+      void operations.beginSources("rebase");
+    },
+    "hunk.history.operationResult": () => operations.openResult(),
+    "hunk.history.clearSelection": () => void controller.clearReviewRange(),
+    "hunk.history.toggleRevisionSelection": () => {
+      const expected =
+        menu.getActiveMenuId() === "navigate"
+          ? { revisionId: selectionMenuIdentity.current }
+          : undefined;
+      void controller
+        .queueRevisionSelection(expected)
+        .then((result) => {
+          if (result === "unavailable")
+            setTransientNotice("Revision changed; selection unchanged.");
+        })
+        .catch(() => setTransientNotice("Revision changed; selection unchanged."));
+    },
+    "hunk.history.clearRevisionSelection": () => {
+      controller.clearRevisionMarks();
+    },
     "hunk.history.previousCommit": () =>
       void controller.move(-1, viewportBodyHeight, {
-        extend: controller.getSnapshot().visualSelectionActive,
+        extend:
+          (!operations.getSnapshot().visit || operations.getSnapshot().phase === "sources") &&
+          controller.getSnapshot().visualSelectionActive,
       }),
     "hunk.history.nextCommit": () =>
       void controller.move(1, viewportBodyHeight, {
-        extend: controller.getSnapshot().visualSelectionActive,
+        extend:
+          (!operations.getSnapshot().visit || operations.getSnapshot().phase === "sources") &&
+          controller.getSnapshot().visualSelectionActive,
       }),
     "hunk.history.extendPrevious": () =>
       void controller.move(-1, viewportBodyHeight, { extend: true }),
@@ -367,6 +814,7 @@ export function LogApp({
   };
   const commands = buildHistoryCommands({
     getSnapshot: controller.getSnapshot,
+    getOperation: operations.getSnapshot,
     handlers: commandHandlers,
     resolvedKeys: historyKeymap.keys,
   });
@@ -393,12 +841,11 @@ export function LogApp({
     id: HistoryCommandId,
     options: Pick<Extract<MenuEntry, { kind: "item" }>, "checked"> = {},
   ): Extract<MenuEntry, { kind: "item" }> => {
-    const definition = historyCommand(id);
     const command = findAppCommandById(commands, id)!;
     return {
       kind: "item",
       commandId: id,
-      label: definition.title,
+      label: command.title,
       ...(command.keyLabels.length ? { hint: command.keyLabels.join(" / ") } : {}),
       disabled: command.isEnabled ? !command.isEnabled() : false,
       action: () => executeCommand(id),
@@ -410,6 +857,7 @@ export function LogApp({
       commandItem("hunk.history.openSelection"),
       commandItem("hunk.history.copyRevision"),
       commandItem("hunk.history.refresh"),
+      commandItem("hunk.history.operationResult"),
       {
         kind: "item",
         label: `Auto-refresh history: ${autoRefreshEnabled ? "on" : "off"}`,
@@ -432,8 +880,14 @@ export function LogApp({
       commandItem("hunk.history.toggleDecorations", {
         checked: snapshot.presentation.decorations,
       }),
+      ...(snapshot.query?.editable
+        ? [{ kind: "separator" } as const, commandItem("hunk.history.editRevset")]
+        : []),
     ],
     navigate: [
+      commandItem("hunk.history.toggleRevisionSelection"),
+      commandItem("hunk.history.clearRevisionSelection"),
+      { kind: "separator" },
       commandItem("hunk.history.previousCommit"),
       commandItem("hunk.history.nextCommit"),
       commandItem("hunk.history.startVisualSelection"),
@@ -452,6 +906,9 @@ export function LogApp({
       commandItem("hunk.history.previousMatch"),
     ],
     commit: [
+      commandItem("hunk.history.squash"),
+      commandItem("hunk.history.rebase"),
+      { kind: "separator" },
       commandItem("hunk.history.openSelection"),
       commandItem("hunk.history.copyRevision"),
       { kind: "separator" },
@@ -460,12 +917,29 @@ export function LogApp({
     ],
     help: [commandItem("hunk.app.toggleHelp"), commandItem("hunk.history.showAbout")],
   };
-  const menu = useMenuController(menus);
+  const menu = useMenuController(menus, (id) => {
+    selectionMenuIdentity.current =
+      id === "navigate" ? (controller.getSelectedRow()?.commit.revisionId ?? null) : null;
+  });
+  let menuLeft = 1;
+  const historyMenuSpecs =
+    terminal.width >= 42
+      ? menu.menuSpecs
+      : menu.menuSpecs
+          .filter((spec) => spec.id !== "view")
+          .map((spec) => {
+            const compact = { ...spec, left: menuLeft, width: measureTextWidth(spec.label) + 1 };
+            menuLeft += compact.width;
+            return compact;
+          });
 
   const activeInteraction = Boolean(
+    operation.visit ||
+    editor ||
     menu.activeMenuId ||
     statusLineState.prompt ||
     parentSelectorIndex !== null ||
+    marksDialogIndex !== null ||
     themeSelector.themeSelectorOpen ||
     showHelp ||
     viewPreferenceQuit.saveConfigPromptOpen ||
@@ -476,6 +950,10 @@ export function LogApp({
   interactionActive.current = activeInteraction;
 
   useEffect(() => {
+    // Consume the restart flag even while auto-refresh is off, so a later enable is not mistaken
+    // for a restart caused by an Apply.
+    const queryRestart = watchedQueryGeneration.current !== queryGeneration;
+    watchedQueryGeneration.current = queryGeneration;
     if (!autoRefreshEnabled) return;
     if (!runtime.historyWatchPlan || !runtime.historyWatchSignature) {
       controller.setNotice("This VCS provider supports manual history refresh only.");
@@ -487,7 +965,8 @@ export function LogApp({
     let watchController: ReturnType<typeof createWatchController> | undefined;
     const start = async () => {
       try {
-        const returnedFromReview = refreshOnMountGeneration > 0;
+        // A new accepted query restarts the watch without a refresh: Apply already read it.
+        const returnedFromReview = refreshOnMountGeneration > 0 && !queryRestart;
         const refreshedOnReturn = returnedFromReview ? await controller.refresh() : true;
         const initialSignature = refreshedOnReturn
           ? await runtime.historyWatchSignature!(abort.signal)
@@ -555,6 +1034,7 @@ export function LogApp({
     controller,
     onAutoRefreshEnabledChange,
     refreshOnMountGeneration,
+    queryGeneration,
     runtime,
   ]);
 
@@ -576,8 +1056,8 @@ export function LogApp({
     return () => clearInterval(timer);
   }, []);
   useEffect(() => {
-    controller.setViewport(terminal.width, viewportBodyHeight);
-    const geometry = controller.planViewport(viewportBodyHeight, terminal.width);
+    controller.setViewport(rowProjectionWidth, viewportBodyHeight);
+    const geometry = controller.planViewport(viewportBodyHeight, rowProjectionWidth);
     if (
       geometry.entries.at(-1)?.index !== undefined &&
       geometry.entries.at(-1)!.index + 8 >= snapshot.rows.length &&
@@ -589,7 +1069,7 @@ export function LogApp({
     controller,
     snapshot.historyDone,
     snapshot.presentation,
-    terminal.width,
+    rowProjectionWidth,
     snapshot.rows,
     snapshot.selected,
     snapshot.top,
@@ -639,6 +1119,33 @@ export function LogApp({
       else {
         const quit = findAppCommandById(commands, "hunk.app.quit");
         if (quit?.match(key)) quit.run(key, 1);
+      }
+      consume();
+      return;
+    }
+    if (operation.modal?.presentation === "overlay") {
+      operation.modal.handleKey(key, operationFrame());
+      consume();
+      return;
+    }
+    if (editorRef.current) {
+      // The open editor owns every key; typing it does not handle goes to the focused field.
+      if (handleEditorKey(key)) consume();
+      return;
+    }
+    if (marksDialogIndex !== null) {
+      const entries = revisionMarksEntries(snapshot.marks);
+      const current = Math.min(marksDialogIndex, Math.max(0, entries.length - 1));
+      const page = revisionMarksVisibleCount(terminal.height, entries.length);
+      if (name === "escape") setMarksDialogIndex(null);
+      else if (name === "up" || name === "pageup")
+        setMarksDialogIndex(Math.max(0, current - (name === "up" ? 1 : page)));
+      else if (name === "down" || name === "pagedown")
+        setMarksDialogIndex(Math.min(entries.length - 1, current + (name === "down" ? 1 : page)));
+      else if (name === "y" && entries[current]) copyMark(entries[current]!.mark.revisionId);
+      else if (name === "r" && snapshot.markStatus !== "checking") {
+        controller.removeUnresolvedMarks();
+        setMarksDialogIndex(null);
       }
       consume();
       return;
@@ -706,12 +1213,46 @@ export function LogApp({
       consume();
       return;
     }
+    // Foreground prompts/menus own Escape first; consume notice dismissal before range clearing.
+    const noticeState = operations.getSnapshot();
+    if (
+      noticeState.resultNotice &&
+      !noticeState.modal &&
+      name === "escape" &&
+      !key.ctrl &&
+      !key.option &&
+      !key.meta &&
+      !key.super &&
+      !key.hyper &&
+      !key.shift &&
+      key.eventType !== "release" &&
+      key.eventType !== "repeat" &&
+      !key.repeated
+    ) {
+      operations.dismissResultNotice(noticeState.attempt);
+      consume();
+      return;
+    }
+    const activeModal = operations.getSnapshot().modal;
+    if (activeModal && activeModal.handleKey(key, operationFrame())) {
+      consume();
+      return;
+    }
+    if (
+      !operation.visit &&
+      name === "r" &&
+      snapshot.marks.some((mark) => mark.kind === "unresolved")
+    ) {
+      setMarksDialogIndex(0);
+      consume();
+      return;
+    }
     const command = dispatchAppCommand(commands, key);
     if (!command) return;
     consume();
   });
 
-  const viewportGeometry = controller.planViewport(viewportBodyHeight, terminal.width);
+  const viewportGeometry = controller.planViewport(viewportBodyHeight, rowProjectionWidth);
   const visible = viewportGeometry.entries;
   const visualSelectionKey = findAppCommandById(commands, "hunk.history.startVisualSelection")
     ?.keyLabels[0];
@@ -724,23 +1265,56 @@ export function LogApp({
   const statusText =
     transientNotice ||
     snapshot.notice ||
-    ((selection?.count ?? 0) > 1 || snapshot.visualSelectionActive
-      ? `${selection?.count ?? 0} commit${selection?.count === 1 ? "" : "s"} selected`
-      : `${runtime.providerName} · ${snapshot.rows.length}${snapshot.historyDone ? " commits" : "+ commits"}`);
+    `${runtime.providerName} · ${snapshot.rows.length}${snapshot.historyDone ? " commits" : "+ commits"}`;
+  const statusHintShown = editRevsetStatusHint(
+    statusHint,
+    snapshot.query?.editable
+      ? findAppCommandById(commands, "hunk.history.editRevset")?.keyLabels[0]
+      : undefined,
+    statusText,
+    terminal.width,
+  );
   const statusItems: StatusItem[] = [
     { id: "log:status", spans: [{ text: statusText, tone: "muted" }], priority: 1 },
   ];
+  if (snapshot.selectionAnchor !== null || snapshot.visualSelectionActive) {
+    statusItems.push({
+      id: "log:range",
+      spans: [
+        {
+          text: `${selection?.count ?? 0} in review range`,
+          tone: "muted",
+        },
+      ],
+      priority: 2,
+    });
+  }
+  if (snapshot.selectionAnchor !== null || snapshot.visualSelectionActive) {
+    statusItems.push({
+      id: "log:clear",
+      spans: [{ text: "Clear selection", tone: "muted" }],
+      priority: 0,
+    });
+  }
   if (snapshot.search) {
     statusItems.push({ id: "log:search", spans: [{ text: `/${snapshot.search}`, tone: "muted" }] });
   }
-  if (statusHint) {
+  if (statusHintShown) {
     statusItems.push({
       id: "log:hint",
-      spans: [{ text: statusHint, tone: "muted" }],
+      spans: [{ text: statusHintShown, tone: "muted" }],
       alignment: "right",
       priority: -1,
     });
   }
+  /** Scroll history from its rows or breathing space in very short terminals. */
+  const scrollHistory = (event: TuiMouseEvent) => {
+    menu.closeMenu();
+    const direction = event.scroll?.direction;
+    const delta = direction === "up" ? -3 : direction === "down" ? 3 : 0;
+    if (delta && !controller.scrollEntry(delta, viewportBodyHeight))
+      controller.move(delta, viewportBodyHeight);
+  };
   return (
     <box
       style={{
@@ -752,7 +1326,8 @@ export function LogApp({
     >
       <MenuBar
         activeMenuId={menu.activeMenuId}
-        menuSpecs={menu.menuSpecs}
+        menuSpecs={historyMenuSpecs}
+        compact={terminal.width < 42}
         terminalWidth={terminal.width}
         theme={theme}
         topTitle={`${sanitizeTerminalLine(basename(runtime.repoRoot))} · ${sanitizeTerminalLine(runtime.providerName)} history`}
@@ -761,7 +1336,46 @@ export function LogApp({
         }}
         onToggleMenu={menu.toggleMenu}
       />
-      <box style={{ width: "100%", height: 1 }} />
+
+      {queryTop.length ? (
+        <box
+          style={{
+            height: queryTop.length,
+            width: "100%",
+            flexDirection: "column",
+            paddingLeft: 1,
+            paddingRight: 1,
+          }}
+        >
+          {queryTop.map((row, index) =>
+            row.kind === "blank" ? (
+              <box key={index} style={{ width: "100%", height: 1 }} />
+            ) : (
+              <text key={index} fg={row.kind === "revset" ? theme.text : theme.muted}>
+                {row.text}
+              </text>
+            ),
+          )}
+        </box>
+      ) : null}
+      {historyContextLines.length ? (
+        <box
+          style={{
+            width: "100%",
+            height: historyContextLines.length,
+            paddingLeft: 1,
+            paddingRight: 1,
+            flexDirection: "column",
+          }}
+        >
+          {historyContextLines.map((line, index) => (
+            <text key={index} fg={squashContext ? theme.text : theme.muted} style={{ height: 1 }}>
+              {squashContext ? <b>{line}</b> : line}
+            </text>
+          ))}
+        </box>
+      ) : null}
+      <box style={{ width: "100%", height: 1 }} onMouseScroll={scrollHistory} />
       <box
         style={{
           width: "100%",
@@ -771,13 +1385,7 @@ export function LogApp({
           paddingRight: 1,
         }}
         onMouseUp={() => menu.closeMenu()}
-        onMouseScroll={(event: TuiMouseEvent) => {
-          menu.closeMenu();
-          const direction = event.scroll?.direction;
-          const delta = direction === "up" ? -3 : direction === "down" ? 3 : 0;
-          if (delta && !controller.scrollEntry(delta, viewportBodyHeight))
-            controller.move(delta, viewportBodyHeight);
-        }}
+        onMouseScroll={scrollHistory}
       >
         {openingCommit ? (
           <box
@@ -802,6 +1410,10 @@ export function LogApp({
             </text>
             <text fg={theme.muted}>Preparing review…</text>
           </box>
+        ) : snapshot.historyDone && visible.length === 0 ? (
+          <text fg={theme.muted}>
+            {snapshot.query?.mode === "custom" ? "No revisions match this revset." : "No commits"}
+          </text>
         ) : (
           visible.map(({ index, row, showDayHeader, height }) => {
             const selected =
@@ -811,25 +1423,39 @@ export function LogApp({
             const projected = projectResponsiveLogRow({
               row,
               presentation: snapshot.presentation,
-              width: terminal.width,
+              width: rowProjectionWidth,
               now: relativeTimeNow,
             });
-            const titlePalette = resolveHistoryTitlePalette(
-              theme,
-              selected ? theme.selectedHunk : theme.background,
-              useColor,
+            const operationMark =
+              operation.phase === "destination" ||
+              (operation.operation === "squash" && operation.phase === "preparing")
+                ? operation.modal?.rowMark?.(row.commit, operationFrame())
+                : null;
+            const persistentSelected = snapshot.marks.some(
+              (mark) => mark.kind === "resolved" && mark.revisionId === row.commit.revisionId,
             );
-            /** Preserve the existing revision/summary action only on its own rendered cells. */
+            /** Apply revision-cell actions without treating source selection as review navigation. */
             const handleRevisionMouseUp = (event: TuiMouseEvent) => {
               event.stopPropagation();
+              if (event.button !== MouseButton.LEFT) return;
               clearTransientNotice();
+              if (event.modifiers.ctrl) {
+                lastClick.current = { index: -1, at: 0 };
+                const visit = operation.visit;
+                if (visit && operations.getSnapshot().phase === "sources")
+                  operations.toggleSource(visit, row.commit.revisionId);
+                return;
+              }
               if (event.modifiers.shift) {
+                if (operations.getSnapshot().visit && operations.getSnapshot().phase !== "sources")
+                  return;
                 lastClick.current = { index: -1, at: 0 };
                 void controller.select(index, viewportBodyHeight, { extend: true });
                 return;
               }
               const copyIconStart =
                 1 +
+                markColumnWidth +
                 projected.graphWidth +
                 projected.leftWidth +
                 projected.columnGap +
@@ -837,9 +1463,47 @@ export function LogApp({
                 measureTextWidth(projected.copyIcon);
               void controller.select(index, viewportBodyHeight).then(() => {
                 if (event.x >= copyIconStart) copySelected(row);
-                else void openSelected();
+                else if (!operations.getSnapshot().visit) void openSelected();
               });
             };
+            const sourceSelected = operationMark?.tags.includes("from");
+            const rowBackground =
+              index === snapshot.selected
+                ? theme.selectedHunk
+                : useColor && (persistentSelected || sourceSelected)
+                  ? blendHex(theme.selectedHunk, theme.background, 0.4)
+                  : selected
+                    ? blendHex(theme.selectedHunk, theme.background, 0.2)
+                    : theme.background;
+            const squashRole =
+              operation.operation === "squash"
+                ? operationMark?.tags.find((tag) => tag === "from" || tag === "into")
+                : undefined;
+            // Keep operation cues on a measured row even when metadata needs no spill row.
+            const membership = [
+              squashRole === "from"
+                ? "From"
+                : squashRole === "into"
+                  ? "Into"
+                  : !operation.visit && persistentSelected
+                    ? "Selected"
+                    : "",
+              ...(operationMark?.tags
+                .filter((tag) => tag !== squashRole)
+                .map((tag) => `[${tag}]`) ?? []),
+            ]
+              .filter(Boolean)
+              .join(" ");
+            const title = membership
+              ? formatHistoryTitle(
+                  row.commit,
+                  Math.max(0, projected.leftWidth - measureTextWidth(membership) - 1),
+                )
+              : projected.title;
+            const rolePalette = squashRole
+              ? resolveSquashRolePalette(theme, squashRole, rowBackground, useColor)
+              : undefined;
+            const titlePalette = resolveHistoryTitlePalette(theme, rowBackground, useColor);
             return (
               <box
                 key={row.commit.revisionId}
@@ -861,34 +1525,58 @@ export function LogApp({
                   }}
                 >
                   {showDayHeader ? (
-                    <text>
-                      <span fg={logPalette.timeline}>
-                        {snapshot.presentation.unicode ? "○─" : "o-"}
-                      </span>
-                      <span fg={logPalette.separator}> </span>
-                      <span fg={logPalette.dayHeading}>
-                        {fitText(
-                          formatHistoryDay(row.commit.authoredAt),
-                          Math.max(1, terminal.width - 5),
-                        )}
-                      </span>
-                    </text>
-                  ) : null}
-                  {showDayHeader ? (
-                    <text fg={logPalette.timeline}>
-                      {snapshot.presentation.unicode ? "│" : "|"}
-                    </text>
+                    <box
+                      style={{
+                        height: LOG_DAY_HEADER_HEIGHT,
+                        flexShrink: 0,
+                        flexDirection: "column",
+                        paddingLeft: markColumnWidth,
+                      }}
+                    >
+                      <text>
+                        <span fg={logPalette.timeline}>
+                          {snapshot.presentation.unicode ? "○─" : "o-"}
+                        </span>
+                        <span fg={logPalette.separator}> </span>
+                        <span fg={logPalette.dayHeading}>
+                          {fitText(
+                            formatHistoryDay(row.commit.authoredAt),
+                            Math.max(1, terminal.width - markColumnWidth - 5),
+                          )}
+                        </span>
+                      </text>
+                      <text fg={logPalette.timeline}>
+                        {snapshot.presentation.unicode ? "│" : "|"}
+                      </text>
+                    </box>
                   ) : null}
                   <box
                     style={{
                       height: projected.textRowCount,
                       width: "100%",
                       flexDirection: "row",
-                      backgroundColor: selected ? theme.selectedHunk : theme.background,
+                      backgroundColor: rowBackground,
                     }}
                     onMouseUp={(event: TuiMouseEvent) => {
                       clearTransientNotice();
+                      if (
+                        event.button !== MouseButton.LEFT ||
+                        operation.modal?.presentation === "overlay"
+                      )
+                        return;
+                      if (event.modifiers.ctrl) {
+                        lastClick.current = { index: -1, at: 0 };
+                        const visit = operation.visit;
+                        if (visit && operations.getSnapshot().phase === "sources")
+                          operations.toggleSource(visit, row.commit.revisionId);
+                        return;
+                      }
                       if (event.modifiers.shift) {
+                        if (
+                          operations.getSnapshot().visit &&
+                          operations.getSnapshot().phase !== "sources"
+                        )
+                          return;
                         lastClick.current = { index: -1, at: 0 };
                         void controller.select(index, viewportBodyHeight, { extend: true });
                         return;
@@ -897,11 +1585,43 @@ export function LogApp({
                       const shouldOpen =
                         lastClick.current.index === index && now - lastClick.current.at < 400;
                       void controller.select(index, viewportBodyHeight).then(() => {
-                        if (shouldOpen) void openSelected();
+                        if (shouldOpen && !operations.getSnapshot().visit) void openSelected();
                       });
                       lastClick.current = { index, at: now };
                     }}
                   >
+                    <box
+                      style={{
+                        width: LOG_FOCUS_CELLS_WIDTH,
+                        height: projected.textRowCount,
+                        flexShrink: 0,
+                      }}
+                    >
+                      <text
+                        fg={theme.accent}
+                      >{`${operation.operation === "rebase" && operation.visit && index === snapshot.selected ? ">" : " "}${selected && (snapshot.selectionAnchor !== null || snapshot.visualSelectionActive) ? "|" : " "}`}</text>
+                    </box>
+                    {operation.visit && operation.operation === "rebase" ? (
+                      <RevisionSourceMark
+                        selected={operations.indicator(row.commit.revisionId) === "✓"}
+                        editable={
+                          operation.phase === "sources" &&
+                          !operation.suspended &&
+                          !menu.activeMenuId &&
+                          marksDialogIndex === null &&
+                          !statusLineState.prompt
+                        }
+                        height={projected.textRowCount}
+                        theme={theme}
+                        onMouseGesture={() => {
+                          lastClick.current = { index: -1, at: 0 };
+                        }}
+                        onToggle={() => {
+                          const visit = operation.visit;
+                          if (visit) operations.toggleSource(visit, row.commit.revisionId);
+                        }}
+                      />
+                    ) : null}
                     {projected.graphWidth ? (
                       <box
                         style={{
@@ -926,14 +1646,22 @@ export function LogApp({
                     >
                       <box style={{ width: projected.textWidth, height: 1, flexDirection: "row" }}>
                         <box style={{ width: projected.leftWidth, height: 1 }}>
-                          <text fg={theme.text}>
-                            {splitHistoryTitle(row.commit, projected.title).map(
-                              (span, spanIndex) => (
-                                <span key={spanIndex} fg={titlePalette[span.role]}>
-                                  {span.text}
-                                </span>
-                              ),
-                            )}
+                          <text fg={theme.text} style={{ height: 1 }}>
+                            {membership ? (
+                              <>
+                                <span
+                                  fg={rolePalette?.fg ?? theme.text}
+                                  attributes={TextAttributes.BOLD}
+                                >
+                                  {membership}
+                                </span>{" "}
+                              </>
+                            ) : null}
+                            {splitHistoryTitle(row.commit, title).map((span, spanIndex) => (
+                              <span key={spanIndex} fg={titlePalette[span.role]}>
+                                {span.text}
+                              </span>
+                            ))}
                           </text>
                         </box>
                         {projected.columnGap ? (
@@ -950,11 +1678,23 @@ export function LogApp({
                             copyIcon={projected.copyIcon}
                             onRevisionClick={() => {
                               clearTransientNotice();
-                              void controller
-                                .select(index, viewportBodyHeight)
-                                .then(() => openSelected());
+                              void controller.select(index, viewportBodyHeight).then(() => {
+                                if (!operations.getSnapshot().visit) void openSelected();
+                              });
+                            }}
+                            primaryMouseOnly
+                            onMarkClick={() => {
+                              lastClick.current = { index: -1, at: 0 };
+                              const visit = operation.visit;
+                              if (visit && operations.getSnapshot().phase === "sources")
+                                operations.toggleSource(visit, row.commit.revisionId);
                             }}
                             onShiftClick={() => {
+                              if (
+                                operations.getSnapshot().visit &&
+                                operations.getSnapshot().phase !== "sources"
+                              )
+                                return;
                               clearTransientNotice();
                               lastClick.current = { index: -1, at: 0 };
                               void controller.select(index, viewportBodyHeight, { extend: true });
@@ -1004,25 +1744,52 @@ export function LogApp({
                       {projected.textRowCount === 3 ? (
                         <text
                           style={{ width: projected.textWidth, height: 1 }}
-                          fg={logPalette.decoration}
+                          fg={operationMark?.muted ? theme.muted : logPalette.decoration}
                         >
                           {projected.refLine || " "}
                         </text>
                       ) : null}
                     </box>
                   </box>
-                  {projected.cutoffs.map((line, cut) => (
-                    <HistoryGraphLine key={cut} text={line} colors={graphColors} />
-                  ))}
-                  {projected.cutoffConvergence ? (
-                    <HistoryGraphLine text={projected.cutoffConvergence} colors={graphColors} />
-                  ) : null}
+                  {/* Cutoff markers are not revisions: they carry no checkbox and continue the
+                      graph lanes, which start after the focus and mark cells. */}
+                  <box
+                    style={{
+                      width: "100%",
+                      flexDirection: "column",
+                      paddingLeft: markColumnWidth,
+                    }}
+                  >
+                    {projected.cutoffs.map((line, cut) => (
+                      <HistoryGraphLine key={cut} text={line} colors={graphColors} />
+                    ))}
+                    {projected.cutoffConvergence ? (
+                      <HistoryGraphLine text={projected.cutoffConvergence} colors={graphColors} />
+                    ) : null}
+                  </box>
                 </box>
               </box>
             );
           })
         )}
       </box>
+      {queryView.bottom.length ? (
+        <box
+          style={{
+            height: queryView.bottom.length,
+            width: "100%",
+            flexDirection: "column",
+            paddingLeft: 1,
+            paddingRight: 1,
+          }}
+        >
+          {queryView.bottom.map((line, index) => (
+            <text key={index} fg={theme.muted}>
+              {line}
+            </text>
+          ))}
+        </box>
+      ) : null}
       {scopeLines.length ? (
         <box
           style={{
@@ -1040,25 +1807,83 @@ export function LogApp({
           ))}
         </box>
       ) : null}
-      <StatusLine
-        badge={null}
-        snapshot={{
-          items: [...statusItems, ...statusLineState.items],
-          prompt: statusLineState.prompt,
-        }}
-        terminalWidth={terminal.width}
-        theme={theme}
-        onCloseMenu={menu.closeMenu}
-        onPromptCancel={statusLineStore.cancelPrompt}
-        onPromptInput={statusLineStore.updatePromptValue}
-        onPromptSubmit={statusLineStore.submitPrompt}
-      />
+      {operationDocked ? operation.modal!.render(operationFrame()) : null}
+      {resultNotice ? (
+        <HistoryResultNotice
+          text={resultNotice}
+          frame={operationFrame()}
+          dismiss={() => operations.dismissResultNotice(operation.attempt)}
+        />
+      ) : null}
+      {replacesStatus ? null : selectionFooter ? (
+        <box
+          style={{
+            width: "100%",
+            height: selectionStatusLines.length + selectionFooter.actionRows.length,
+            paddingLeft: 1,
+            paddingRight: 1,
+            flexDirection: "column",
+          }}
+        >
+          {selectionStatusLines.map((line, index) => (
+            <text key={index} fg={theme.muted} style={{ height: 1 }}>
+              {line}
+            </text>
+          ))}
+          {selectionFooter.actionRows.map((actions, index) => (
+            <DialogActionRow key={index} actions={actions} theme={theme} primaryMouseOnly compact />
+          ))}
+        </box>
+      ) : (
+        <StatusLine
+          badge={null}
+          snapshot={{
+            items: [
+              ...(operationDocked
+                ? [
+                    {
+                      id: "log:operation",
+                      spans: [
+                        {
+                          text:
+                            operation.reason ||
+                            operation.modal?.statusLine?.(operationFrame()) ||
+                            "",
+                          tone: "muted" as const,
+                        },
+                      ],
+                      priority: 1,
+                    },
+                  ]
+                : statusItems),
+              ...statusLineState.items,
+            ],
+            prompt: statusLineState.prompt,
+          }}
+          terminalWidth={terminal.width}
+          theme={theme}
+          onCloseMenu={menu.closeMenu}
+          onItemClick={(id) => {
+            menu.closeMenu();
+            if (id === "log:marks") setMarksDialogIndex(0);
+            else if (id === "log:clear") controller.clearSelection();
+          }}
+          onPromptCancel={statusLineStore.cancelPrompt}
+          onPromptInput={statusLineStore.updatePromptValue}
+          onPromptSubmit={statusLineStore.submitPrompt}
+        />
+      )}
+      {operation.modal?.presentation === "overlay"
+        ? operation.modal.render(operationFrame())
+        : null}
       {menu.activeMenuId && menu.activeMenuSpec ? (
         <MenuDropdown
           activeMenuId={menu.activeMenuId}
           activeMenuEntries={menu.activeMenuEntries}
           activeMenuItemIndex={menu.activeMenuItemIndex}
-          activeMenuSpec={menu.activeMenuSpec}
+          activeMenuSpec={
+            historyMenuSpecs.find((spec) => spec.id === menu.activeMenuId) ?? menu.activeMenuSpec
+          }
           activeMenuWidth={menu.activeMenuWidth}
           terminalHeight={terminal.height}
           terminalWidth={terminal.width}
@@ -1068,6 +1893,41 @@ export function LogApp({
             if (!entry.disabled) entry.action();
             menu.closeMenu();
           }}
+        />
+      ) : null}
+      {marksDialogIndex !== null ? (
+        <RevisionMarksDialog
+          marks={snapshot.marks}
+          selectedIndex={marksDialogIndex}
+          terminalWidth={terminal.width}
+          terminalHeight={terminal.height}
+          theme={chromeTheme}
+          notice={transientNotice}
+          status={snapshot.markStatus}
+          onClose={() => setMarksDialogIndex(null)}
+          onSelect={setMarksDialogIndex}
+          onCopy={copyMark}
+          onRemove={() => {
+            controller.removeUnresolvedMarks();
+            setMarksDialogIndex(null);
+          }}
+        />
+      ) : null}
+      {editor && editorLayout ? (
+        <RevsetEditorDialog
+          state={editor}
+          layout={editorLayout}
+          terminalWidth={terminal.width}
+          terminalHeight={terminal.height}
+          theme={chromeTheme}
+          onDraftChange={(draft) => updateEditor((current) => current && editDraft(current, draft))}
+          onInsert={insertEditorRow}
+          onAction={runEditorAction}
+          onScrollNotice={(delta) =>
+            updateEditor((current) => current && scrollNotice(current, editorLayout, delta))
+          }
+          onClose={cancelEditor}
+          fieldRef={editorField}
         />
       ) : null}
       {parentSelectorIndex !== null && parentRow ? (
@@ -1100,7 +1960,12 @@ export function LogApp({
       ) : null}
       {showHelp ? (
         <HelpDialog
-          sections={buildHistoryHelpSections(commands)}
+          sections={buildHistoryHelpSections(
+            snapshot.query?.editable
+              ? commands
+              : commands.filter((command) => command.id !== "hunk.history.editRevset"),
+            operation,
+          )}
           terminalHeight={terminal.height}
           terminalWidth={terminal.width}
           theme={chromeTheme}

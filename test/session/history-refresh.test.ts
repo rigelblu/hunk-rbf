@@ -90,3 +90,88 @@ jjTest(
   },
   20_000,
 );
+
+jjTest(
+  "production JJ marks preserve A/C across B review, rewrites, and explicit unresolved removal",
+  async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "hunk-marked-jj-"));
+    const configHome = mkdtempSync(join(tmpdir(), "hunk-marks-config-"));
+    let controller: LogController | undefined;
+    let shutdown: (() => Promise<void>) | undefined;
+    try {
+      runTestCommand(cwd, ["jj", "git", "init"]);
+      for (const subject of ["C", "B", "A"]) {
+        if (subject !== "C") runTestCommand(cwd, ["jj", "new"]);
+        await Bun.write(join(cwd, "sample.txt"), `${subject}\n`);
+        runTestCommand(cwd, ["jj", "describe", "-m", subject]);
+      }
+      const runtime = await loadHistoryBootstrap({
+        input: {
+          kind: "history",
+          color: "never",
+          format: "compact",
+          ascii: false,
+          static: false,
+          vcs: "jj",
+          extensionsEnabled: false,
+          extensionPaths: [],
+        },
+        cwd,
+        env: { ...process.env, XDG_CONFIG_HOME: configHome },
+        baseVcsCatalog: getBundledVcsCatalog(),
+      });
+      shutdown = () => runtime.extensionSession.shutdown();
+      controller = new LogController(runtime);
+      await controller.loadMore();
+      const index = (subject: string) =>
+        controller!.getSnapshot().rows.findIndex((row) => row.commit.subject === subject);
+      const a = index("A"),
+        b = index("B"),
+        c = index("C");
+      expect([a, b, c]).toEqual([0, 1, 2]);
+      const originalC = controller.getSnapshot().rows[c]!.commit.revisionId;
+      const originalA = controller.getSnapshot().rows[a]!.commit.revisionId;
+      controller.toggleMark(a);
+      controller.toggleMark(c);
+      await controller.select(b, 20);
+      expect(controller.getSelectedRows().map((row) => row.commit.subject)).toEqual(["B"]);
+      expect(await runtime.planReview(controller.getSelectedRow()!.commit)).toMatchObject({
+        kind: "revision-show",
+        revisionId: controller.getSelectedRow()!.commit.revisionId,
+      });
+      expect(controller.getOperationTargets()).toMatchObject({
+        revisionIds: [originalA, originalC],
+      });
+      await controller.select(a, 20);
+      await controller.select(c, 20, { extend: true });
+      expect(controller.getSelectedRows().map((row) => row.commit.subject)).toEqual([
+        "A",
+        "B",
+        "C",
+      ]);
+      runTestCommand(cwd, ["jj", "abandon", "-r", originalC]);
+      expect(await controller.refresh()).toBeTrue();
+      const replacementA = controller.getSnapshot().rows[index("A")]!.commit.revisionId;
+      expect(replacementA).not.toBe(originalA);
+      expect(controller.getSnapshot().marks).toMatchObject([
+        { kind: "resolved", revisionId: replacementA },
+        { kind: "unresolved", reason: "missing", mark: { revisionId: originalC, subject: "C" } },
+      ]);
+      expect(controller.getOperationTargets()).toMatchObject({
+        kind: "blocked",
+        reason: "unresolved",
+      });
+      controller.removeUnresolvedMarks();
+      expect(controller.getOperationTargets()).toMatchObject({
+        kind: "ready",
+        revisionIds: [replacementA],
+      });
+    } finally {
+      await controller?.close();
+      await shutdown?.();
+      rmSync(cwd, { recursive: true, force: true });
+      rmSync(configHome, { recursive: true, force: true });
+    }
+  },
+  20_000,
+);

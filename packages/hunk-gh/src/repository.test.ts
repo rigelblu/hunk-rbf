@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,12 +7,65 @@ import {
   classifyGitLookupFailure,
   parseGitHubRemoteRepository,
   readGitBranch,
-  readGitCheckout,
   readGitHeadSha,
   readGitOrigin,
   resolveGitHubPullRequest,
   resolveGitHubRepository,
 } from "./repository";
+
+/** Run fixture Git commands with a hard deadline and fail on unsuccessful exits. */
+function runGitTest(args: string[], options: { cwd?: string } = {}): string {
+  const result = Bun.spawnSync(["git", ...args], {
+    ...options,
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: 10_000,
+  });
+  if (!result.success) {
+    throw new Error(`Fixture Git command failed: ${result.stderr.toString()}`);
+  }
+  return result.stdout.toString();
+}
+
+/** Run native lookups in a bounded application runtime outside bun:test's event loop. */
+function readGitRepositoryTestResult(
+  directory: string,
+  query: "branch" | "head" | "checkout",
+): { value?: unknown; error?: string } {
+  const script = `
+    import { readGitBranch, readGitHeadSha, readGitCheckout } from ${JSON.stringify(new URL("./repository.ts", import.meta.url).href)};
+    try {
+      const lookup = { branch: readGitBranch, head: readGitHeadSha, checkout: readGitCheckout }[${JSON.stringify(query)}];
+      const value = await lookup(process.cwd(), new AbortController().signal);
+      console.log(JSON.stringify({ value }));
+    } catch (error) {
+      console.log(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+    }
+  `;
+  // The in-process native callback can stall under bun:test. Keep the real
+  // helper and Git state, with a hard child deadline rather than a retry.
+  const result = Bun.spawnSync([process.execPath, "--eval", script], {
+    cwd: directory,
+    env: process.env,
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: 15_000,
+  });
+  if (!result.success) {
+    throw new Error(`Git repository test process failed: ${result.stderr.toString()}`);
+  }
+  const output: unknown = JSON.parse(result.stdout.toString());
+  if (
+    !output ||
+    typeof output !== "object" ||
+    "value" in output === "error" in output ||
+    ("error" in output && typeof output.error !== "string")
+  ) {
+    throw new Error("Git repository test process returned malformed output");
+  }
+  return output;
+}
 
 describe("GitHub repository resolution", () => {
   test("parses common github.com remote forms", () => {
@@ -47,15 +99,13 @@ describe("GitHub repository resolution", () => {
   test("reads a branch and reports detached HEAD clearly", async () => {
     const directory = mkdtempSync(join(tmpdir(), "hunk-gh-branch-test-"));
     try {
-      execFileSync("git", ["init", "-b", "topic"], { cwd: directory });
-      expect(await readGitBranch(directory, new AbortController().signal)).toBe("topic");
-      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: directory });
-      execFileSync("git", ["config", "user.name", "Test"], { cwd: directory });
-      execFileSync("git", ["commit", "--allow-empty", "-m", "initial"], { cwd: directory });
-      execFileSync("git", ["checkout", "--detach"], { cwd: directory });
-      await expect(readGitBranch(directory, new AbortController().signal)).rejects.toThrow(
-        "detached HEAD",
-      );
+      runGitTest(["init", "-b", "topic"], { cwd: directory });
+      expect(readGitRepositoryTestResult(directory, "branch")).toEqual({ value: "topic" });
+      runGitTest(["config", "user.email", "test@example.com"], { cwd: directory });
+      runGitTest(["config", "user.name", "Test"], { cwd: directory });
+      runGitTest(["commit", "--allow-empty", "-m", "initial"], { cwd: directory });
+      runGitTest(["checkout", "--detach"], { cwd: directory });
+      expect(readGitRepositoryTestResult(directory, "branch").error).toContain("detached HEAD");
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -64,11 +114,11 @@ describe("GitHub repository resolution", () => {
   test("rejects branch names containing terminal control characters", async () => {
     const directory = mkdtempSync(join(tmpdir(), "hunk-gh-hostile-branch-test-"));
     try {
-      execFileSync("git", ["init", "-b", "safe"], { cwd: directory });
-      execFileSync("git", ["symbolic-ref", "HEAD", "refs/heads/topic\u009bcontrol"], {
+      runGitTest(["init", "-b", "safe"], { cwd: directory });
+      runGitTest(["symbolic-ref", "HEAD", "refs/heads/topic\u009bcontrol"], {
         cwd: directory,
       });
-      await expect(readGitBranch(directory, new AbortController().signal)).rejects.toThrow(
+      expect(readGitRepositoryTestResult(directory, "branch").error).toContain(
         "terminal control characters",
       );
     } finally {
@@ -79,16 +129,15 @@ describe("GitHub repository resolution", () => {
   test("reads the current branch and exact HEAD together", async () => {
     const directory = mkdtempSync(join(tmpdir(), "hunk-gh-checkout-test-"));
     try {
-      execFileSync("git", ["init", "-b", "topic"], { cwd: directory });
-      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: directory });
-      execFileSync("git", ["config", "user.name", "Test"], { cwd: directory });
-      execFileSync("git", ["commit", "--allow-empty", "-m", "initial"], { cwd: directory });
-      const sha = execFileSync("git", ["rev-parse", "HEAD"], {
+      runGitTest(["init", "-b", "topic"], { cwd: directory });
+      runGitTest(["config", "user.email", "test@example.com"], { cwd: directory });
+      runGitTest(["config", "user.name", "Test"], { cwd: directory });
+      runGitTest(["commit", "--allow-empty", "-m", "initial"], { cwd: directory });
+      const sha = runGitTest(["rev-parse", "HEAD"], {
         cwd: directory,
-        encoding: "utf8",
       }).trim();
-      await expect(readGitHeadSha(directory, new AbortController().signal)).resolves.toBe(sha);
-      await expect(readGitCheckout(directory, new AbortController().signal)).resolves.toEqual({
+      expect(readGitRepositoryTestResult(directory, "head")).toEqual({ value: sha });
+      expect(readGitRepositoryTestResult(directory, "checkout").value).toEqual({
         branch: "topic",
         sha,
       });
@@ -102,24 +151,22 @@ describe("GitHub repository resolution", () => {
     const remote = join(root, "remote.git");
     const checkout = join(root, "checkout");
     try {
-      execFileSync("git", ["init", "--bare", remote]);
-      execFileSync("git", ["init", "-b", "topic", checkout]);
-      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: checkout });
-      execFileSync("git", ["config", "user.name", "Test"], { cwd: checkout });
-      execFileSync("git", ["commit", "--allow-empty", "-m", "pushed"], { cwd: checkout });
-      execFileSync("git", ["remote", "add", "origin", remote], { cwd: checkout });
-      execFileSync("git", ["push", "-u", "origin", "topic"], { cwd: checkout });
-      const upstreamSha = execFileSync("git", ["rev-parse", "HEAD"], {
+      runGitTest(["init", "--bare", remote]);
+      runGitTest(["init", "-b", "topic", checkout]);
+      runGitTest(["config", "user.email", "test@example.com"], { cwd: checkout });
+      runGitTest(["config", "user.name", "Test"], { cwd: checkout });
+      runGitTest(["commit", "--allow-empty", "-m", "pushed"], { cwd: checkout });
+      runGitTest(["remote", "add", "origin", remote], { cwd: checkout });
+      runGitTest(["push", "-u", "origin", "topic"], { cwd: checkout });
+      const upstreamSha = runGitTest(["rev-parse", "HEAD"], {
         cwd: checkout,
-        encoding: "utf8",
       }).trim();
-      execFileSync("git", ["commit", "--allow-empty", "-m", "local"], { cwd: checkout });
-      const sha = execFileSync("git", ["rev-parse", "HEAD"], {
+      runGitTest(["commit", "--allow-empty", "-m", "local"], { cwd: checkout });
+      const sha = runGitTest(["rev-parse", "HEAD"], {
         cwd: checkout,
-        encoding: "utf8",
       }).trim();
 
-      await expect(readGitCheckout(checkout, new AbortController().signal)).resolves.toEqual({
+      expect(readGitRepositoryTestResult(checkout, "checkout").value).toEqual({
         branch: "topic",
         sha,
         upstreamSha,
@@ -142,10 +189,10 @@ describe("GitHub repository resolution", () => {
 
     const directory = mkdtempSync(join(tmpdir(), "hunk-gh-not-repo-test-"));
     try {
-      await expect(readGitBranch(directory, new AbortController().signal)).rejects.toThrow(
+      expect(readGitRepositoryTestResult(directory, "branch").error).toContain(
         "Git failed while reading the current branch",
       );
-      await expect(readGitHeadSha(directory, new AbortController().signal)).rejects.toThrow(
+      expect(readGitRepositoryTestResult(directory, "head").error).toContain(
         "Git failed while reading the current HEAD",
       );
     } finally {

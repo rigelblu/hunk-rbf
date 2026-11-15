@@ -164,9 +164,9 @@ Git reporting remains unknown in this slice. Hunk RBF product work covers JJ and
 
 # 🔵⋯ Identify workspace heads in JJ history
 
-Run `hunk log --vcs jj` to see where each workspace's recorded head sits in history. The default view labels every workspace head it includes; add `--all` to reach heads on the older history that view hides. Repositories with multiple workspaces show names such as `@default` and `@feature` on their revisions. A repository with one workspace shows only the current-revision marker `@`.
+HK-92 is recorded in local Hunk RBF 0.12.0. The accepted candidate is built and verified; installation and public delivery remain pending.
 
-Run `hunk log --vcs jj --all` to see where each workspace's recorded head sits in history. Repositories with multiple workspaces show names such as `@default` and `@feature` on their revisions. A repository with one workspace shows only the current-revision marker `@`.
+Run `hunk log --vcs jj` to see where each workspace's recorded head sits in history. The default view labels every workspace head it includes; add `--all` to reach heads on the older history that view hides. Repositories with multiple workspaces show names such as `@default` and `@feature` on their revisions. A repository with one workspace shows only the current-revision marker `@`.
 
 Several workspace names can share a revision. The separate `@` marker identifies the current revision; it does not identify which named workspace opened Hunk. A recorded head can be stale, so its label does not mean someone is actively working there.
 
@@ -189,3 +189,42 @@ During interactive review, press **Tab** to focus the file filter. The filter ma
 - **Literal leading `!`:** Prefix with a single backslash (`\!`) to search for text starting with a literal `!`, such as `\!foo`.
 - **Excluding literal `!`:** Type `!!foo` to exclude files matching literal `!foo`.
 - **Two-step Escape:** Press **Escape** once while focused in the filter to clear the search text; press **Escape** a second time to leave the filter and return keyboard ownership to review navigation.
+
+# 🔵⋯ Edit the active JJ revset
+
+In interactive `hunk log --vcs jj`, history shows the complete revset above the list, with the mode and the row limit:
+
+```text
+Revset: (((trunk()..visible_heads()) | trunk()) ~ root())
+Launch policy · Limit: 100
+```
+
+Press `L`, or choose **View → Edit revset…**, to edit that revset. `F2` applies it exactly as written: no hidden author, date or path filters and no extra ancestry are added, and the row limit from `-n` stays separate. Applying text that has not changed closes the editor and changes nothing. `F3` restores the launch policy, including the mainline default and its fallback. `Esc`, `Ctrl-C` or a click outside cancels, and none of them quits Hunk from the editor. While a revset is being applied or restored, the first `Esc` or `Ctrl-C` aborts it and keeps your draft; a second one closes the editor.
+
+Revsets you applied earlier in this session are listed under **Previous inputs**, newest first. `Tab`/`Shift+Tab`, `Up`/`Down` or `Ctrl-N`/`Ctrl-P` highlight one, and `Enter` inserts it into the field without applying it; `Enter` with nothing highlighted applies the field. The list holds up to 50 revsets, survives opening a diff from history and returning, and is cleared when you quit. Nothing is saved to disk. A failed apply, a Reset and the launch revset are not added.
+
+If JJ rejects a revset, the editor stays open with your draft and shows JJ's reason as `Revset not applied: …`, without the source-diagram rows; `PgUp`/`PgDn` scroll a long reason. History behind the editor does not change.
+
+After a successful apply, focus stays on the revision you had selected if it is among the first rows of the new result; otherwise the newest row is selected and the status line says `Selected newest; previous not loaded.` In **Graph view**, custom revsets retain connections between selected direct parents. A `~` ends an edge whose parent the revset omits; Hunk never connects across that gap. The regular view keeps its day-group rails and shows the same omission marker. Range selection and range review stay unavailable because a custom set can leave out commits between two rows (`Custom revset: range review unavailable. ~ omitted parent`). Single-revision review and Squash still use real revision and parent identities. **Reset** restores launch policy and its range eligibility. On terminals shorter than 15 rows, launch policy adds nothing to the history screen, and a custom revset adds one `Custom revset: …` row.
+
+Other providers do not offer the editor. Completion of revset functions, aliases and names is not part of this change.
+
+# 🔵⋯ Select revisions and Squash
+
+In interactive `hunk log --vcs jj`, press **m** to select or unselect the highlighted revision. **M** clears selected revisions while preserving focus and any review range. The **Navigate** menu offers the same selection commands. **Selected** labels and a quiet row tint show membership; the stronger row fill shows focus. Monochrome retains the full words. Space still pages and Enter still opens the highlighted revision or review range. Review-range commands and their count remain separate; Esc clears only that range.
+
+Selection status appears above the graph. During destination choice, **Squash** stays in that upper position. Preparation, refusal and refresh messages remain above the lower actions.
+
+Choose **Commit → Squash revision…** (`S`). Hunk captures your resolved explicit selection once. With no explicit selection or review range, it captures the settled highlight. Explicit selection wins over a separate range; an active range alone refuses. Checking, failed or unresolved selection never falls back to another revision. Review unresolved intent with **r**, or clear it with **M**.
+
+Choose Into directly, with fixed **From** sources. Squash has no source picker, Continue or Inspect step. A selected Into is excluded from the effective From set: selecting A/B then choosing B transfers A into B. More than one effective source requires provider support; the current one-source JJ kind refuses it without dropping sources. Esc Cancel preserves live explicit selection; primary capture creates no persistent selection.
+
+Hunk checks the destination immediately and shows “Checking squash…” only after the same check has remained pending for400ms. The ready footer says **1 revision will be squashed.** or **N revisions will be squashed.**, counting the effective From sources and excluding Into and rewritten descendants. It offers **Enter Squash** and **Esc Cancel**. Enter runs the provider-owned JJ command once, without forcing a final message or editor. JJ opens its configured editor when its native description rules need one, and may otherwise finish directly. Changed confirmed targets or effects require reviewing the updated preview and pressing Enter again. Execution requires at least28×14; visible From/Into rows reserve abbreviated IDs before description text.
+
+After a verified clean Squash, the notice says **1 revision was squashed.** or **N revisions were squashed.** Routine rewritten-descendant counts stay in the full result. Generic history-refresh feedback and bookmark consequences retain their existing behavior. Browse, select or open review immediately; the notice persists until you dismiss it with **Esc Dismiss** or start another operation. Dismissing it preserves selection and the review range. **File → Operation result…** opens the full saved actual effects and exact recovery command without executing anything. The count excludes Into and rewritten descendants; it does not mean every source disappeared.
+
+Warnings, failures, unread outcomes and refresh trouble keep an attention result beside the graph. **PgUp/PgDn** or the mouse wheel scroll overflowing messages while actions stay visible. Failed, unexpected or unread results offer **o Error output**. **File → Operation result…** reopens the saved actual result without executing again. Retry refresh repeats reads only. After shared refresh/reconciliation, only exact pre-run identities that actual readback proves removed lose selection; surviving and unresolved intent, including selected Into, remain. An editor exit code alone never clears selection or proves no repository effects.
+
+Rebase retains its separate source workflow: choose **Commit → Rebase revision…** (`R`), edit sources with Space/checkmarks, inspect with I/i, then Continue with one source. Choose Onto/After/Before, review the preview and explicitly Apply. Cancelling confirmation returns to the same destination/source visit. Its existing eligibility, confirmation and cleanup policies remain.
+
+Refresh preserves exact selection IDs first. A unique logical change can follow a rewrite only under complete, unlimited, unfiltered history with unchanged traversal scope. Missing or ambiguous intent remains unresolved. Selections are process-local. Automatic refresh waits during an operation. The shared provider runtime owns freshness, editor terminal handoff and actual readback. Unix supports interactive execution; Windows refuses it before execution. Providers without mutation capability report Squash/Rebase unavailable. No extension API or session protocol changes are introduced by these controls.

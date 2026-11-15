@@ -1,59 +1,59 @@
-import type { MouseEvent as TuiMouseEvent } from "@opentui/core";
+import { MouseButton, type MouseEvent as TuiMouseEvent } from "@opentui/core";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { MODAL_FRAME_CHROME_ROWS, resolveModalGeometry } from "../../lib/modalGeometry";
 import type { AppTheme } from "../../themes";
 import { ModalFrame } from "./ModalFrame";
 
-/** One confirm choice: its footer key legend, label, and the action it runs. */
-export interface ConfirmDialogAction {
-  /** Keyboard legend shown in the footer, e.g. "enter/s", "d", "esc". */
-  keyLabel: string;
-  /** Short lowercase verb phrase, e.g. "save" or "never ask". */
-  label: string;
-  /** Run the choice. Invoked on mouse click; keyboard routing stays with the caller. */
-  run: () => void;
-}
+import type { ConfirmDialogAction } from "../../lib/dialogActions";
+export type { ConfirmDialogAction } from "../../lib/dialogActions";
 
 /** Rows ConfirmDialog adds around the body: ModalFrame chrome plus spacer and action row. */
 const CONFIRM_DIALOG_CHROME_ROWS = MODAL_FRAME_CHROME_ROWS + 2;
 
 /** Modal height for a ConfirmDialog whose body renders the given number of rows. */
-export function confirmDialogHeight(bodyRows: number) {
-  return bodyRows + CONFIRM_DIALOG_CHROME_ROWS;
+export function confirmDialogHeight(bodyRows: number, compact = false) {
+  return bodyRows + CONFIRM_DIALOG_CHROME_ROWS - (compact ? 2 : 0);
 }
 
 /** Render the shared mouse-clickable key legend used by modal action footers. */
 export function DialogActionRow({
   actions,
   theme,
+  primaryMouseOnly = false,
+  compact = false,
 }: {
   actions: ConfirmDialogAction[];
   theme: AppTheme;
+  /** Omit action padding when the containing footer supplies its own. */
+  compact?: boolean;
+  /** Let source controls ignore secondary clicks without changing existing dialogs. */
+  primaryMouseOnly?: boolean;
 }) {
   const [hoveredActionKey, setHoveredActionKey] = useState<string | null>(null);
 
   return (
     <box style={{ width: "100%", height: 1, flexDirection: "row" }}>
       {actions.map((action, index) => {
-        const hovered = hoveredActionKey === action.keyLabel;
+        const actionId = action.id ?? action.keyLabel;
+        const hovered = hoveredActionKey === actionId || action.focused === true;
         return (
-          <box key={action.keyLabel} style={{ flexDirection: "row" }}>
+          <box key={actionId} style={{ flexDirection: "row" }}>
             {index > 0 ? <text fg={theme.badgeNeutral}> · </text> : null}
             <box
               style={{
                 flexDirection: "row",
-                paddingLeft: 1,
-                paddingRight: 1,
+                paddingLeft: compact ? 0 : 1,
+                paddingRight: compact ? 0 : 1,
                 backgroundColor: hovered ? theme.accentMuted : undefined,
               }}
-              onMouseOver={() => setHoveredActionKey(action.keyLabel)}
+              onMouseOver={() => setHoveredActionKey(actionId)}
               onMouseOut={() =>
-                setHoveredActionKey((current) => (current === action.keyLabel ? null : current))
+                setHoveredActionKey((current) => (current === actionId ? null : current))
               }
               onMouseUp={(event: TuiMouseEvent) => {
                 event.stopPropagation();
-                action.run();
+                if (!primaryMouseOnly || event.button === MouseButton.LEFT) action.run();
               }}
             >
               <text fg={theme.accent}>{action.keyLabel}</text>
@@ -90,6 +90,10 @@ export function ConfirmDialog({
   theme,
   title,
   width,
+  primaryMouseOnly = false,
+  actionRows,
+  compact = false,
+  onMouseScroll,
 }: {
   actions: ConfirmDialogAction[];
   children: ReactNode;
@@ -101,24 +105,44 @@ export function ConfirmDialog({
   theme: AppTheme;
   title: string;
   width: number;
+  primaryMouseOnly?: boolean;
+  /** Optional wrapped footer; existing callers retain their single action row. */
+  actionRows?: ConfirmDialogAction[][];
+  /** Reuse the existing compact frame for terminals too short for normal chrome. */
+  compact?: boolean;
+  onMouseScroll?: (event: TuiMouseEvent) => void;
 }) {
-  const frame = resolveModalGeometry({ width, height, terminalWidth, terminalHeight });
-  const showActions = frame.height > MODAL_FRAME_CHROME_ROWS;
-  const showActionGap = frame.height >= confirmDialogHeight(0);
+  const frame = resolveModalGeometry({ width, height, terminalWidth, terminalHeight, compact });
+  const chromeRows = MODAL_FRAME_CHROME_ROWS - (compact ? 2 : 0);
+  const showActions = frame.height > chromeRows;
+  const showActionGap = frame.height >= confirmDialogHeight(0, compact);
 
   return (
     <ModalFrame
       height={height}
+      compact={compact}
+      fitTitle={compact}
       terminalHeight={terminalHeight}
       terminalWidth={terminalWidth}
       theme={theme}
       title={title}
       width={width}
       onClose={onClose}
+      primaryMouseOnly={primaryMouseOnly}
+      onMouseScroll={onMouseScroll}
     >
       {children}
       {showActionGap ? <box style={{ width: "100%", height: 1 }} /> : null}
-      {showActions ? <DialogActionRow actions={actions} theme={theme} /> : null}
+      {showActions
+        ? (actionRows ?? [actions]).map((row, index) => (
+            <DialogActionRow
+              key={index}
+              actions={row}
+              theme={theme}
+              primaryMouseOnly={primaryMouseOnly}
+            />
+          ))
+        : null}
     </ModalFrame>
   );
 }

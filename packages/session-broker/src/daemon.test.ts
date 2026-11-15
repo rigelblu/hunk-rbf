@@ -1771,15 +1771,23 @@ describe("session broker daemon", () => {
         },
       },
     });
-    const poll = setInterval(() => {
-      statusCalls += 1;
-      void daemon.handleRequest(
+    /** Read admin status without creating daemon activity. */
+    const readStatus = () =>
+      daemon.handleRequest(
         new Request("http://broker.test/session-admin", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ action: "status" }),
         }),
       );
+    // Establish real reads before timer scheduling can consume the short idle window.
+    for (let index = 0; index < 2; index += 1) {
+      expect((await readStatus())?.status).toBe(200);
+      statusCalls += 1;
+    }
+    const poll = setInterval(() => {
+      statusCalls += 1;
+      void readStatus();
     }, 10);
 
     try {

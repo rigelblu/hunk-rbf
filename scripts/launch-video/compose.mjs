@@ -120,7 +120,7 @@ const SHOTS = [
       y: 0.435,
       width: 0.88,
       height: RANGE_HEIGHTS[i + 1],
-      label: `${i + 2} commits selected`,
+      label: `${i + 2} in review range`,
     },
     highlightKey: "history",
     motion: 0.28,

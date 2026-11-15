@@ -160,7 +160,12 @@ async function waitUntil<T>(
 }
 
 /** Start a real terminal command whose keyboard input the test controls directly. */
-function spawnTtySmokeProcess(command: string, cwd: string, transcript: string) {
+function spawnTtySmokeProcess(
+  command: string,
+  cwd: string,
+  transcript: string,
+  feedFrame: (data: Uint8Array) => void,
+) {
   writeFileSync(transcript, "");
   return Bun.spawn(["/bin/sh", "-c", command], {
     cwd,
@@ -169,6 +174,7 @@ function spawnTtySmokeProcess(command: string, cwd: string, transcript: string) 
       rows: 24,
       data(_terminal, data) {
         appendFileSync(transcript, data);
+        feedFrame(data);
       },
     },
     env: {
@@ -243,48 +249,6 @@ async function writeTtyInput(proc: TtySmokeProcess, input: string) {
   proc.terminal.write(input);
 }
 
-/** Retry a readiness key until its observable terminal state appears. */
-async function writeTtyInputUntil(
-  proc: TtySmokeProcess,
-  transcript: string,
-  offset: number,
-  input: string,
-  label: string,
-  predicate: (output: string) => boolean,
-) {
-  let lastAttemptAt = 0;
-
-  try {
-    return await waitUntil(
-      label,
-      async () => {
-        const raw = await readTranscript(transcript);
-        const update = stripTerminalControl(raw.slice(offset));
-        if (raw.length > offset && predicate(update)) {
-          return raw;
-        }
-        if (proc.exitCode !== null) {
-          throw new Error(`TTY process exited with ${proc.exitCode} before ${label}.`);
-        }
-
-        if (lastAttemptAt === 0 || Date.now() - lastAttemptAt >= 500) {
-          await writeTtyInput(proc, input);
-          lastAttemptAt = Date.now();
-        }
-        return null;
-      },
-      5_000,
-      25,
-    );
-  } catch (error) {
-    const raw = await readTranscript(transcript);
-    const update = stripTerminalControl(raw.slice(offset));
-    throw new Error(
-      `${error instanceof Error ? error.message : String(error)} Appended transcript: ${JSON.stringify(update.slice(-1_000))}`,
-    );
-  }
-}
-
 /** Require a controlled terminal process to exit cleanly within a bounded deadline. */
 async function waitForTtyExit(proc: TtySmokeProcess, timeoutMs = 3_000) {
   const result = await Promise.race([
@@ -309,7 +273,28 @@ async function driveTtySmoke(options: {
   interaction: TtyInteraction;
   pager: boolean;
 }) {
-  const proc = spawnTtySmokeProcess(options.command, options.cwd, options.transcript);
+  const { PersistentTerminal } = await import("ghostty-opentui");
+  const screen = new PersistentTerminal({ cols: 80, rows: 24 });
+  const frameEnd = Buffer.from("\x1b[?2026l");
+  let pendingFrame = Buffer.alloc(0);
+
+  /** Decode complete native synchronized frames before observing help state. */
+  const feedFrame = (data: Uint8Array) => {
+    pendingFrame = Buffer.concat([pendingFrame, Buffer.from(data)]);
+    const end = pendingFrame.lastIndexOf(frameEnd);
+    if (end < 0) return;
+    const boundary = end + frameEnd.length;
+    screen.feed(pendingFrame.subarray(0, boundary));
+    pendingFrame = pendingFrame.subarray(boundary);
+  };
+
+  let proc: TtySmokeProcess;
+  try {
+    proc = spawnTtySmokeProcess(options.command, options.cwd, options.transcript, feedFrame);
+  } catch (error) {
+    screen.destroy();
+    throw error;
+  }
 
   try {
     let raw = await waitForTranscript(
@@ -320,22 +305,37 @@ async function driveTtySmoke(options: {
     );
 
     let offset = raw.length;
-    raw = await writeTtyInputUntil(
+    await writeTtyInput(proc, "?");
+    raw = await waitForTranscriptUpdate(
       proc,
       options.transcript,
       offset,
-      "?",
       "terminal keyboard readiness",
-      (output) => output.includes("help") && output.includes("[Esc]"),
+      (output) => {
+        const frame = screen.getText();
+        return (
+          output.includes("help") &&
+          output.includes("[Esc]") &&
+          frame.includes("Controls help") &&
+          frame.includes("[Esc]")
+        );
+      },
     );
     offset = raw.length;
-    raw = await writeTtyInputUntil(
+    await writeTtyInput(proc, "\x1b");
+    raw = await waitForTranscriptUpdate(
       proc,
       options.transcript,
       offset,
-      "\x1b",
       "help dialog dismissal",
-      options.initialPredicate,
+      (output) => {
+        const frame = screen.getText();
+        return (
+          options.initialPredicate(output) &&
+          options.initialPredicate(frame) &&
+          !frame.includes("Controls help")
+        );
+      },
     );
 
     if (options.interaction === "wrap" || options.interaction === "wrap-cycle") {
@@ -411,7 +411,11 @@ async function driveTtySmoke(options: {
     await proc.exited.catch(() => undefined);
     throw error;
   } finally {
-    proc.terminal?.close();
+    try {
+      proc.terminal?.close();
+    } finally {
+      screen.destroy();
+    }
   }
 }
 

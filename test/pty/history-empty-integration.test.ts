@@ -114,7 +114,8 @@ describe("PTY known-empty JJ history", () => {
         args: ["log", "--vcs", "jj", "--all", "--no-extensions"],
         cwd,
         cols: 40,
-        rows: 18,
+        // Retain all three cards beside the new ordinary selection controls.
+        rows: 22,
         env: { XDG_CONFIG_HOME: configHome },
       });
       try {
@@ -196,7 +197,7 @@ describe("PTY known-empty JJ history", () => {
         await harness.pressAndWaitForText(session, "f10", /Auto-refresh history: off/, {
           timeout: 5_000,
         });
-        await session.press(["down", "down", "down", "enter"]);
+        await session.press(["down", "down", "down", "down", "enter"]);
         await session.press("f10");
         await session.waitForText(/Auto-refresh history: on/, { timeout: 5_000 });
         await session.press("escape");

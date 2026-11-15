@@ -67,9 +67,9 @@ describe("PTY scrolling", () => {
       await session.waitForText(/scroll\.ts/, { timeout: 15_000 });
       await session.waitIdle({ timeout: 300 });
 
-      expect(await measureKeyScroll(session, "j", 12)).toBe(1);
-      expect(await measureKeyScroll(session, "j", 12)).toBe(1);
-      expect(await measureKeyScroll(session, "k", 12)).toBe(-1);
+      expect(await measureKeyScroll(session, "j", 12, { waitForMovement: true })).toBe(1);
+      expect(await measureKeyScroll(session, "j", 12, { waitForMovement: true })).toBe(1);
+      expect(await measureKeyScroll(session, "k", 12, { waitForMovement: true })).toBe(-1);
     } finally {
       session.close();
     }
@@ -88,8 +88,8 @@ describe("PTY scrolling", () => {
       await session.waitForText(/scroll\.ts/, { timeout: 15_000 });
       await session.waitIdle({ timeout: 300 });
 
-      expect(await measureMouseWheelScroll(session, "down", 12)).toBe(3);
-      expect(await measureMouseWheelScroll(session, "up", 9)).toBe(-3);
+      expect(await measureMouseWheelScroll(session, "down", 12, { waitForMovement: true })).toBe(3);
+      expect(await measureMouseWheelScroll(session, "up", 9, { waitForMovement: true })).toBe(-3);
     } finally {
       session.close();
     }
@@ -110,17 +110,17 @@ describe("PTY scrolling", () => {
       });
       await session.waitIdle({ timeout: 300 });
 
-      expect(await measureKeyScroll(session, "j", 12)).toBe(1);
-      expect(await measureKeyScroll(session, "k", 12)).toBe(-1);
+      expect(await measureKeyScroll(session, "j", 12, { waitForMovement: true })).toBe(1);
+      expect(await measureKeyScroll(session, "k", 12, { waitForMovement: true })).toBe(-1);
 
       const codeRow = initial.split("\n").findIndex((line) => /line\d+ = \d+;/.test(line));
       expect(codeRow).toBeGreaterThan(0);
       await session.clickAt(60, codeRow);
       await session.waitIdle({ timeout: 400 });
 
-      expect(await measureKeyScroll(session, "j", 12)).toBe(1);
-      expect(await measureKeyScroll(session, "j", 12)).toBe(1);
-      expect(await measureKeyScroll(session, "k", 12)).toBe(-1);
+      expect(await measureKeyScroll(session, "j", 12, { waitForMovement: true })).toBe(1);
+      expect(await measureKeyScroll(session, "j", 12, { waitForMovement: true })).toBe(1);
+      expect(await measureKeyScroll(session, "k", 12, { waitForMovement: true })).toBe(-1);
     } finally {
       session.close();
     }

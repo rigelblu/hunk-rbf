@@ -133,6 +133,21 @@ export type CliInput =
 export type ReviewNoteSource = "ai" | "agent" | "user";
 export type SessionCommentListType = "live" | "all" | ReviewNoteSource;
 
+/**
+ * The history query in force after the user replaced the launch query with a custom expression.
+ * Only the interactive history surface creates it; the command line never does.
+ */
+export interface HistoryExpressionInput {
+  kind: "expression";
+  /** The trimmed text the provider echoed: the complete revision set, without the row limit. */
+  expression: string;
+  /** The launch row limit, kept separate from the expression. */
+  maxCount?: number;
+}
+
+/** Every query a history surface can be showing: the launch input or an applied expression. */
+export type HistoryAcceptedInput = HistoryCommandInput | HistoryExpressionInput;
+
 export type HistoryColorMode = "auto" | "always" | "never";
 export type HistoryFormat = "medium" | "compact";
 

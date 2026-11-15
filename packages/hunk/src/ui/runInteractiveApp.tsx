@@ -88,11 +88,12 @@ export async function runInteractiveApp(
         reviewRuntime?.stop();
         runtimeCleanupAttempted = true;
       },
-      render: ({ externalQuitSignal, finish }) => (
+      render: ({ externalQuitSignal, finish, claimInterrupt }) => (
         <HunkSessionHost
           initialRoute={initialRoute}
           initialization={initialization}
           externalQuitSignal={externalQuitSignal}
+          claimInterrupt={claimInterrupt}
           onQuit={finish}
           startupNoticeResolver={resolveStartupUpdateNotice}
           systemAppearanceResolver={resolveSystemAppearanceMode}

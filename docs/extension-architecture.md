@@ -396,6 +396,19 @@ static/interactive surfaces consume that geometry. Scope becomes public with acc
 not during preparation. Real review parents remain unchanged, and hidden cutoff identities
 never enter the next-page lane checkpoint. These history facts do not extend the session wire.
 
+API 32 adds a second history input kind, `{ kind: "expression", expression, maxCount? }`, behind the
+optional `acceptsExpression` flag on the provider's history capability. The extension conversion
+boundary (`parseHistoryInput` in `packages/hunk/src/extensions/runExtension.ts`) is the only gate.
+It rebuilds every history input from one read of its fields for `open`, `watchSignature` and
+`watchPlan`, trims the expression, rejects a tag, exclusivity, or text-bound violation before any
+callback, and refuses expression input for a provider that omitted the flag, which it reads once at
+registration. Core gets no revset parser and
+forwards the validated input. The same boundary requires an expression source to echo its exact
+input text as immutable `source.expression`, drops a malformed `source.expression` from a legacy
+source without closing it, and ignores `source.scope` for an expression source. Expression-source
+cutoff parents are validated direct parents omitted by the query; ordinary graph links retain
+direct ancestry without enabling range review. These facts do not extend the session wire.
+
 ## Public contract rules
 
 The authoring surface is the `hunkdiff/extension` export — a façade over

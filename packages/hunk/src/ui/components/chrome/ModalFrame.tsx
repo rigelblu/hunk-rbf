@@ -1,4 +1,4 @@
-import type { MouseEvent as TuiMouseEvent } from "@opentui/core";
+import { MouseButton, type MouseEvent as TuiMouseEvent } from "@opentui/core";
 import type { ReactNode } from "react";
 import { resolveModalGeometry } from "../../lib/modalGeometry";
 import { fitText, padText } from "../../lib/text";
@@ -7,24 +7,35 @@ import type { AppTheme } from "../../themes";
 /** Render a centered framed modal container that other dialogs can reuse. */
 export function ModalFrame({
   children,
+  compact = false,
+  fitTitle = false,
   height,
   onClose,
   onMouseScroll,
+  top: requestedTop,
   terminalHeight,
   terminalWidth,
   theme,
   title,
   width,
+  primaryMouseOnly = false,
 }: {
   children: ReactNode;
+  /** Drop the title and bottom padding rows, for terminals too short for the normal frame. */
+  compact?: boolean;
+  /** Size the title so the title row and `[Esc]` fill the row exactly, with no wrapped blank row. */
+  fitTitle?: boolean;
   height: number;
   onClose?: () => void;
   onMouseScroll?: (event: TuiMouseEvent) => void;
+  /** Hold the top edge at this row instead of centering; off by default. */
+  top?: number;
   terminalHeight: number;
   terminalWidth: number;
   theme: AppTheme;
   title: string;
   width: number;
+  primaryMouseOnly?: boolean;
 }) {
   const {
     height: clampedHeight,
@@ -36,9 +47,16 @@ export function ModalFrame({
     height,
     terminalWidth,
     terminalHeight,
+    compact,
+    top: requestedTop,
   });
   const closeText = onClose ? "[Esc]" : "";
-  const titleWidth = Math.max(1, clampedWidth - 2 - (closeText ? closeText.length + 1 : 0));
+  const titleWidth = Math.max(
+    1,
+    fitTitle
+      ? clampedWidth - 4 - closeText.length
+      : clampedWidth - 2 - (closeText ? closeText.length + 1 : 0),
+  );
 
   return (
     <>
@@ -51,7 +69,9 @@ export function ModalFrame({
           height: terminalHeight,
           zIndex: 55,
         }}
-        onMouseUp={onClose}
+        onMouseUp={(event: TuiMouseEvent) => {
+          if (!primaryMouseOnly || event.button === MouseButton.LEFT) onClose?.();
+        }}
       />
       <box
         style={{
@@ -76,7 +96,7 @@ export function ModalFrame({
           style={{
             paddingLeft: 1,
             paddingRight: 1,
-            paddingTop: 1,
+            paddingTop: compact ? 0 : 1,
             flexDirection: "row",
           }}
         >
@@ -85,7 +105,7 @@ export function ModalFrame({
             <box
               onMouseUp={(event: TuiMouseEvent) => {
                 event.stopPropagation();
-                onClose?.();
+                if (!primaryMouseOnly || event.button === MouseButton.LEFT) onClose?.();
               }}
             >
               <text fg={theme.badgeNeutral}>{closeText}</text>
@@ -96,7 +116,7 @@ export function ModalFrame({
           style={{
             paddingLeft: 1,
             paddingRight: 1,
-            paddingBottom: 1,
+            paddingBottom: compact ? 0 : 1,
             flexDirection: "column",
             flexGrow: 1,
           }}

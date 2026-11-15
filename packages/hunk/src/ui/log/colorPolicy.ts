@@ -1,4 +1,11 @@
 import type { ThemeMode } from "@opentui/core";
+import {
+  ANSI_COLOR_INDEX,
+  FALLBACK_TERMINAL_COLORS,
+  getDetectedTerminalColors,
+  TERMINAL_THEME_ID,
+} from "../../core/theme/terminalColors";
+import { ensureMinimumContrast } from "../lib/color";
 import type { HistoryColorMode } from "../../core/run/commandInputs";
 import type { AppTheme } from "../themes";
 import { resolveHistoryColor } from "../history/staticProjection";
@@ -34,6 +41,25 @@ export function resolveInteractiveLogPalette(theme: AppTheme): InteractiveLogPal
       theme.noteBorder,
     ],
   };
+}
+
+/** Keep full Squash role words readable against their actual row without badge fills. */
+export function resolveSquashRolePalette(
+  theme: AppTheme,
+  role: "from" | "into",
+  rowBackground: string,
+  color = true,
+): { fg: string; bg?: string } {
+  if (!color) return { fg: theme.text };
+  const detected = theme.id === TERMINAL_THEME_ID ? getDetectedTerminalColors() : undefined;
+  const fallback = FALLBACK_TERMINAL_COLORS[theme.appearance];
+  const accent =
+    role === "from"
+      ? theme.id === TERMINAL_THEME_ID
+        ? (detected?.palette[ANSI_COLOR_INDEX.yellow] ?? fallback.palette[ANSI_COLOR_INDEX.yellow])
+        : theme.accent
+      : (detected?.palette[ANSI_COLOR_INDEX.cyan] ?? fallback.palette[ANSI_COLOR_INDEX.cyan]);
+  return { fg: ensureMinimumContrast(accent, rowBackground, 4.5) };
 }
 
 /** Resolve whether interactive history may apply the selected Hunk palette. */

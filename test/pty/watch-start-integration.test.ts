@@ -58,6 +58,9 @@ test.skipIf(process.platform === "win32")(
     let terminal: Bun.Terminal | undefined;
     let child: ReturnType<typeof Bun.spawn> | undefined;
     let watchdog: ReturnType<typeof setTimeout> | undefined;
+    let tearingDown = false;
+    let primaryFailure: { error: unknown } | undefined;
+    let childCleanupFailure: { error: unknown } | undefined;
     try {
       createTestFirstInteractionWatchFixture(fixture);
       writeFileSync(join(config, "hunk", "config.toml"), "watch = true\n");
@@ -90,6 +93,7 @@ export default function (hunk) {
         rows: 30,
         name: "xterm-truecolor",
         data(pty, bytes) {
+          if (tearingDown) return;
           output += Buffer.from(bytes).toString();
           const text = stripVTControlCharacters(output);
           if (sentAt === undefined && text.includes("File  View")) {
@@ -151,7 +155,10 @@ export default function (hunk) {
       // Dispatch can beat the initial traversal even on main; bound the first key's actual
       // UI response too, or an early ACK would hide starvation of the requested render.
       expect(visibleLatency).toBeLessThanOrEqual(750);
+    } catch (error) {
+      primaryFailure = { error };
     } finally {
+      tearingDown = true;
       clearTimeout(watchdog);
       try {
         if (child) {
@@ -173,11 +180,21 @@ export default function (hunk) {
           await Promise.race([child.exited, Bun.sleep(500)]);
           expect(child.exitCode).not.toBeNull();
         }
+      } catch (error) {
+        childCleanupFailure = { error };
       } finally {
         terminal?.close();
         rmSync(temporary, { recursive: true, force: true });
       }
     }
+    if (primaryFailure && childCleanupFailure) {
+      throw new AggregateError(
+        [primaryFailure.error, childCleanupFailure.error],
+        "First-key interaction and cleanup both failed",
+      );
+    }
+    if (primaryFailure) throw primaryFailure.error;
+    if (childCleanupFailure) throw childCleanupFailure.error;
   },
   10_000,
 );

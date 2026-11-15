@@ -25,6 +25,11 @@ type SignalListener = () => void;
 export interface HunkSessionRenderContext {
   externalQuitSignal: AbortSignal;
   finish(exitCode?: number): void;
+  /**
+   * Let an open overlay take raw-mode Ctrl-C before it requests a quit. The newest claim is asked
+   * first; one that returns true has handled the key. Returns a function that withdraws the claim.
+   */
+  claimInterrupt(claim: () => boolean, nativeSignal?: boolean): () => void;
 }
 
 export interface HunkSessionRunnerOptions {
@@ -73,7 +78,7 @@ export async function runHunkSession(
   const installDisconnect = deps.installDisconnect ?? installTerminalDisconnectSupport;
   const installFocusReporting = deps.installFocusReporting ?? installTerminalFocusReporting;
   const disposeWorker = deps.disposeWorker ?? disposeHighlightWorker;
-  const onSignal = deps.onSignal ?? process.once.bind(process);
+  const onSignal = deps.onSignal ?? process.on.bind(process);
   const offSignal = deps.offSignal ?? process.off.bind(process);
 
   const quitController = new AbortController();
@@ -100,8 +105,28 @@ export async function runHunkSession(
     if (requestedExitCode === undefined) requestedExitCode = exitCode;
     if (!quitController.signal.aborted) quitController.abort();
   };
+  const interruptClaims: Array<{ claim: () => boolean; nativeSignal: boolean }> = [];
+  const claimInterrupt = (claim: () => boolean, nativeSignal = false) => {
+    const entry = { claim, nativeSignal };
+    interruptClaims.push(entry);
+    return () => {
+      const index = interruptClaims.indexOf(entry);
+      if (index >= 0) interruptClaims.splice(index, 1);
+    };
+  };
   const signalHandlers = new Map<NodeJS.Signals, SignalListener>(
-    options.signals.map((signal) => [signal, () => requestQuit(options.signalExitCode?.(signal))]),
+    options.signals.map((signal) => [
+      signal,
+      () => {
+        if (signal === "SIGINT") {
+          for (let index = interruptClaims.length - 1; index >= 0; index -= 1) {
+            const entry = interruptClaims[index]!;
+            if (entry.nativeSignal && entry.claim()) return;
+          }
+        }
+        requestQuit(options.signalExitCode?.(signal));
+      },
+    ]),
   );
   let rendererDestroyNotified = false;
   const notifyRendererDestroy = () => {
@@ -143,7 +168,12 @@ export async function runHunkSession(
     focusReporting = installFocusReporting(renderer, {
       write: (sequence) => terminalDisconnected || options.stdout.write(sequence),
     });
-    interrupt = installInterrupt(renderer, () => requestQuit(options.interruptExitCode));
+    interrupt = installInterrupt(renderer, () => {
+      for (let index = interruptClaims.length - 1; index >= 0; index -= 1) {
+        if (interruptClaims[index]!.claim()) return;
+      }
+      requestQuit(options.interruptExitCode);
+    });
     suspend = installSuspend(renderer);
     disconnect = installDisconnect(options.stdin, () => {
       terminalDisconnected = true;
@@ -154,6 +184,7 @@ export async function runHunkSession(
       options.render({
         externalQuitSignal: quitController.signal,
         finish: finishOutcome,
+        claimInterrupt,
       }),
     );
     result = await outcome;

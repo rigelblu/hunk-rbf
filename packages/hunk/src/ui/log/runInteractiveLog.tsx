@@ -58,11 +58,12 @@ export async function runInteractiveLog(
           await runtime.extensionSession.shutdown();
         }
       },
-      render: ({ externalQuitSignal, finish }) => (
+      render: ({ externalQuitSignal, finish, claimInterrupt }) => (
         <HunkSessionHost
           initialRoute={initialRoute}
           initialization={runtime.initialization}
           externalQuitSignal={externalQuitSignal}
+          claimInterrupt={claimInterrupt}
           onQuit={finish}
           systemAppearanceResolver={resolveSystemAppearanceMode}
           systemAppearanceSubscriber={subscribeToSystemAppearanceMode}

@@ -1,8 +1,28 @@
 import { createHistoryLaneCheckpoint, planHistoryPage } from "../../core/history/lanePlanner";
 import type { HistoryGraphRow, HistoryLaneCheckpoint } from "../../core/history/types";
+import {
+  historyOperationTargets,
+  reconcileRevisionMarks,
+  revisionMark,
+  revisionMarkLogicalFallbackEligible,
+  revisionMarkSeenUnder,
+  revisionMarkTraversalKey,
+  type RevisionMarkResolution,
+  type RevisionMarkStatus,
+} from "../../core/history/revisionMarks";
+import type { HistoryQueryTarget } from "../../core/history/queryReplacement";
+import type { HistoryAcceptedInput } from "../../core/run/commandInputs";
 import { sanitizeTerminalLine } from "../../lib/terminalText";
 import type { HistoryRuntime } from "../history/types";
-import { commitEntryHeight, planLogViewportGeometry } from "./geometry";
+import { commitEntryHeight, LOG_ENTRY_HEIGHT, planLogViewportGeometry } from "./geometry";
+import {
+  chooseHistoryQueryFocus,
+  historyQueryFailureReason,
+  historyQueryPageLimit,
+  HISTORY_QUERY_BLANK_MESSAGE,
+  HISTORY_QUERY_NEWEST_NOTICE,
+  directGraphLinks,
+} from "./queryReplacement";
 
 import type { LogPresentation } from "./presentation";
 export type { LogPresentation } from "./presentation";
@@ -19,7 +39,44 @@ export function historyFiltersCanHideIntermediateCommits(input: HistoryRuntime["
   );
 }
 
+/**
+ * Return whether the query in force can hide or interleave commits between adjacent rows. An
+ * applied expression always can, whatever the provider reports, so the guard reads the accepted
+ * input and not the launch input.
+ */
+export function historyInputCanHideIntermediateCommits(input: HistoryAcceptedInput) {
+  return input.kind === "expression" || historyFiltersCanHideIntermediateCommits(input);
+}
+
+/** What the revset editor needs to know about the query in force. */
+export interface LogQueryState {
+  /** The provider accepts expression input, so the editor may open. */
+  editable: boolean;
+  /** `launch` runs the launch input; `custom` runs an applied expression. */
+  mode: "launch" | "custom";
+  /** The accepted query's exact text when its source reported one; absent when it could not. */
+  expression?: string;
+  /** The launch row limit, shown beside the query and kept out of its text. */
+  limit?: number;
+  /** Counts accepted replacements, so a watcher or view can restart on a new query. */
+  generation: number;
+}
+
+/** How one Apply or Reset ended; only `applied` changed anything. */
+export type LogQueryResult =
+  | { status: "applied"; mode: "launch" | "custom"; expression?: string }
+  | { status: "failed"; reason: string }
+  | { status: "aborted" }
+  | { status: "obsolete" };
+
+/** One Apply or Reset: the typed draft, or a return to the launch input. */
+export type LogQueryRequest = { kind: "apply"; expression: string } | { kind: "reset" };
+
 export interface LogSnapshot {
+  marks: readonly RevisionMarkResolution[];
+  /** Ordinary selection inputs waiting for their accepted navigation/identity boundary. */
+  pendingMarkEdits?: number;
+  markStatus: RevisionMarkStatus;
   rows: readonly HistoryGraphRow[];
   selected: number;
   selectionAnchor: number | null;
@@ -34,6 +91,8 @@ export interface LogSnapshot {
   notice: string;
   presentation: LogPresentation;
   scope?: HistoryRuntime["source"]["scope"];
+  /** Always set by the controller; optional so hand-built snapshots stay valid. */
+  query?: LogQueryState;
 }
 
 /** Find a row by immutable revision id, then by one unambiguous provider logical id. */
@@ -84,6 +143,16 @@ export class LogController {
   private navigationWaiters = new Set<() => void>();
   private selectionGeneration = 0;
   private closed = false;
+  private markGeneration = 0;
+  private markEditGeneration = 0;
+  private markEditQueue: Promise<void> = Promise.resolve();
+  private operationGeneration = 0;
+  /** Traversal input the rows on screen were read under; a new mark records it with the scope. */
+  private acceptedTraversalKey: string;
+  /** The query the rows on screen came from: the launch input until an expression is applied. */
+  private acceptedInput: HistoryAcceptedInput;
+  private queryToken = 0;
+  private queryCandidate: HistoryRefreshCandidate | null = null;
   private viewportBodyHeight = 1;
   private viewportWidth = 80;
   private viewportAnchorOffset: number | null = null;
@@ -93,10 +162,14 @@ export class LogController {
 
   constructor(private readonly runtime: HistoryRuntime) {
     this.source = runtime.source;
+    this.acceptedTraversalKey = revisionMarkTraversalKey(runtime.input);
+    this.acceptedInput = runtime.input;
     const startupNotices = runtime.notices.map(sanitizeTerminalLine).filter(Boolean);
     this.startupNotices = new Set(startupNotices);
     this.snapshot = {
       rows: [],
+      marks: [],
+      markStatus: "ready",
       selected: 0,
       selectionAnchor: null,
       visualSelectionActive: false,
@@ -106,6 +179,15 @@ export class LogController {
       historyDone: false,
       loading: false,
       notice: startupNotices.join(" • "),
+      query: {
+        editable: Boolean(runtime.queryReplacement),
+        mode: "launch",
+        ...(runtime.source.expression !== undefined
+          ? { expression: runtime.source.expression }
+          : {}),
+        ...(runtime.input.maxCount !== undefined ? { limit: runtime.input.maxCount } : {}),
+        generation: 0,
+      },
       presentation: {
         graph: false,
         unicode: !runtime.input.ascii && process.env.TERM !== "dumb",
@@ -134,6 +216,7 @@ export class LogController {
   private publish(patch: Partial<LogSnapshot>) {
     if (this.closed) return;
     this.snapshot = { ...this.snapshot, ...patch };
+    this.operationGeneration += 1;
     for (const listener of this.listeners) listener();
   }
 
@@ -152,7 +235,7 @@ export class LogController {
         if (generation !== this.generation || this.closed) return false;
         if (!page.done && page.commits.length === 0)
           throw new Error("VCS history returned an empty page before EOF.");
-        const planned = planHistoryPage(page.commits, this.checkpoint);
+        const planned = planHistoryPage(this.graphCommits(page.commits), this.checkpoint);
         this.checkpoint = planned.checkpoint;
         const rows = [...this.snapshot.rows, ...planned.rows];
         this.publish({
@@ -258,7 +341,7 @@ export class LogController {
   select(index: number, viewportBodyHeight: number, { extend = false }: { extend?: boolean } = {}) {
     this.clearNotice();
     this.viewportAnchorOffset = null;
-    if (extend && historyFiltersCanHideIntermediateCommits(this.runtime.input)) {
+    if (extend && historyInputCanHideIntermediateCommits(this.acceptedInput)) {
       this.setNotice(
         "Multi-commit selection is unavailable when history traversal can hide or interleave commits.",
       );
@@ -306,6 +389,20 @@ export class LogController {
     return this.trackNavigation(navigation);
   }
 
+  /** Highlight an exact loaded operation endpoint using current geometry and retained range state. */
+  highlightLoadedRevision(revisionId: string) {
+    if (this.closed) return false;
+    const index = this.snapshot.rows.findIndex((row) => row.commit.revisionId === revisionId);
+    if (index < 0) return false;
+    if (index === this.snapshot.selected) return true;
+    this.selectionGeneration += 1;
+    this.navigationTarget = null;
+    this.setNavigationPromise(null);
+    this.publish({ selected: index, entryScroll: 0 });
+    this.clampViewport(this.viewportBodyHeight);
+    return true;
+  }
+
   /** Track only the latest request so refresh cannot restore ahead of pending input. */
   private trackNavigation(navigation: Promise<void>) {
     this.setNavigationPromise(navigation);
@@ -323,7 +420,7 @@ export class LogController {
   /** Start a persistent contiguous selection at the focused commit. */
   beginVisualSelection() {
     this.clearNotice();
-    if (historyFiltersCanHideIntermediateCommits(this.runtime.input)) {
+    if (historyInputCanHideIntermediateCommits(this.acceptedInput)) {
       this.setNotice(
         "Multi-commit selection is unavailable when history traversal can hide or interleave commits.",
       );
@@ -340,14 +437,179 @@ export class LogController {
     });
   }
 
-  /** Collapse any range to the focused commit and leave visual selection mode. */
-  clearSelection() {
-    if (this.snapshot.selectionAnchor === null && !this.snapshot.visualSelectionActive)
+  /** Toggle exactly one displayed revision without changing focus or review range. */
+  toggleMark(index = this.snapshot.selected) {
+    const row = this.snapshot.rows[index];
+    if (this.closed || !row || this.snapshot.markStatus !== "ready") return false;
+    const existing = this.snapshot.marks.findIndex(
+      (entry) => entry.kind === "resolved" && entry.revisionId === row.commit.revisionId,
+    );
+    const marks =
+      existing >= 0
+        ? this.snapshot.marks.filter((_, entryIndex) => entryIndex !== existing)
+        : [
+            ...this.snapshot.marks,
+            Object.freeze({
+              kind: "resolved" as const,
+              mark: revisionMark(
+                row.commit,
+                revisionMarkSeenUnder(this.acceptedTraversalKey, this.source.scope),
+              ),
+              revisionId: row.commit.revisionId,
+            }),
+          ];
+    this.markGeneration += 1;
+    this.publish({ marks: Object.freeze(marks) });
+    return true;
+  }
+
+  /** Queue ordinary selection against the accepted identity, with Clear invalidating late edits. */
+  queueRevisionSelection(expected?: { revisionId: string | null }) {
+    const epoch = this.markEditGeneration;
+    const navigation = this.selectionGeneration;
+    const revisionId = expected
+      ? expected.revisionId
+      : this.snapshot.rows[this.navigationTarget ?? this.snapshot.selected]?.commit.revisionId;
+    this.publish({ pendingMarkEdits: (this.snapshot.pendingMarkEdits ?? 0) + 1 });
+    const task = this.markEditQueue
+      .then(async (): Promise<"changed" | "cancelled" | "unavailable"> => {
+        await this.settleNavigation();
+        if (this.closed || epoch !== this.markEditGeneration) return "cancelled";
+        if (
+          this.snapshot.markStatus !== "ready" ||
+          this.snapshot.marks.some((mark) => mark.kind === "unresolved")
+        )
+          return "unavailable";
+        const identity =
+          revisionId === undefined && navigation === this.selectionGeneration
+            ? this.getSelectedRow()?.commit.revisionId
+            : revisionId;
+        const index = this.snapshot.rows.findIndex((row) => row.commit.revisionId === identity);
+        return index >= 0 && this.toggleMark(index) ? "changed" : "unavailable";
+      })
+      .finally(() => {
+        if (!this.closed && epoch === this.markEditGeneration)
+          this.publish({
+            pendingMarkEdits: Math.max(0, (this.snapshot.pendingMarkEdits ?? 0) - 1),
+          });
+      });
+    this.markEditQueue = task.then(
+      () => undefined,
+      () => undefined,
+    );
+    return task;
+  }
+
+  /** Drain already accepted ordinary selection before capturing an operation's fixed sources. */
+  async settleRevisionSelection() {
+    while (true) {
+      const queue = this.markEditQueue;
+      await queue;
+      if (queue === this.markEditQueue) return;
+    }
+  }
+
+  /** Remove only unresolved intent, retaining valid marks and reading position. */
+  removeUnresolvedMarks() {
+    if (this.snapshot.markStatus === "checking") return false;
+    const marks = this.snapshot.marks.filter((entry) => entry.kind === "resolved");
+    if (marks.length === this.snapshot.marks.length) return false;
+    this.markGeneration += 1;
+    this.publish({
+      marks: Object.freeze(marks),
+      ...(marks.length === 0 ? { markStatus: "ready" as const } : {}),
+    });
+    return true;
+  }
+
+  /** Seed a fresh operation's marks from the highlight after the host checks eligibility. */
+  seedSourceSelection(expectedRevisionId: string) {
+    const row = this.snapshot.rows[this.snapshot.selected];
+    if (
+      this.closed ||
+      !row ||
+      row.commit.revisionId !== expectedRevisionId ||
+      this.snapshot.markStatus !== "ready"
+    )
+      return false;
+    this.markGeneration += 1;
+    this.publish({
+      marks: Object.freeze([
+        Object.freeze({
+          kind: "resolved" as const,
+          mark: revisionMark(
+            row.commit,
+            revisionMarkSeenUnder(this.acceptedTraversalKey, this.source.scope),
+          ),
+          revisionId: row.commit.revisionId,
+        }),
+      ]),
+    });
+    return true;
+  }
+
+  /** Clear mark intent without changing review ranges, queued navigation or reading position. */
+  clearRevisionMarks() {
+    if (this.closed) return false;
+    this.markEditGeneration += 1;
+    if (this.snapshot.marks.length === 0 && !this.snapshot.pendingMarkEdits) return false;
+    this.markGeneration += 1;
+    this.publish({
+      marks: Object.freeze([]),
+      pendingMarkEdits: 0,
+      markStatus: this.snapshot.markStatus === "checking" ? "checking" : "ready",
+    });
+    return true;
+  }
+
+  /** Return a detached immutable operation snapshot, independently of review endpoints. */
+  getOperationTargets(options: { allowHighlightedFallback?: boolean } = {}) {
+    if (this.snapshot.pendingMarkEdits)
+      return Object.freeze({
+        kind: "blocked" as const,
+        reason: "checking" as const,
+        unresolved: Object.freeze([]),
+      });
+    return historyOperationTargets({
+      ...this.snapshot,
+      status: this.snapshot.markStatus,
+      generation: this.operationGeneration,
+      allowHighlightedFallback: options.allowHighlightedFallback,
+    });
+  }
+
+  /** Clear only the review range, preserving independent revision intent and focus. */
+  clearReviewRange() {
+    if (
+      this.closed ||
+      (this.snapshot.selectionAnchor === null && !this.snapshot.visualSelectionActive)
+    )
       return false;
     this.selectionGeneration += 1;
     this.navigationTarget = null;
     this.setNavigationPromise(null);
     this.publish({ selectionAnchor: null, visualSelectionActive: false });
+    return true;
+  }
+
+  /** Clear marks and any range without moving the focus or reading position. */
+  clearSelection() {
+    if (
+      this.snapshot.marks.length === 0 &&
+      this.snapshot.selectionAnchor === null &&
+      !this.snapshot.visualSelectionActive
+    )
+      return false;
+    this.markGeneration += 1;
+    this.selectionGeneration += 1;
+    this.navigationTarget = null;
+    this.setNavigationPromise(null);
+    this.publish({
+      selectionAnchor: null,
+      visualSelectionActive: false,
+      marks: [],
+      markStatus: this.snapshot.markStatus === "checking" ? "checking" : "ready",
+    });
     return true;
   }
 
@@ -386,7 +648,8 @@ export class LogController {
   /** Scroll an oversized entry through existing wheel/page controls without selecting its stubs. */
   scrollEntry(delta: number, viewportBodyHeight: number) {
     const row = this.snapshot.rows[this.snapshot.selected];
-    if (!row) return false;
+    // A body shorter than one entry shows no entry to scroll inside, so paging keeps moving.
+    if (!row || viewportBodyHeight < LOG_ENTRY_HEIGHT) return false;
     const maximum = Math.max(
       0,
       commitEntryHeight(row, !this.snapshot.presentation.graph, this.entryDimensions()) -
@@ -557,15 +820,32 @@ export class LogController {
   }
 
   /** Refresh the provider cursor while reconciling selection by immutable or logical identity. */
-  async refresh(shouldApply: () => boolean = () => true) {
+  async refresh(
+    shouldApply: () => boolean = () => true,
+    removedRevisionIds: readonly string[] = [],
+  ) {
     if (this.refreshPromise) return this.refreshPromise;
-    const refreshing = this.performRefresh(shouldApply);
+    const refreshing = this.performRefresh(shouldApply, new Set(removedRevisionIds));
     this.refreshPromise = refreshing;
     try {
       return await refreshing;
     } finally {
       if (this.refreshPromise === refreshing) this.refreshPromise = null;
     }
+  }
+
+  /**
+   * Refresh with a read that begins after this call.
+   *
+   * `refresh` joins a read already in flight, and that read may have started
+   * before a history change recorded its operation. This waits it out first.
+   */
+  async refreshAfterMutation(
+    shouldApply: () => boolean = () => true,
+    removedRevisionIds: readonly string[] = [],
+  ) {
+    if (this.refreshPromise) await this.refreshPromise.catch(() => undefined);
+    return this.refresh(shouldApply, removedRevisionIds);
   }
 
   /** Close an unaccepted candidate once, including when quit races its read. */
@@ -578,8 +858,18 @@ export class LogController {
   }
 
   /** Stage replacement pages privately while active paging and newer navigation continue. */
-  private async performRefresh(shouldApply: () => boolean): Promise<boolean> {
-    if (this.closed || !shouldApply()) return false;
+  private async performRefresh(
+    shouldApply: () => boolean,
+    removedRevisionIds: ReadonlySet<string>,
+  ): Promise<boolean> {
+    if (this.closed) return false;
+    if (!shouldApply()) {
+      if (this.snapshot.marks.length) this.publish({ markStatus: "refresh-failed" });
+      return false;
+    }
+    const previousMarkStatus = this.snapshot.markStatus;
+    const traversalKey = revisionMarkTraversalKey(this.acceptedInput);
+    this.publish({ markStatus: "checking" });
     const candidate: HistoryRefreshCandidate = { abort: new AbortController(), accepted: false };
     this.refreshCandidate = candidate;
     const generation = this.generation;
@@ -602,7 +892,7 @@ export class LogController {
           if (!canApply()) return false;
           if (!page.done && page.commits.length === 0)
             throw new Error("VCS history returned an empty page before EOF.");
-          const planned = planHistoryPage(page.commits, checkpoint);
+          const planned = planHistoryPage(this.graphCommits(page.commits), checkpoint);
           rows = [...rows, ...planned.rows];
           checkpoint = planned.checkpoint;
           historyDone = page.done;
@@ -615,13 +905,25 @@ export class LogController {
           current.selectionAnchor === null
             ? undefined
             : current.rows[current.selectionAnchor]?.commit;
-        const identities = [selectedIdentity, anchorIdentity].filter(
+        const markGeneration = this.markGeneration;
+        const markIntents = current.marks.map((entry) => entry.mark);
+        const identities = [selectedIdentity, anchorIdentity, ...markIntents].filter(
           (identity): identity is NonNullable<typeof identity> => Boolean(identity),
         );
         needsPage =
           !historyDone &&
           identities.some((identity) => !isHistoryIdentitySettled(rows, identity, historyDone));
         if (needsPage) continue;
+        // Each mark compares these rows with where its own revision was last seen, so a mark
+        // left behind by a moved bound or a changed traversal stays unchecked on later refreshes.
+        const reconciled = reconcileRevisionMarks(markIntents, rows, {
+          seenUnder: revisionMarkSeenUnder(traversalKey, replacement.scope),
+          complete: historyDone && revisionMarkLogicalFallbackEligible(this.acceptedInput),
+        });
+        // Pair each reconciled result with its original intent: logical fallback may rename it.
+        const marks = Object.freeze(
+          reconciled.filter((_, index) => !removedRevisionIds.has(markIntents[index]!.revisionId)),
+        );
         const selectedIndex = findHistoryRowIndex(rows, selectedIdentity);
         const anchorIndex = findHistoryRowIndex(rows, anchorIdentity);
         const selected = selectedIndex >= 0 ? selectedIndex : Math.max(0, anchorIndex);
@@ -633,31 +935,13 @@ export class LogController {
           anchor ?? (visualSelectionActive && !anchorIdentity ? selected : null);
         const bodyHeight = this.viewportBodyHeight;
         const width = this.viewportWidth;
-        const previousTop = findHistoryRowIndex(rows, current.rows[current.top]?.commit);
-        const requestedTop =
-          previousTop >= 0
-            ? Math.min(selected, previousTop)
-            : Math.max(0, selected - (current.selected - current.top));
-        const currentGeometry = planLogViewportGeometry({
-          width,
-          presentation: current.presentation,
-          requestedSelectedRowOffset: this.viewportAnchorOffset,
-          rows: current.rows,
-          selected: current.selected,
-          requestedTop: current.top,
-          bodyHeight,
-          groupByDay: !current.presentation.graph,
-        });
-        const geometry = planLogViewportGeometry({
-          width,
-          presentation: current.presentation,
+        const { geometry, entryScroll, previousSelectedRowOffset } = this.planReplacementViewport(
+          current,
           rows,
           selected,
-          requestedTop,
           bodyHeight,
-          groupByDay: !current.presentation.graph,
-          requestedSelectedRowOffset: currentGeometry.selectedRowOffset,
-        });
+          selectedIndex >= 0,
+        );
         // A partial candidate must not trigger the planner's EOF backfill over the reading position.
         if (!historyDone && geometry.entries.length > 0 && geometry.backfilled) {
           needsPage = true;
@@ -667,40 +951,35 @@ export class LogController {
         if (!canApply()) return false;
         if (
           current !== this.snapshot ||
+          markGeneration !== this.markGeneration ||
           bodyHeight !== this.viewportBodyHeight ||
           width !== this.viewportWidth ||
           this.navigationPromise
         )
           continue;
+        if (traversalKey !== revisionMarkTraversalKey(this.acceptedInput))
+          throw new Error("History traversal changed during refresh.");
         const accepted = this.runtime.acceptSource?.(replacement);
         candidate.accepted = true;
         this.generation += 1;
         const previousAbort = this.abort;
         this.source = replacement;
+        this.acceptedTraversalKey = traversalKey;
         this.abort = candidate.abort;
         this.checkpoint = checkpoint;
         this.loadingPromise = null;
         previousAbort.abort();
-        this.viewportAnchorOffset = currentGeometry.selectedRowOffset;
+        this.viewportAnchorOffset = previousSelectedRowOffset;
         this.publish({
           rows,
+          marks,
+          markStatus: "ready",
           selected,
           selectionAnchor:
             selectionAnchor !== selected || visualSelectionActive ? selectionAnchor : null,
           visualSelectionActive,
           top: geometry.top,
-          entryScroll: Math.min(
-            selectedIndex >= 0 ? current.entryScroll : 0,
-            rows[selected]
-              ? Math.max(
-                  0,
-                  commitEntryHeight(rows[selected]!, !current.presentation.graph, {
-                    width,
-                    presentation: current.presentation,
-                  }) - bodyHeight,
-                )
-              : 0,
-          ),
+          entryScroll,
           historyDone,
           scope: replacement.scope,
           loading: false,
@@ -721,7 +1000,10 @@ export class LogController {
         return true;
       }
     } catch (error) {
-      if (!this.closed) this.setNotice(error instanceof Error ? error.message : String(error));
+      if (!this.closed && (candidate.accepted || generation === this.generation)) {
+        if (this.snapshot.marks.length > 0) this.publish({ markStatus: "refresh-failed" });
+        this.setNotice(error instanceof Error ? error.message : String(error));
+      }
       return false;
     } finally {
       try {
@@ -730,6 +1012,230 @@ export class LogController {
         if (!this.closed) this.setNotice(error instanceof Error ? error.message : String(error));
       }
       if (this.refreshCandidate === candidate) this.refreshCandidate = null;
+      if (
+        !this.closed &&
+        !candidate.accepted &&
+        generation === this.generation &&
+        this.snapshot.markStatus === "checking"
+      )
+        this.publish({
+          markStatus: this.snapshot.marks.length ? "refresh-failed" : previousMarkStatus,
+        });
+    }
+  }
+
+  /* ------------------------------------------------------------------------ */
+  /* Query replacement                                                          */
+  /* ------------------------------------------------------------------------ */
+
+  /**
+   * Plan where replacement rows sit: the selected row keeps the screen offset it had, and a tall
+   * selected entry keeps its scroll only when it is the same entry (`keepEntryScroll`). A refresh
+   * and a query replacement both place their new rows with this.
+   */
+  private planReplacementViewport(
+    current: LogSnapshot,
+    rows: readonly HistoryGraphRow[],
+    selected: number,
+    bodyHeight: number,
+    keepEntryScroll: boolean,
+  ) {
+    const width = this.viewportWidth;
+    const previousTop = findHistoryRowIndex(rows, current.rows[current.top]?.commit);
+    const requestedTop =
+      previousTop >= 0
+        ? Math.min(selected, previousTop)
+        : Math.max(0, selected - (current.selected - current.top));
+    const currentGeometry = planLogViewportGeometry({
+      width,
+      presentation: current.presentation,
+      requestedSelectedRowOffset: this.viewportAnchorOffset,
+      rows: current.rows,
+      selected: current.selected,
+      requestedTop: current.top,
+      bodyHeight,
+      groupByDay: !current.presentation.graph,
+    });
+    const geometry = planLogViewportGeometry({
+      width,
+      presentation: current.presentation,
+      rows,
+      selected,
+      requestedTop,
+      bodyHeight,
+      groupByDay: !current.presentation.graph,
+      requestedSelectedRowOffset: currentGeometry.selectedRowOffset,
+    });
+    const entryScroll = Math.min(
+      keepEntryScroll ? current.entryScroll : 0,
+      rows[selected]
+        ? Math.max(
+            0,
+            commitEntryHeight(rows[selected]!, !current.presentation.graph, {
+              width,
+              presentation: current.presentation,
+            }) - bodyHeight,
+          )
+        : 0,
+    );
+    return { geometry, entryScroll, previousSelectedRowOffset: currentGeometry.selectedRowOffset };
+  }
+
+  /**
+   * Preserve provider omission boundaries under custom queries while refusing projected
+   * ancestors that are not direct parents. Range eligibility stays in its separate input policy.
+   */
+  private graphCommits(commits: Parameters<typeof directGraphLinks>[0]) {
+    return this.acceptedInput.kind === "expression" ? directGraphLinks(commits) : [...commits];
+  }
+
+  /**
+   * Run an Apply or a Reset: read one page of the replacement query, then swap rows, source,
+   * accepted input and watch together, or change nothing.
+   *
+   * The editor keeps its draft, so a failure, an abort and a newer request all leave the accepted
+   * source, rows, marks and focus exactly as they were. A newer request or quit wins: an older
+   * candidate closes its own cursor and reports `obsolete`. Focus survives only on the exact
+   * revision that held it; marks go through the same reconciliation as refresh.
+   */
+  async replaceQuery(request: LogQueryRequest, signal?: AbortSignal): Promise<LogQueryResult> {
+    const replacement = this.runtime.queryReplacement;
+    if (this.closed) return { status: "obsolete" };
+    if (!replacement)
+      return { status: "failed", reason: "This VCS provider does not support custom revsets." };
+    let target: HistoryQueryTarget;
+    if (request.kind === "reset") {
+      target = { kind: "launch" };
+    } else {
+      const expression = request.expression.trim();
+      if (!expression) return { status: "failed", reason: HISTORY_QUERY_BLANK_MESSAGE };
+      const maxCount = this.runtime.input.maxCount;
+      target = { kind: "expression", expression, ...(maxCount !== undefined ? { maxCount } : {}) };
+    }
+    const nextInput: HistoryAcceptedInput = target.kind === "launch" ? this.runtime.input : target;
+    if (signal?.aborted) return { status: "aborted" };
+
+    const token = ++this.queryToken;
+    this.queryCandidate?.abort.abort();
+    const candidate: HistoryRefreshCandidate = { abort: new AbortController(), accepted: false };
+    this.queryCandidate = candidate;
+    const relayAbort = () => candidate.abort.abort(signal?.reason);
+    signal?.addEventListener("abort", relayAbort, { once: true });
+    const current = () =>
+      !this.closed && token === this.queryToken && !candidate.abort.signal.aborted;
+    const unfinished = (): LogQueryResult =>
+      signal?.aborted && token === this.queryToken && !this.closed
+        ? { status: "aborted" }
+        : { status: "obsolete" };
+    // Set the moment the view is published, so a later throw cannot report an applied view failed.
+    let applied: LogQueryResult | undefined;
+    try {
+      const opened = await replacement.open(target, candidate.abort.signal);
+      candidate.source = opened;
+      if (!current()) return unfinished();
+      const page = await opened.read({
+        limit: historyQueryPageLimit(this.runtime.input.maxCount),
+        signal: candidate.abort.signal,
+      });
+      if (!current()) return unfinished();
+      if (!page.done && page.commits.length === 0)
+        throw new Error("VCS history returned an empty page before EOF.");
+
+      // Everything below is synchronous: the focus and marks it reads are the ones on screen now.
+      const planned = planHistoryPage(
+        nextInput.kind === "expression" ? directGraphLinks(page.commits) : page.commits,
+      );
+      const rows = planned.rows;
+      const before = this.snapshot;
+      const previous = before.rows[before.selected]?.commit;
+      const focus = chooseHistoryQueryFocus(rows, previous?.revisionId);
+      const traversalKey = revisionMarkTraversalKey(nextInput);
+      const marks = reconcileRevisionMarks(
+        before.marks.map((entry) => entry.mark),
+        rows,
+        {
+          seenUnder: revisionMarkSeenUnder(traversalKey, opened.scope),
+          complete: page.done && revisionMarkLogicalFallbackEligible(nextInput),
+        },
+      );
+      const { geometry, entryScroll, previousSelectedRowOffset } = this.planReplacementViewport(
+        before,
+        rows,
+        focus.selected,
+        this.viewportBodyHeight,
+        focus.outcome === "kept",
+      );
+
+      const accepted = replacement.accept(target, opened);
+      candidate.accepted = true;
+      const mode = target.kind === "launch" ? "launch" : "custom";
+      applied = {
+        status: "applied",
+        mode,
+        ...(opened.expression !== undefined ? { expression: opened.expression } : {}),
+      };
+      this.generation += 1;
+      this.selectionGeneration += 1;
+      this.markGeneration += 1;
+      this.navigationTarget = null;
+      this.setNavigationPromise(null);
+      // A refresh still in flight read the previous query. Abort it, and forget its promise so the
+      // next refresh starts fresh instead of joining one that can no longer publish.
+      this.refreshCandidate?.abort.abort();
+      this.refreshPromise = null;
+      const previousAbort = this.abort;
+      this.source = opened;
+      this.acceptedInput = nextInput;
+      this.acceptedTraversalKey = traversalKey;
+      this.abort = candidate.abort;
+      this.checkpoint = planned.checkpoint;
+      this.loadingPromise = null;
+      previousAbort.abort();
+      this.viewportAnchorOffset = previousSelectedRowOffset;
+      this.publish({
+        rows,
+        marks,
+        markStatus: "ready",
+        selected: focus.selected,
+        selectionAnchor: null,
+        visualSelectionActive: false,
+        top: geometry.top,
+        entryScroll,
+        historyDone: page.done,
+        scope: opened.scope,
+        loading: false,
+        // An empty result is a valid answer; the list says so and the status line stays quiet.
+        notice: "",
+        query: {
+          editable: true,
+          mode,
+          ...(opened.expression !== undefined ? { expression: opened.expression } : {}),
+          ...(this.runtime.input.maxCount !== undefined
+            ? { limit: this.runtime.input.maxCount }
+            : {}),
+          generation: (before.query?.generation ?? 0) + 1,
+        },
+      });
+      if (focus.outcome === "newest") this.setNotice(HISTORY_QUERY_NEWEST_NOTICE);
+      void accepted.catch((error) => {
+        if (!this.closed && this.source === opened)
+          this.setNotice(error instanceof Error ? error.message : String(error));
+      });
+      return applied;
+    } catch (error) {
+      // Past the commit point the view is applied, whatever a later step threw.
+      if (applied) return applied;
+      return current()
+        ? { status: "failed", reason: historyQueryFailureReason(error) }
+        : unfinished();
+    } finally {
+      signal?.removeEventListener("abort", relayAbort);
+      try {
+        await this.discardCandidate(candidate);
+      } catch {
+        // The accepted view is unchanged; a cursor that fails to close has nothing left to report.
+      }
+      if (this.queryCandidate === candidate) this.queryCandidate = null;
     }
   }
 
@@ -777,6 +1283,7 @@ export class LogController {
     if (this.noticeTimer) clearTimeout(this.noticeTimer);
     this.noticeTimer = null;
     await Promise.all([
+      this.queryCandidate ? this.discardCandidate(this.queryCandidate) : Promise.resolve(),
       this.refreshCandidate ? this.discardCandidate(this.refreshCandidate) : Promise.resolve(),
       this.runtime.close(),
     ]);

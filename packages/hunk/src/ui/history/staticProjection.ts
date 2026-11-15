@@ -264,11 +264,14 @@ export function projectHistoryRow(row: HistoryGraphRow, options: HistoryProjecti
     if (complete !== undefined) {
       suffix = complete;
     } else if (refs) {
-      // Reserve visible refs before fitting the subject; never silently discard a whole list.
-      // A known-empty marker keeps its cells first, so refs yield only at the narrowest widths.
+      // Reserve visible refs before fitting the subject; never silently discard a list that can
+      // show part of a name. A known-empty marker keeps its cells first, so refs yield only at
+      // the narrowest widths.
       const markerWidth = row.commit.isEmpty === true ? HISTORY_EMPTY_MARKER_WIDTH + 1 : 0;
       const refWidth = Math.min(available - markerWidth, Math.max(3, Math.floor(available / 2)));
-      const fittedRefs = markerWidth && refWidth < 3 ? "" : fitHistoryDecorations(row, refWidth);
+      const clippedRefs = markerWidth && refWidth < 3 ? "" : fitHistoryDecorations(row, refWidth);
+      // A list clipped down to its delimiters names no ref, so the subject takes its cells.
+      const fittedRefs = ["…", "(…", "(…)"].includes(clippedRefs) ? "" : clippedRefs;
       const subjectWidth = fittedRefs ? available - measureTextWidth(fittedRefs) - 1 : available;
       const fittedTitle = subjectWidth > 0 ? formatHistoryTitle(row.commit, subjectWidth, "…") : "";
       fittedTitleLength = fittedTitle.length;
@@ -286,8 +289,8 @@ export function projectHistoryRow(row: HistoryGraphRow, options: HistoryProjecti
   const titleEnd = fittedTitleLength ?? title.length;
   const spans = splitHistoryTitle(row.commit, title.slice(0, titleEnd));
   if (titleEnd < title.length) spans.push({ text: title.slice(titleEnd), role: "text" });
-  const coloredTitle = spans
-    .filter((span) => span.text)
+  // Only a title fitted ahead of refs drops empty spans; other rows keep their existing bytes.
+  const coloredTitle = (fittedTitleLength === undefined ? spans : spans.filter((span) => span.text))
     .map((span) => styled(span.text, palette[span.role], span.role !== "text"))
     .join("");
   return `${styledGraph(graphText, theme)}${styled(hashText, theme.accent, true)}${coloredTitle}`;

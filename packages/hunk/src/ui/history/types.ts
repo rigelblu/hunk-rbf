@@ -1,3 +1,4 @@
+import type { HistoryQueryReplacement } from "../../core/history/queryReplacement";
 import type { HistoryCommandInput } from "../../core/run/commandInputs";
 import type { PersistedViewPreferences, UserKeyBinding } from "../../core/run/config";
 import type { InteractiveSessionInitialization } from "../../core/session/initialization";
@@ -9,9 +10,40 @@ import type {
   ExtensionVcsHistoryRangeSelection,
   ExtensionVcsHistoryReviewAction,
   ExtensionVcsHistoryReviewOptions,
+  ExtensionVcsMutationCapability,
+  ExtensionVcsMutationInvocation,
+  ExtensionVcsMutationProcessOutcome,
+  ExtensionVcsMutationPreparation,
+  ExtensionVcsMutationRequest,
+  ExtensionVcsMutationResult,
   ExtensionVcsWatchPlan,
   NamedCustomThemeConfig,
 } from "../../extension-api/types";
+
+/**
+ * History changes the active provider can prepare and apply, as the history view calls them.
+ *
+ * The view names a request and a handle. The repository, the command's process
+ * and the one-at-a-time rule stay with the session that built this.
+ */
+export interface HistoryMutationRuntime {
+  availability(signal?: AbortSignal): ReturnType<ExtensionVcsMutationCapability["availability"]>;
+  /** Reads facts and previews. Moves nothing the user can see. */
+  prepare(
+    request: ExtensionVcsMutationRequest,
+    signal?: AbortSignal,
+  ): Promise<ExtensionVcsMutationPreparation>;
+  /** Runs a confirmed preparation once. Aborting `signal` stops the command; the result is still read back. */
+  apply(
+    handleId: string,
+    signal: AbortSignal,
+    runHandedOver?: (
+      invocation: ExtensionVcsMutationInvocation,
+      signal: AbortSignal,
+    ) => Promise<ExtensionVcsMutationProcessOutcome>,
+  ): Promise<ExtensionVcsMutationResult>;
+  dispose(handleId: string): Promise<void>;
+}
 
 /** Renderer-facing history resources with cursor data and command-owned extension authority. */
 export interface HistoryRuntime {
@@ -44,8 +76,12 @@ export interface HistoryRuntime {
     options?: ExtensionVcsHistoryReviewOptions,
     signal?: AbortSignal,
   ): Promise<ExtensionVcsHistoryRangeReviewAction>;
+  /** Absent when the provider offers no history changes. */
+  mutations?: HistoryMutationRuntime;
   historyWatchPlan?: ExtensionVcsWatchPlan;
   historyWatchSignature?: (signal?: AbortSignal) => string | Promise<string>;
+  /** Present only when the provider accepts expression input. */
+  queryReplacement?: HistoryQueryReplacement;
   /** Replace the current provider cursor for an explicit interactive refresh. */
   reopenSource(signal?: AbortSignal): Promise<VcsHistorySource>;
   /** Commit a successfully primed replacement cursor and close the prior cursor. */

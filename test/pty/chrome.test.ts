@@ -35,11 +35,15 @@ describe("PTY chrome", () => {
     });
 
     try {
-      const initial = await session.waitForText(/View\s+Navigate\s+Agent\s+Help/, {
-        timeout: 15_000,
-      });
+      const initial = await harness.waitForSnapshot(
+        session,
+        (text) =>
+          /View\s+Navigate\s+Agent\s+Help/.test(text) && text.includes("this is a very long"),
+        15_000,
+      );
       expect(initial).toContain("this is a very long");
 
+      await harness.ensureKeyboardIsLive(session);
       await session.press("t");
       const selector = await session.waitForText(/pty-alpha/, {
         timeout: 5_000,
@@ -228,9 +232,11 @@ describe("PTY chrome", () => {
     });
 
     try {
-      const initial = await session.waitForText(/View\s+Navigate\s+Agent\s+Help/, {
-        timeout: 15_000,
-      });
+      const initial = await harness.waitForSnapshot(
+        session,
+        (text) => text.includes("add = true") && text.includes("betaValue"),
+        15_000,
+      );
 
       expect(initial).toContain("add = true");
       expect(initial).toContain("betaValue");
@@ -346,9 +352,11 @@ describe("PTY chrome", () => {
     });
 
     try {
-      const initial = await session.waitForText(/View\s+Navigate\s+Agent\s+Help/, {
-        timeout: 15_000,
-      });
+      const initial = await harness.waitForSnapshot(
+        session,
+        (text) => /View\s+Navigate\s+Agent\s+Help/.test(text) && /▌.*▌/.test(text),
+        15_000,
+      );
 
       expect(initial).toMatch(/▌.*▌/);
 
@@ -387,9 +395,11 @@ describe("PTY chrome", () => {
     });
 
     try {
-      const initial = await session.waitForText(/View\s+Navigate\s+Agent\s+Help/, {
-        timeout: 15_000,
-      });
+      const initial = await harness.waitForSnapshot(
+        session,
+        (text) => /View\s+Navigate\s+Agent\s+Help/.test(text) && /▌.*▌/.test(text),
+        15_000,
+      );
 
       expect(initial).toMatch(/▌.*▌/);
 

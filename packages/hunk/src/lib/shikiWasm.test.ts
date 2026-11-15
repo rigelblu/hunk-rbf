@@ -19,8 +19,8 @@ const highlightTestBody = `
     preferredHighlighter: "shiki-wasm",
   });
   const tokens = [
-    highlighter.codeToTokens("export const answer: number = 42;", { lang: "typescript", theme: "github-dark-default" }),
-    highlighter.codeToTokens('def hello, do: "world"', { lang: "elixir", theme: "github-dark-default" }),
+    highlighter.codeToTokens("export const answer: number = 42;", { lang: "typescript", theme: "github-dark-default", tokenizeTimeLimit: 0 }),
+    highlighter.codeToTokens('def hello, do: "world"', { lang: "elixir", theme: "github-dark-default", tokenizeTimeLimit: 0 }),
   ];
   console.log(JSON.stringify({ decodes: globalThis.shikiTestDecodes, tokens, assets: Bun.embeddedFiles.map(file => file.size) }));
 `;

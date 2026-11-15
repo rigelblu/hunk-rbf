@@ -378,24 +378,31 @@ describe("applyLineHighlightsToSpans", () => {
   });
 
   test("resolves a dense overlapping range set once per line, not once per piece", () => {
-    // 10,000 overlapping ranges on one wide-glyph line: painting used to cost
-    // work proportional to ranges × spans × pieces, which measured ~750ms for
-    // this row. The bound is loose enough to survive a slow CI box and tight
-    // enough that only near-linear resolution can meet it.
+    // Count range reads instead of elapsed time: unrelated GC and scheduling
+    // must not decide whether painting rescans every range for every piece.
     const text = "\u65E5".repeat(5_000);
     const spans: RenderSpan[] = [{ text, fg: "#ffffff" }];
     const width = measureTextWidth(text);
+    let boundaryReads = 0;
     const ranges = Array.from({ length: 10_000 }, (_, index) => {
       const startCol = (index * 7_919) % (width - 12);
-      return { startCol, endCol: startCol + 1 + (index % 11), tone: "match" as const };
+      return {
+        get startCol() {
+          boundaryReads += 1;
+          return startCol;
+        },
+        get endCol() {
+          boundaryReads += 1;
+          return startCol + 1 + (index % 11);
+        },
+        tone: "match" as const,
+      };
     });
 
-    const started = performance.now();
     const painted = applyLineHighlightsToSpans(spans, ranges, resolveBg);
-    const elapsed = performance.now() - started;
 
     expect(painted.map((span) => span.text).join("")).toBe(text);
-    expect(elapsed).toBeLessThan(150);
+    expect(boundaryReads).toBeLessThanOrEqual(ranges.length * 8);
   });
 
   test("preserves zero-width spans and wide glyph boundaries", () => {

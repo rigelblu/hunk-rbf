@@ -20,14 +20,20 @@ export function resolveModalGeometry({
   terminalHeight,
   terminalWidth,
   width,
+  compact = false,
+  top: requestedTop,
 }: {
   width: number;
   height: number;
   terminalWidth: number;
   terminalHeight: number;
+  /** Let a short-terminal dialog use all but one row, as its compact frame has no padding rows. */
+  compact?: boolean;
+  /** Place the top edge here instead of centering, clamped to stay on screen. */
+  top?: number;
 }): ModalGeometry {
   const availableWidth = Math.max(1, terminalWidth - 2);
-  const availableHeight = Math.max(1, terminalHeight - 2);
+  const availableHeight = Math.max(1, terminalHeight - (compact ? 1 : 2));
   const resolvedWidth = Math.max(1, Math.min(width, availableWidth));
   const resolvedHeight = Math.max(1, Math.min(height, availableHeight));
 
@@ -35,6 +41,9 @@ export function resolveModalGeometry({
     width: resolvedWidth,
     height: resolvedHeight,
     left: Math.max(0, Math.floor((terminalWidth - resolvedWidth) / 2)),
-    top: Math.max(0, Math.floor((terminalHeight - resolvedHeight) / 2)),
+    top:
+      requestedTop === undefined
+        ? Math.max(0, Math.floor((terminalHeight - resolvedHeight) / 2))
+        : Math.max(0, Math.min(requestedTop, terminalHeight - resolvedHeight)),
   };
 }

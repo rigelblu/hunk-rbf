@@ -9,7 +9,7 @@ import {
 } from "../components/chrome/menu";
 
 /** Drive menu selection/open state for the desktop-style top menu bar. */
-export function useMenuController(menus: AppMenus) {
+export function useMenuController(menus: AppMenus, onOpen?: (menuId: MenuId) => void) {
   const [activeMenuId, setActiveMenuId] = useState<MenuId | null>(null);
   const [activeMenuItemIndex, setActiveMenuItemIndex] = useState(0);
   // OpenTUI can deliver several decoded keys before React commits a render.
@@ -48,6 +48,7 @@ export function useMenuController(menus: AppMenus) {
   };
 
   const openMenu = (menuId: MenuId) => {
+    onOpen?.(menuId);
     const firstIndex = nextMenuItemIndex(menuEntries(liveMenus.current, menuId), -1, 1);
     liveMenuId.current = menuId;
     liveItemIndex.current = firstIndex;

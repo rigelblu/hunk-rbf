@@ -76,14 +76,28 @@ describe("PTY current line", () => {
     });
 
     try {
-      await session.waitForText(/Current line · old above, new below/, { timeout: 15_000 });
-      await session.waitIdle({ timeout: 400 });
-      const beforeClick = await session.text({ immediate: true });
+      // The heading can paint before both lens rows and their viewport geometry settle.
+      const beforeClick = await session.text({
+        waitFor: (text) => {
+          const lens = text.split("Current line · old above, new below")[1] ?? "";
+          return (
+            lens.includes("export const line01 = 1;") && lens.includes("export const line01 = 101;")
+          );
+        },
+        timeout: 15_000,
+      });
       const clickedRow = lineIndexOf(beforeClick, "export const line05 = 5;") - 1;
       expect(clickedRow).toBeGreaterThan(0);
 
       await dragMouse(session, 30, clickedRow, 31, clickedRow);
-      const clicked = await session.text({ immediate: true });
+      // Idle output does not acknowledge the drag's resulting current-line paint.
+      const clicked = await session.text({
+        waitFor: (text) => {
+          const lens = text.split("Current line · old above, new below")[1] ?? "";
+          return lens.includes("export const line05 = 5;");
+        },
+        timeout: 15_000,
+      });
       const clickedLens = clicked.split("Current line").at(-1) ?? "";
       expect(clickedLens).toContain("export const line05 = 5;");
       expect(clicked).not.toContain("Copied selection to clipboard");
@@ -94,14 +108,24 @@ describe("PTY current line", () => {
       const steppedLens = stepped.split("Current line").at(-1) ?? "";
       expect(steppedLens).toContain("export const line05 = 5;");
 
-      await session.press("pagedown");
-      const scrolled = await session.text({ immediate: true });
+      const scrolled = await harness.pressAndWaitForSnapshot(
+        session,
+        "pagedown",
+        (text) =>
+          !text.includes("export const line01 = 1;") && text.includes("export const line12 = 12;"),
+      );
       expect(scrolled).not.toContain("export const line01 = 1;");
       const scrolledRow = lineIndexOf(scrolled, "export const line12 = 12;") - 1;
       expect(scrolledRow).toBeGreaterThan(0);
 
-      await dragMouse(session, 30, scrolledRow, 30, scrolledRow);
-      const scrolledClick = await session.text({ immediate: true });
+      await session.clickAt(30, scrolledRow);
+      const scrolledClick = await session.text({
+        waitFor: (text) => {
+          const lens = text.split("Current line · old above, new below")[1] ?? "";
+          return lens.includes("export const line12 = 12;");
+        },
+        timeout: 15_000,
+      });
       const scrolledLens = scrolledClick.split("Current line").at(-1) ?? "";
       expect(scrolledLens).toContain("export const line12 = 12;");
     } finally {
@@ -133,7 +157,13 @@ describe("PTY current line", () => {
         session.writeRaw(`\x1b[<32;31;${row + 1}M`);
         await sleep(20);
       }
-      await session.waitIdle();
+      // The queued motion must paint every selected row before comparing native backgrounds.
+      await harness.waitForSnapshot(session, () =>
+        rows.every(
+          (row, index) =>
+            JSON.stringify(rowCellBackgrounds(session, row)) !== JSON.stringify(before[index]),
+        ),
+      );
 
       const selected = rows.map((row) => rowCellBackgrounds(session, row));
       for (let index = 0; index < rows.length; index += 1) {

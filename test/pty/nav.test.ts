@@ -227,9 +227,11 @@ describe("PTY navigation", () => {
     });
 
     try {
-      const initial = await session.waitForText(/View\s+Navigate\s+Agent\s+Help/, {
-        timeout: 15_000,
-      });
+      const initial = await harness.waitForSnapshot(
+        session,
+        (text) => text.includes("alphaOnly = true") && text.includes("betaValue = 2"),
+        15_000,
+      );
 
       expect(initial).toContain("alphaOnly = true");
       expect(initial).toContain("betaValue = 2");

@@ -746,7 +746,9 @@ describe("Hunk session daemon server", () => {
     process.env.HUNK_MCP_PORT = String(port);
 
     const server = await serveSessionBrokerDaemon({
-      idleTimeoutMs: 75,
+      // Registration includes real websocket and authentication I/O; a 75ms
+      // startup idle deadline could expire before this test acquired a session.
+      idleTimeoutMs: 1_000,
       staleSessionTtlMs: 500,
       staleSessionSweepIntervalMs: 25,
     });
@@ -755,7 +757,7 @@ describe("Hunk session daemon server", () => {
     try {
       socket.close();
       await waitForSessionCount(port, 0);
-      await waitForShutdown(port, 800);
+      await waitForShutdown(port, 3_000);
     } finally {
       socket.close();
       server.stop(true);
@@ -768,14 +770,16 @@ describe("Hunk session daemon server", () => {
     process.env.HUNK_MCP_PORT = String(port);
 
     const server = await serveSessionBrokerDaemon({
-      idleTimeoutMs: 75,
-      staleSessionTtlMs: 80,
+      // Leave room for authenticated registration before exercising expiry.
+      idleTimeoutMs: 1_000,
+      staleSessionTtlMs: 1_000,
       staleSessionSweepIntervalMs: 20,
     });
     const socket = await openRegisteredSession(port);
 
     try {
-      await waitForShutdown(port, 1_000);
+      await waitForSessionCount(port, 0);
+      await waitForShutdown(port, 3_000);
     } finally {
       socket.close();
       server.stop(true);

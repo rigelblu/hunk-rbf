@@ -1,6 +1,7 @@
 import { expect, mock, test } from "bun:test";
+import type { KeyEvent } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { act } from "react";
@@ -11,6 +12,7 @@ import { persistedViewPreferencesFromOptions } from "../../core/run/config";
 import { createEmptyExtensionLoadResult } from "../../extensions/types";
 import type { InteractiveHistoryRuntime } from "../history/types";
 import { LogController } from "../log/controller";
+import { PreviousInputs } from "./previousInputs";
 import { availableThemes } from "../themes";
 import {
   HunkSessionHost,
@@ -93,7 +95,7 @@ async function createHistoryRoute(subjects = ["History row"]) {
 
 /** Select Quit through the live history menu while review preparation owns the input lock. */
 async function selectHistoryMenuQuit(setup: Awaited<ReturnType<typeof testRender>>) {
-  await act(async () => setup.mockInput.pressKey("f10"));
+  await act(async () => setup.mockInput.pressKey("F10"));
   await act(async () => setup.mockInput.pressKey("q"));
 }
 
@@ -185,6 +187,67 @@ test("routes repeated history reviews through fresh runtimes and returns instead
     expect(stops[0]).toHaveBeenCalledTimes(1);
     expect(stops[1]).toHaveBeenCalledTimes(1);
     expect(quit).not.toHaveBeenCalled();
+  } finally {
+    setup.renderer.destroy();
+    await history.controller.close();
+  }
+});
+
+test("keeps one previous-input list across history reviews for the whole session", async () => {
+  const history = await createHistoryRoute();
+  const created: PreviousInputs[] = [];
+  let instance = 0;
+  const deps: HunkSessionHostDeps = {
+    createPreviousInputs: () => {
+      const inputs = new PreviousInputs();
+      created.push(inputs);
+      return inputs;
+    },
+    prepareReview: (async () => {
+      const bootstrap = createTestVcsAppBootstrap({
+        changesetId: `review-${++instance}`,
+        files: [createTestDiffFile({ id: "review.ts", path: "review.ts" })],
+      });
+      bootstrap.extensions = history.runtime.extensionSession.current;
+      return {
+        bootstrap,
+        initialization: history.runtime.initialization,
+        borrowsExtensions: true,
+      };
+    }) as never,
+    createReviewRuntime: (() => ({
+      hostClient: undefined,
+      reviewProducer: undefined,
+      stop: mock(() => undefined),
+    })) as never,
+  };
+  const setup = await testRender(
+    <HunkSessionHost
+      initialRoute={history}
+      initialization={history.runtime.initialization}
+      externalQuitSignal={new AbortController().signal}
+      onQuit={mock(() => undefined)}
+      deps={deps}
+    />,
+    { width: 100, height: 20 },
+  );
+  try {
+    await setup.renderOnce();
+    expect(created).toHaveLength(1);
+    created[0]!.record("@-");
+
+    for (let trip = 0; trip < 2; trip += 1) {
+      await act(async () => setup.mockInput.pressEnter());
+      await settle(setup);
+      expect(setup.captureCharFrame()).not.toContain("Commits on");
+      await act(async () => setup.mockInput.pressKey("q"));
+      await settle(setup);
+      expect(setup.captureCharFrame()).toContain("History row");
+    }
+
+    // Two round trips through a review neither rebuilt nor emptied the list.
+    expect(created).toHaveLength(1);
+    expect(created[0]!.list()).toEqual(["@-"]);
   } finally {
     setup.renderer.destroy();
     await history.controller.close();
@@ -436,7 +499,7 @@ test("opens an extended history selection as one inclusive comparison", async ()
     await setup.renderOnce();
     await act(async () => setup.mockInput.typeText("J"));
     await setup.renderOnce();
-    expect(setup.captureCharFrame()).toContain("2 commits selected");
+    expect(setup.captureCharFrame()).toContain("Review range: 2");
     await act(async () => setup.mockInput.pressEnter());
     await settle(setup);
     expect(requests).toHaveLength(1);
@@ -701,22 +764,39 @@ test("waits for non-cooperative provider planning before menu quit", async () =>
 
 test("blocks reopening until dirty-quit cancellation settles", async () => {
   const history = await createHistoryRoute();
+  const configHome = mkdtempSync(join(tmpdir(), "hunk-log-cancel-quit-"));
+  const configPath = join(configHome, "config.toml");
+  history.runtime.viewPreferencesConfigPath = configPath;
   let resolvePlanning!: (value: { kind: "revision-show"; revisionId: string }) => void;
   const planning = new Promise<{ kind: "revision-show"; revisionId: string }>((resolve) => {
     resolvePlanning = resolve;
   });
-  history.runtime.planReview = mock(() => planning);
+  let acknowledgePlanning!: () => void;
+  const planningStarted = new Promise<void>((resolve) => {
+    acknowledgePlanning = resolve;
+  });
+  let planningSignal: AbortSignal | undefined;
+  const planReview = mock((...args: Parameters<InteractiveHistoryRuntime["planReview"]>) => {
+    planningSignal = args[2];
+    acknowledgePlanning();
+    return planning;
+  });
+  history.runtime.planReview = planReview;
   const prepareReview = mock(async () => {
     throw new Error("cancelled planning reached preparation");
   });
   const quit = mock(() => undefined);
+  const scheduleQuit = mock(() => undefined);
   const setup = await testRender(
     <HunkSessionHost
       initialRoute={history}
       initialization={history.runtime.initialization}
       externalQuitSignal={new AbortController().signal}
       onQuit={quit}
-      deps={{ prepareReview: prepareReview as never }}
+      deps={{
+        prepareReview: prepareReview as never,
+        viewPreferenceQuitScheduler: { schedule: scheduleQuit, cancel: () => undefined },
+      }}
     />,
     { width: 100, height: 20 },
   );
@@ -730,16 +810,36 @@ test("blocks reopening until dirty-quit cancellation settles", async () => {
     expect(setup.captureCharFrame()).toContain("›  github-dark-dimmed");
     await act(async () => setup.mockInput.pressEnter());
     await setup.renderOnce();
-    await act(async () => setup.mockInput.pressEnter());
-    await Bun.sleep(10);
+    await act(async () => {
+      setup.mockInput.pressEnter();
+      await planningStarted;
+    });
+    expect(planReview).toHaveBeenCalledTimes(1);
     await selectHistoryMenuQuit(setup);
     await setup.renderOnce();
     expect(setup.captureCharFrame()).toContain("Save view preferences?");
+    expect(planningSignal?.aborted).toBeTrue();
 
-    await act(async () => setup.mockInput.pressKey("escape"));
+    await act(async () => {
+      // A standalone Escape waits for the input decoder's ambiguity deadline.
+      // Observe it before the prompt consumes propagation, then assert the commit.
+      const decoded = new Promise<void>((resolve) => {
+        const acknowledgeEscape = (key: KeyEvent) => {
+          if (key.name !== "escape") return;
+          setup.renderer.keyInput.off("keypress", acknowledgeEscape);
+          resolve();
+        };
+        setup.renderer.keyInput.prependListener("keypress", acknowledgeEscape);
+      });
+      setup.mockInput.pressEscape();
+      await decoded;
+    });
     await setup.renderOnce();
-    await act(async () => setup.mockInput.pressEnter());
     expect(setup.captureCharFrame()).not.toContain("Save view preferences?");
+    expect(scheduleQuit).not.toHaveBeenCalled();
+    expect(existsSync(configPath)).toBeFalse();
+    await act(async () => setup.mockInput.pressEnter());
+    expect(planReview).toHaveBeenCalledTimes(1);
 
     resolvePlanning({ kind: "revision-show", revisionId: "revision-a" });
     await settle(setup);
@@ -749,9 +849,11 @@ test("blocks reopening until dirty-quit cancellation settles", async () => {
     expect(setup.captureCharFrame()).toContain("History row");
     expect(setup.captureCharFrame()).not.toContain("Preparing review");
     expect(quit).not.toHaveBeenCalled();
+    expect(scheduleQuit).not.toHaveBeenCalled();
   } finally {
     setup.renderer.destroy();
     await history.controller.close();
+    rmSync(configHome, { recursive: true, force: true });
   }
 });
 
@@ -953,6 +1055,189 @@ test("cancels stale preparation, retires its owned registry, and quits once", as
     expect(events).toEqual(["retire-start", "retire-finish", "quit"]);
   } finally {
     setup.renderer.destroy();
+    await history.controller.close();
+  }
+});
+
+/** Expose only operation entry for retained-inspection tests; no provider command runs here. */
+function enableSourceSelectionTestMutations(history: HistorySurfaceRoute) {
+  history.runtime.mutations = {
+    availability: async () => ({
+      kind: "supported",
+      kinds: ["squash", "rebase"],
+      providerVersion: "test",
+    }),
+    prepare: async () => {
+      throw new Error("Inspection unexpectedly prepared a mutation");
+    },
+    apply: async () => {
+      throw new Error("Inspection unexpectedly applied a mutation");
+    },
+    dispose: async () => {},
+  };
+  history.runtime.promptSaveViewPreferences = false;
+}
+
+test("operation inspection borrows singleton review and returns to the same marks, range and reading position", async () => {
+  const history = await createHistoryRoute(["Source A", "Inspect B", "Older C"]);
+  enableSourceSelectionTestMutations(history);
+  const planned: string[] = [];
+  const originalPlan = history.runtime.planReview;
+  history.runtime.planReview = async (commit, options, signal) => {
+    planned.push(commit.revisionId);
+    return originalPlan(commit, options, signal);
+  };
+  const quit = mock(() => undefined);
+  const stop = mock(() => undefined);
+  const setup = await testRender(
+    <HunkSessionHost
+      initialRoute={history}
+      initialization={history.runtime.initialization}
+      externalQuitSignal={new AbortController().signal}
+      onQuit={quit}
+      deps={{
+        prepareReview: (async () => {
+          const bootstrap = createTestVcsAppBootstrap({
+            changesetId: "inspect",
+            files: [createTestDiffFile({ id: "inspect.ts", path: "inspect.ts" })],
+          });
+          bootstrap.extensions = history.runtime.extensionSession.current;
+          return {
+            bootstrap,
+            initialization: history.runtime.initialization,
+            borrowsExtensions: true,
+          };
+        }) as never,
+        createReviewRuntime: (() => ({
+          hostClient: undefined,
+          reviewProducer: undefined,
+          stop,
+        })) as never,
+      }}
+    />,
+    { width: 100, height: 24 },
+  );
+  try {
+    await settle(setup);
+    await act(async () => setup.mockInput.pressKey("R"));
+    await settle(setup);
+    await act(async () => history.controller.select(1, 15, { extend: true }));
+    await settle(setup);
+    const before = history.controller.getSnapshot();
+    await act(async () => setup.mockInput.pressKey("I"));
+    await settle(setup);
+    expect(planned).toEqual(["revision-b"]);
+    expect(setup.captureCharFrame()).toContain("inspect.ts");
+    await act(async () => setup.mockInput.pressKey("q"));
+    await settle(setup);
+    const after = history.controller.getSnapshot();
+    expect(setup.captureCharFrame()).toContain("Choose rebase sources");
+    expect(setup.captureCharFrame()).toContain("I Inspect");
+    expect(after.marks).toEqual(before.marks);
+    expect(after.selected).toBe(before.selected);
+    expect(after.selectionAnchor).toBe(before.selectionAnchor);
+    expect(after.entryScroll).toBe(before.entryScroll);
+    expect(after.top).toBe(before.top);
+    expect(quit).not.toHaveBeenCalled();
+    expect(stop).toHaveBeenCalledTimes(1);
+    await act(async () => setup.mockInput.pressKey(" "));
+    await settle(setup);
+    expect(history.controller.getSnapshot().marks).toHaveLength(2);
+  } finally {
+    await act(async () => setup.renderer.destroy());
+    await history.controller.close();
+  }
+});
+
+test("failed inspection preparation resumes editable source selection without clearing marks", async () => {
+  const history = await createHistoryRoute(["Source A", "Inspect B"]);
+  enableSourceSelectionTestMutations(history);
+  const setup = await testRender(
+    <HunkSessionHost
+      initialRoute={history}
+      initialization={history.runtime.initialization}
+      externalQuitSignal={new AbortController().signal}
+      onQuit={() => {}}
+      deps={{
+        prepareReview: (async () => {
+          throw new Error("Test inspection refused");
+        }) as never,
+      }}
+    />,
+    { width: 100, height: 24 },
+  );
+  try {
+    await settle(setup);
+    await act(async () => setup.mockInput.pressKey("R"));
+    await settle(setup);
+    await act(async () => setup.mockInput.pressArrow("down"));
+    await settle(setup);
+    await act(async () => setup.mockInput.pressKey("i"));
+    await settle(setup);
+    expect(setup.captureCharFrame()).toContain("Choose rebase sources");
+    expect(history.controller.getSnapshot().marks).toHaveLength(1);
+    await act(async () => setup.mockInput.pressKey(" "));
+    await settle(setup);
+    expect(history.controller.getSnapshot().marks).toHaveLength(2);
+  } finally {
+    await act(async () => setup.renderer.destroy());
+    await history.controller.close();
+  }
+});
+
+test("raw interrupt during inspection planning yields to host cancellation and awaits planning before quit", async () => {
+  const history = await createHistoryRoute(["Source A", "Inspect B"]);
+  enableSourceSelectionTestMutations(history);
+  let resolvePlan!: (value: { kind: "revision-show"; revisionId: string }) => void;
+  const planning = new Promise<{ kind: "revision-show"; revisionId: string }>((resolve) => {
+    resolvePlan = resolve;
+  });
+  let planningSignal: AbortSignal | undefined;
+  history.runtime.planReview = async (_commit, _options, signal) => {
+    planningSignal = signal;
+    return planning;
+  };
+  let interruptClaim: (() => boolean) | undefined;
+  const quit = mock(() => undefined);
+  const prepareReview = mock(async () => {
+    throw new Error("Cancelled inspection reached preparation");
+  });
+  const abort = new AbortController();
+  const setup = await testRender(
+    <HunkSessionHost
+      initialRoute={history}
+      initialization={history.runtime.initialization}
+      externalQuitSignal={abort.signal}
+      onQuit={quit}
+      claimInterrupt={(claim) => {
+        interruptClaim = claim;
+        return () => {
+          interruptClaim = undefined;
+        };
+      }}
+      deps={{ prepareReview: prepareReview as never }}
+    />,
+    { width: 100, height: 24 },
+  );
+  try {
+    await settle(setup);
+    await act(async () => setup.mockInput.pressKey("R"));
+    await settle(setup);
+    await act(async () => setup.mockInput.pressKey("I"));
+    await settle(setup);
+    expect(planningSignal).toBeDefined();
+    expect(interruptClaim?.()).toBe(false);
+    await act(async () => abort.abort());
+    await settle(setup);
+    expect(planningSignal?.aborted).toBe(true);
+    expect(quit).not.toHaveBeenCalled();
+    resolvePlan({ kind: "revision-show", revisionId: "revision-a" });
+    await settle(setup);
+    expect(prepareReview).not.toHaveBeenCalled();
+    expect(quit).toHaveBeenCalledTimes(1);
+    expect(history.controller.getSnapshot().marks).toHaveLength(0);
+  } finally {
+    await act(async () => setup.renderer.destroy());
     await history.controller.close();
   }
 });

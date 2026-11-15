@@ -4,6 +4,7 @@ import { persistedViewPreferencesFromOptions } from "../../core/run/config";
 import type { HistoryRuntime } from "../history/types";
 import { LogController } from "./controller";
 import type { HistoryCommit } from "../../core/history/types";
+import { RevisionSourceSelection } from "./revisionSourceSelection";
 import { planLogViewportGeometry } from "./geometry";
 
 type TestHistoryEntry =
@@ -178,6 +179,29 @@ describe("LogController", () => {
     await controller.halfPage(-1, 10);
     expect(controller.getSnapshot().selected).toBe(2);
     await controller.close();
+  });
+
+  test("moves the selection on every page and wheel step when the body is shorter than one entry", async () => {
+    for (const bodyHeight of [1, 2]) {
+      const { runtime } = createTestRuntime(["one", "two", "three", "four", "five"]);
+      const controller = new LogController(runtime);
+      await controller.loadMore();
+      await controller.loadMore();
+      controller.clampViewport(bodyHeight);
+      await controller.page(1, bodyHeight);
+      expect(controller.getSnapshot().selected).toBe(1);
+      await controller.page(1, bodyHeight);
+      expect(controller.getSnapshot().selected).toBe(2);
+      await controller.halfPage(1, bodyHeight);
+      expect(controller.getSnapshot().selected).toBe(3);
+      await controller.page(-1, bodyHeight);
+      expect(controller.getSnapshot().selected).toBe(2);
+      // The wheel moves the selection whenever the entry declines the scroll.
+      expect(controller.scrollEntry(3, bodyHeight)).toBe(false);
+      expect(controller.scrollEntry(-3, bodyHeight)).toBe(false);
+      expect(controller.getSnapshot().entryScroll).toBe(0);
+      await controller.close();
+    }
   });
 
   test("preserves rapid navigation targets while bounded continuation is loading", async () => {
@@ -434,6 +458,39 @@ describe("LogController", () => {
       selectionAnchor: 1,
       visualSelectionActive: true,
     });
+    await controller.close();
+  });
+
+  test("a refresh after a mutation reads again when a refresh was already in flight", async () => {
+    const { runtime } = createTestRuntime(["one", "two", "three"]);
+    const reopenSource = runtime.reopenSource.bind(runtime);
+    let reads = 0;
+    let release!: () => void;
+    let markStarted!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    runtime.reopenSource = async (signal) => {
+      reads += 1;
+      markStarted();
+      if (reads === 1) await deferred;
+      return reopenSource(signal);
+    };
+    const controller = new LogController(runtime);
+    await controller.loadMore();
+
+    const inFlight = controller.refresh();
+    await started;
+    // A plain refresh joins the read in flight; the mutation's refresh must begin a new one.
+    const joined = controller.refresh();
+    const afterMutation = controller.refreshAfterMutation();
+    release();
+    await Promise.all([inFlight, joined, afterMutation]);
+
+    expect(reads).toBe(2);
     await controller.close();
   });
 
@@ -1529,4 +1586,1080 @@ test("compact pointer-only label refresh keeps the old focus instead of followin
   expect(controller.getSelectedRow()?.commit.decorations).toHaveLength(0);
   expect(Math.abs(controller.planViewport().selectedRowOffset! - before)).toBeLessThanOrEqual(1);
   await controller.close();
+});
+
+describe("exact revision marks", () => {
+  test("separates exact provider-ordered operation membership from focused and ranged review", async () => {
+    const { runtime } = createTestRuntime(["A", "B", "C"]);
+    const controller = new LogController(runtime);
+    expect(controller.getOperationTargets()).toEqual({ kind: "empty" });
+    await controller.last(20);
+    controller.toggleMark();
+    await controller.first(20);
+    controller.toggleMark();
+    expect(controller.getSnapshot().selected).toBe(0);
+    expect(controller.getOperationTargets()).toMatchObject({
+      kind: "ready",
+      source: "marks",
+      revisionIds: ["A", "C"],
+    });
+    await controller.select(1, 20);
+    expect(controller.getSelectedRows().map((r) => r.commit.revisionId)).toEqual(["B"]);
+    expect(controller.getOperationTargets()).toMatchObject({ revisionIds: ["A", "C"] });
+    await controller.select(0, 20);
+    await controller.select(2, 20, { extend: true });
+    expect(controller.getSelectedRows().map((r) => r.commit.revisionId)).toEqual(["A", "B", "C"]);
+    const targets = controller.getOperationTargets();
+    expect(targets).toMatchObject({ revisionIds: ["A", "C"] });
+    expect(Object.isFrozen(targets)).toBe(true);
+    if (targets.kind === "ready")
+      expect(() => (targets.revisionIds as string[]).push("B")).toThrow();
+    controller.toggleMark(0);
+    controller.toggleMark(0);
+    expect(controller.getSnapshot().selected).toBe(2);
+    const top = controller.getSnapshot().top;
+    controller.clearSelection();
+    expect(controller.getSnapshot()).toMatchObject({
+      marks: [],
+      selectionAnchor: null,
+      visualSelectionActive: false,
+      selected: 2,
+      top,
+    });
+    expect(controller.getOperationTargets()).toMatchObject({
+      source: "highlight",
+      revisionIds: ["C"],
+    });
+    controller.clearSelection();
+    await controller.close();
+  });
+
+  test("preserves membership through search, paging, presentation, and exact refresh", async () => {
+    const { runtime, setHistory } = createTestRuntime(["A", "B", "C"]);
+    const controller = new LogController(runtime);
+    await controller.last(8);
+    controller.toggleMark();
+    await controller.first(8);
+    controller.toggleMark();
+    await controller.search("B");
+    await controller.findMatch(1, 8);
+    await controller.page(1, 8);
+    controller.togglePresentation("graph");
+    setHistory(["X", "A", "B", "C"]);
+    expect(await controller.refresh()).toBe(true);
+    expect(controller.getOperationTargets()).toMatchObject({ revisionIds: ["A", "C"] });
+    await controller.close();
+  });
+
+  test("reserves a later exact match before considering duplicate logical identities", async () => {
+    const { runtime, setHistory } = createTestRuntime([{ revisionId: "old", logicalId: "change" }]);
+    const controller = new LogController(runtime);
+    await controller.loadMore();
+    controller.toggleMark();
+    setHistory([
+      { revisionId: "new", logicalId: "change" },
+      ...Array.from({ length: 257 }, (_, i) => ({ revisionId: "filler" + i })),
+      { revisionId: "old", logicalId: "change" },
+    ]);
+    expect(await controller.refresh()).toBe(true);
+    expect(controller.getOperationTargets()).toMatchObject({ revisionIds: ["old"] });
+    expect(controller.getSnapshot().rows.length).toBe(259);
+    await controller.close();
+  });
+
+  test("only accepts a unique logical rewrite in a complete unchanged eligible stream", async () => {
+    for (const filter of [
+      undefined,
+      { maxCount: 1 },
+      { author: "Ada" },
+      { grep: "x" },
+      { since: "y" },
+      { until: "z" },
+      { pathspecs: ["file"] },
+    ]) {
+      const { runtime, setHistory } = createTestRuntime([
+        { revisionId: "old", logicalId: "change", subject: "Original subject" },
+      ]);
+      Object.assign(runtime.input, filter ?? {});
+      const controller = new LogController(runtime);
+      await controller.loadMore();
+      controller.toggleMark();
+      setHistory([{ revisionId: "new", logicalId: "change" }]);
+      expect(await controller.refresh()).toBe(true);
+      if (!filter) expect(controller.getOperationTargets()).toMatchObject({ revisionIds: ["new"] });
+      else {
+        expect(controller.getSnapshot().marks).toMatchObject([
+          {
+            kind: "unresolved",
+            reason: "incomplete",
+            mark: { revisionId: "old", subject: "Original subject" },
+          },
+        ]);
+        expect(controller.getOperationTargets()).toMatchObject({
+          kind: "blocked",
+          reason: "unresolved",
+        });
+      }
+      await controller.close();
+    }
+  });
+
+  test("retains ambiguous and missing marks and never publishes partial operation IDs", async () => {
+    const { runtime, setHistory } = createTestRuntime([
+      { revisionId: "A", logicalId: "a" },
+      { revisionId: "C", logicalId: "c", subject: "Retained C" },
+    ]);
+    const controller = new LogController(runtime);
+    await controller.loadMore();
+    controller.toggleMark(0);
+    controller.toggleMark(1);
+    setHistory([
+      { revisionId: "A", logicalId: "a" },
+      { revisionId: "C1", logicalId: "c" },
+      { revisionId: "C2", logicalId: "c" },
+    ]);
+    await controller.refresh();
+    expect(controller.getSnapshot().marks[1]).toMatchObject({
+      kind: "unresolved",
+      reason: "ambiguous",
+      mark: { revisionId: "C", subject: "Retained C" },
+    });
+    expect(controller.getOperationTargets()).toMatchObject({
+      kind: "blocked",
+      reason: "unresolved",
+    });
+    expect(controller.getOperationTargets()).not.toHaveProperty("revisionIds");
+    setHistory(["A"]);
+    await controller.refresh();
+    expect(controller.getSnapshot().marks[1]).toMatchObject({
+      kind: "unresolved",
+      reason: "missing",
+    });
+    controller.removeUnresolvedMarks();
+    expect(controller.getOperationTargets()).toMatchObject({ revisionIds: ["A"] });
+    await controller.close();
+  });
+
+  test("blocks logical collision with an exact mark and duplicate mark claims", async () => {
+    for (const exact of [true, false]) {
+      const { runtime, setHistory } = createTestRuntime([
+        { revisionId: "A", logicalId: "same" },
+        { revisionId: "B", logicalId: "same" },
+      ]);
+      const controller = new LogController(runtime);
+      await controller.loadMore();
+      controller.toggleMark(0);
+      controller.toggleMark(1);
+      setHistory([{ revisionId: exact ? "A" : "new", logicalId: "same" }]);
+      await controller.refresh();
+      expect(controller.getOperationTargets()).toMatchObject({ kind: "blocked" });
+      expect(controller.getSnapshot().marks.at(-1)).toMatchObject({
+        kind: "unresolved",
+        reason: "ambiguous",
+      });
+      await controller.close();
+    }
+  });
+
+  test("clearing during deferred refresh never restores stale intent", async () => {
+    const { runtime } = createTestRuntime(["A", "B", "C"]);
+    const controller = new LogController(runtime);
+    await controller.last(20);
+    controller.toggleMark();
+    const original = runtime.reopenSource.bind(runtime);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    runtime.reopenSource = async (signal) => {
+      await gate;
+      return original(signal);
+    };
+    const refreshing = controller.refresh();
+    expect(controller.getOperationTargets()).toMatchObject({ kind: "blocked", reason: "checking" });
+    controller.clearSelection();
+    release();
+    expect(await refreshing).toBe(true);
+    expect(controller.getSnapshot().marks).toEqual([]);
+    expect(controller.getOperationTargets()).toMatchObject({
+      source: "highlight",
+      revisionIds: ["C"],
+    });
+    await controller.close();
+  });
+
+  test("keeps active rows and marks blocked on reopen, read, and synchronous acceptance failure; retry recovers", async () => {
+    for (const stage of ["reopen", "read", "accept"]) {
+      const { runtime } = createTestRuntime(["A", "B"]);
+      const controller = new LogController(runtime);
+      await controller.loadMore();
+      controller.toggleMark();
+      const rows = controller.getSnapshot().rows;
+      const reopen = runtime.reopenSource.bind(runtime);
+      const accept = runtime.acceptSource;
+      if (stage === "reopen")
+        runtime.reopenSource = async () => {
+          throw new Error("reopen failed");
+        };
+      if (stage === "read")
+        runtime.reopenSource = async () => ({
+          read: async () => {
+            throw new Error("read failed");
+          },
+          close: async () => {},
+        });
+      if (stage === "accept")
+        runtime.acceptSource = () => {
+          throw new Error("accept failed");
+        };
+      expect(await controller.refresh()).toBe(false);
+      expect(controller.getSnapshot().rows).toBe(rows);
+      expect(controller.getSnapshot().marks).toHaveLength(1);
+      expect(controller.getOperationTargets()).toMatchObject({
+        kind: "blocked",
+        reason: "refresh-failed",
+      });
+      runtime.reopenSource = reopen;
+      runtime.acceptSource = accept;
+      expect(await controller.refresh()).toBe(true);
+      expect(controller.getOperationTargets()).toMatchObject({ kind: "ready", revisionIds: ["A"] });
+      await controller.close();
+    }
+  });
+});
+
+test("refresh disables new marks before and after clearing and guard refusal keeps unchecked intent blocked", async () => {
+  const { runtime } = createTestRuntime(["A", "B"]);
+  const controller = new LogController(runtime);
+  await controller.loadMore();
+  const original = runtime.reopenSource.bind(runtime);
+  let release!: () => void;
+  let gate = new Promise<void>((resolve) => (release = resolve));
+  runtime.reopenSource = async (signal) => {
+    await gate;
+    return original(signal);
+  };
+  let refreshing = controller.refresh();
+  expect(controller.getSnapshot().markStatus).toBe("checking");
+  expect(controller.toggleMark()).toBe(false);
+  release();
+  await refreshing;
+  controller.toggleMark();
+  gate = new Promise<void>((resolve) => (release = resolve));
+  refreshing = controller.refresh();
+  controller.clearSelection();
+  expect(controller.toggleMark()).toBe(false);
+  expect(controller.getOperationTargets()).toMatchObject({ source: "highlight" });
+  release();
+  await refreshing;
+  controller.toggleMark();
+  gate = new Promise<void>((resolve) => (release = resolve));
+  let allowed = true;
+  refreshing = controller.refresh(() => allowed);
+  allowed = false;
+  release();
+  expect(await refreshing).toBe(false);
+  expect(controller.getOperationTargets()).toMatchObject({
+    kind: "blocked",
+    reason: "refresh-failed",
+  });
+  expect(await controller.refresh(() => false)).toBe(false);
+  expect(controller.getOperationTargets()).toMatchObject({ kind: "blocked" });
+  await controller.close();
+});
+
+test("checking recovery cannot remove unresolved marks; an explicit revision scope never follows a logical rewrite", async () => {
+  const { runtime, setHistory } = createTestRuntime([{ revisionId: "old", logicalId: "logical" }]);
+  runtime.input.revision = "explicit-scope";
+  runtime.input.firstParent = true;
+  const controller = new LogController(runtime);
+  await controller.loadMore();
+  controller.toggleMark();
+  setHistory([]);
+  await controller.refresh();
+  const original = runtime.reopenSource.bind(runtime);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  runtime.reopenSource = async (signal) => {
+    await gate;
+    return original(signal);
+  };
+  setHistory([{ revisionId: "rewritten", logicalId: "logical" }]);
+  const refreshing = controller.refresh();
+  expect(controller.removeUnresolvedMarks()).toBe(false);
+  expect(controller.getSnapshot().marks).toHaveLength(1);
+  release();
+  await refreshing;
+  expect(controller.getSnapshot().marks).toMatchObject([
+    { kind: "unresolved", reason: "incomplete", mark: { revisionId: "old" } },
+  ]);
+  expect(controller.getOperationTargets()).toMatchObject({ kind: "blocked", reason: "unresolved" });
+  setHistory([{ revisionId: "another", logicalId: "logical" }]);
+  runtime.input.revision = "different-scope";
+  await controller.refresh();
+  expect(controller.getSnapshot().marks).toMatchObject([
+    { kind: "unresolved", reason: "incomplete" },
+  ]);
+  await controller.close();
+});
+
+type TestHistoryScope = HistoryRuntime["source"]["scope"];
+
+/** Give the mounted source and every reopened source a history scope that tests can move. */
+function scopeTestRuntime(runtime: HistoryRuntime, initial: TestHistoryScope) {
+  let scope = initial;
+  const withScope = (source: HistoryRuntime["source"]): HistoryRuntime["source"] => ({
+    read: (options) => source.read(options),
+    close: () => source.close(),
+    ...(scope ? { scope } : {}),
+  });
+  const reopen = runtime.reopenSource.bind(runtime);
+  runtime.source = withScope(runtime.source);
+  runtime.reopenSource = async (signal) => withScope(await reopen(signal));
+  return (next: TestHistoryScope) => {
+    scope = next;
+  };
+}
+
+describe("revision marks across history scopes", () => {
+  const boundedAt = (boundaryRevisionId: string): TestHistoryScope => ({
+    kind: "bounded",
+    boundaryRevisionId,
+  });
+  const fallback: TestHistoryScope = { kind: "fallback", reason: "unavailable" };
+
+  for (const scenario of [
+    {
+      name: "main advances past an unchanged marked revision",
+      before: { scope: boundedAt("T1"), history: ["A", "B", "T1"] },
+      mark: "B",
+      after: { scope: boundedAt("T2"), history: ["A", "T2"] },
+    },
+    {
+      name: "a divergent copy stays visible while the marked copy leaves the bound",
+      before: {
+        scope: boundedAt("T1"),
+        history: [{ revisionId: "c1", logicalId: "k" }, { revisionId: "c3", logicalId: "k" }, "T1"],
+      },
+      mark: "c1",
+      after: { scope: boundedAt("T2"), history: [{ revisionId: "c3", logicalId: "k" }, "T2"] },
+    },
+    {
+      name: "fallback history becomes bounded",
+      before: { scope: fallback, history: ["A", "T1", "OLD"] },
+      mark: "OLD",
+      after: { scope: boundedAt("T1"), history: ["A", "T1"] },
+    },
+    {
+      name: "bounded history falls back and a logical sibling appears",
+      before: { scope: boundedAt("T1"), history: [{ revisionId: "c1", logicalId: "k" }, "T1"] },
+      mark: "c1",
+      after: { scope: fallback, history: [{ revisionId: "c3", logicalId: "k" }, "T1", "OLD"] },
+    },
+    {
+      name: "the fallback reason changes",
+      before: { scope: fallback, history: [{ revisionId: "c1", logicalId: "k" }] },
+      mark: "c1",
+      after: {
+        scope: { kind: "fallback", reason: "ambiguous" } as TestHistoryScope,
+        history: [{ revisionId: "c3", logicalId: "k" }],
+      },
+    },
+    {
+      name: "an unscoped history gains a bound",
+      before: { scope: undefined, history: [{ revisionId: "c1", logicalId: "k" }, "T1"] },
+      mark: "c1",
+      after: { scope: boundedAt("T1"), history: [{ revisionId: "c3", logicalId: "k" }, "T1"] },
+    },
+  ] satisfies Array<{
+    name: string;
+    before: { scope: TestHistoryScope; history: TestHistoryEntry[] };
+    mark: string;
+    after: { scope: TestHistoryScope; history: TestHistoryEntry[] };
+  }>)
+    test(`keeps an absent mark unchecked, never re-targeted or missing, when ${scenario.name}`, async () => {
+      const { runtime, setHistory } = createTestRuntime(scenario.before.history);
+      const setScope = scopeTestRuntime(runtime, scenario.before.scope);
+      const controller = new LogController(runtime);
+      await controller.last(20);
+      const index = controller
+        .getSnapshot()
+        .rows.findIndex((row) => row.commit.revisionId === scenario.mark);
+      expect(controller.toggleMark(index)).toBe(true);
+      expect(controller.getOperationTargets()).toMatchObject({ revisionIds: [scenario.mark] });
+
+      setHistory(scenario.after.history);
+      setScope(scenario.after.scope);
+      expect(await controller.refresh()).toBe(true);
+
+      expect(controller.getSnapshot().scope).toEqual(scenario.after.scope);
+      expect(controller.getSnapshot().markStatus).toBe("ready");
+      expect(controller.getSnapshot().marks).toMatchObject([
+        { kind: "unresolved", reason: "incomplete", mark: { revisionId: scenario.mark } },
+      ]);
+      expect(controller.getOperationTargets()).toMatchObject({
+        kind: "blocked",
+        reason: "unresolved",
+        unresolved: [{ revisionId: scenario.mark }],
+      });
+      await controller.close();
+    });
+
+  test("keeps an exact match resolved when the bound moves", async () => {
+    const { runtime, setHistory } = createTestRuntime(["A", "B", "T1"]);
+    const setScope = scopeTestRuntime(runtime, boundedAt("T1"));
+    const controller = new LogController(runtime);
+    await controller.last(20);
+    controller.toggleMark(0);
+    setHistory(["A", "T2"]);
+    setScope(boundedAt("T2"));
+    expect(await controller.refresh()).toBe(true);
+    expect(controller.getSnapshot().marks).toMatchObject([{ kind: "resolved", revisionId: "A" }]);
+    expect(controller.getOperationTargets()).toMatchObject({ kind: "ready", revisionIds: ["A"] });
+    await controller.close();
+  });
+
+  for (const scope of [boundedAt("T1"), fallback, undefined])
+    test(`follows a unique logical rewrite and reports a vanished revision as missing when ${scope ? `${scope.kind} scope` : "unscoped history"} is unchanged`, async () => {
+      const { runtime, setHistory } = createTestRuntime([
+        { revisionId: "old", logicalId: "change" },
+        { revisionId: "gone", logicalId: "gone-change" },
+        "T1",
+      ]);
+      scopeTestRuntime(runtime, scope);
+      const controller = new LogController(runtime);
+      await controller.last(20);
+      controller.toggleMark(0);
+      controller.toggleMark(1);
+      setHistory([{ revisionId: "new", logicalId: "change" }, "T1"]);
+      expect(await controller.refresh()).toBe(true);
+      expect(controller.getSnapshot().scope).toEqual(scope);
+      expect(controller.getSnapshot().marks).toMatchObject([
+        { kind: "resolved", revisionId: "new" },
+        { kind: "unresolved", reason: "missing", mark: { revisionId: "gone" } },
+      ]);
+      await controller.close();
+    });
+
+  test("still reports a limited unscoped history as unchecked", async () => {
+    const { runtime, setHistory } = createTestRuntime([
+      { revisionId: "c1", logicalId: "k" },
+      { revisionId: "c3", logicalId: "k" },
+    ]);
+    runtime.input.maxCount = 50;
+    scopeTestRuntime(runtime, undefined);
+    const controller = new LogController(runtime);
+    await controller.last(20);
+    controller.toggleMark(0);
+    setHistory([{ revisionId: "c3", logicalId: "k" }]);
+    expect(await controller.refresh()).toBe(true);
+    expect(controller.getSnapshot().marks).toMatchObject([
+      { kind: "unresolved", reason: "incomplete", mark: { revisionId: "c1" } },
+    ]);
+    await controller.close();
+  });
+});
+
+describe("revision marks across repeated refreshes", () => {
+  const boundedAt = (boundaryRevisionId: string): TestHistoryScope => ({
+    kind: "bounded",
+    boundaryRevisionId,
+  });
+  const change = (revisionId: string, logicalId = "k") => ({ revisionId, logicalId });
+
+  /** Summarize every mark as `state:original->target` so a sequence reads as one line per refresh. */
+  function describeTestMarks(controller: LogController) {
+    return controller
+      .getSnapshot()
+      .marks.map((entry) =>
+        entry.kind === "resolved"
+          ? `resolved:${entry.revisionId}`
+          : `${entry.reason}:${entry.mark.revisionId}`,
+      );
+  }
+
+  /** Mount a scoped history, load every row, and mark the named revisions. */
+  async function createTestScopedMarks(
+    history: TestHistoryEntry[],
+    scope: TestHistoryScope,
+    marked: string[],
+  ) {
+    const { runtime, setHistory } = createTestRuntime(history);
+    const setScope = scopeTestRuntime(runtime, scope);
+    const controller = new LogController(runtime);
+    await controller.last(20);
+    for (const revisionId of marked)
+      expect(
+        controller.toggleMark(
+          controller.getSnapshot().rows.findIndex((row) => row.commit.revisionId === revisionId),
+        ),
+      ).toBe(true);
+    /** Replace the provider's history and scope, refresh once, and report the marks. */
+    const refreshTo = async (
+      next: TestHistoryEntry[],
+      nextScope: TestHistoryScope,
+      shouldApply?: () => boolean,
+    ) => {
+      setHistory(next);
+      setScope(nextScope);
+      expect(await controller.refresh(shouldApply)).toBe(true);
+      expect(controller.getSnapshot().markStatus).toBe("ready");
+      return describeTestMarks(controller);
+    };
+    return { runtime, controller, refreshTo };
+  }
+
+  for (const [name, shouldApply] of [
+    ["manual refresh", undefined],
+    ["the guarded refresh auto-refresh runs", () => true],
+  ] as const)
+    test(`never re-targets a mark to a divergent copy on any later refresh under the moved bound, through ${name}`, async () => {
+      const { controller, refreshTo } = await createTestScopedMarks(
+        [change("c1"), change("c3"), "T1"],
+        boundedAt("T1"),
+        ["c1"],
+      );
+      for (let refresh = 0; refresh < 4; refresh += 1) {
+        expect(await refreshTo([change("c3"), "T2"], boundedAt("T2"), shouldApply)).toEqual([
+          "incomplete:c1",
+        ]);
+        expect(controller.getOperationTargets()).toMatchObject({
+          kind: "blocked",
+          reason: "unresolved",
+          unresolved: [{ revisionId: "c1" }],
+        });
+      }
+      await controller.close();
+    });
+
+  test("never calls an unchanged revision missing on any later refresh under the moved bound", async () => {
+    const { controller, refreshTo } = await createTestScopedMarks(
+      ["A", "B", "T1"],
+      boundedAt("T1"),
+      ["B"],
+    );
+    for (let refresh = 0; refresh < 4; refresh += 1)
+      expect(await refreshTo(["A", "T2"], boundedAt("T2"))).toEqual(["incomplete:B"]);
+    await controller.close();
+  });
+
+  test("resolves the mark when the bound moves back and its revision is visible again, then follows a later rewrite there", async () => {
+    const { controller, refreshTo } = await createTestScopedMarks(
+      [change("c1"), "T1"],
+      boundedAt("T1"),
+      ["c1"],
+    );
+    expect(await refreshTo(["T2"], boundedAt("T2"))).toEqual(["incomplete:c1"]);
+    expect(await refreshTo(["T2"], boundedAt("T2"))).toEqual(["incomplete:c1"]);
+    expect(await refreshTo([change("c1"), "T1"], boundedAt("T1"))).toEqual(["resolved:c1"]);
+    expect(await refreshTo([change("c2"), "T1"], boundedAt("T1"))).toEqual(["resolved:c2"]);
+    expect(controller.getOperationTargets()).toMatchObject({ kind: "ready", revisionIds: ["c2"] });
+    await controller.close();
+  });
+
+  test("moves a mark's record to the new bound once its revision is seen there", async () => {
+    const { controller, refreshTo } = await createTestScopedMarks(
+      [change("c1"), "T1"],
+      boundedAt("T1"),
+      ["c1"],
+    );
+    expect(await refreshTo(["T2"], boundedAt("T2"))).toEqual(["incomplete:c1"]);
+    expect(await refreshTo([change("c1"), "T2"], boundedAt("T2"))).toEqual(["resolved:c1"]);
+    // Seen under T2 now: a rewrite under T2 follows, and the old bound proves nothing any more.
+    expect(await refreshTo([change("c2"), "T2"], boundedAt("T2"))).toEqual(["resolved:c2"]);
+    expect(await refreshTo([change("c9"), "T1"], boundedAt("T1"))).toEqual(["incomplete:c2"]);
+    expect(await refreshTo([change("c9"), "T1"], boundedAt("T1"))).toEqual(["incomplete:c2"]);
+    await controller.close();
+  });
+
+  test("decides each mark by its own record when only one was left behind by the moved bound", async () => {
+    const { controller, refreshTo } = await createTestScopedMarks(
+      [change("kept", "kept-change"), change("c1"), change("c3"), "T1"],
+      boundedAt("T1"),
+      ["kept", "c1"],
+    );
+    expect(await refreshTo([change("kept", "kept-change"), change("c3"), "T2"], boundedAt("T2")))
+      // `kept` was seen under T2, `c1` was not.
+      .toEqual(["resolved:kept", "incomplete:c1"]);
+    expect(
+      await refreshTo([change("kept2", "kept-change"), change("c3"), "T2"], boundedAt("T2")),
+    ).toEqual(["resolved:kept2", "incomplete:c1"]);
+    await controller.close();
+  });
+
+  test("keeps following rewrites across refreshes while the scope is unchanged", async () => {
+    for (const scope of [boundedAt("T1"), undefined]) {
+      const { controller, refreshTo } = await createTestScopedMarks([change("c1"), "T1"], scope, [
+        "c1",
+      ]);
+      expect(await refreshTo([change("c2"), "T1"], scope)).toEqual(["resolved:c2"]);
+      expect(await refreshTo([change("c3"), "T1"], scope)).toEqual(["resolved:c3"]);
+      expect(await refreshTo(["T1"], scope)).toEqual(["missing:c3"]);
+      expect(await refreshTo([change("c4"), "T1"], scope)).toEqual(["resolved:c4"]);
+      await controller.close();
+    }
+  });
+
+  test("keeps a mark unchecked on every refresh after the traversal input changes", async () => {
+    const { runtime, controller, refreshTo } = await createTestScopedMarks(
+      [change("old")],
+      undefined,
+      ["old"],
+    );
+    runtime.input.revision = "other-revset";
+    for (let refresh = 0; refresh < 3; refresh += 1)
+      expect(await refreshTo([change("another")], undefined)).toEqual(["incomplete:old"]);
+    delete runtime.input.revision;
+    expect(await refreshTo([change("rewritten")], undefined)).toEqual(["resolved:rewritten"]);
+    await controller.close();
+  });
+
+  test("records the rows on screen, not a pending input or bound, when a mark is made", async () => {
+    const { runtime, controller, refreshTo } = await createTestScopedMarks(
+      [change("old"), "T1"],
+      boundedAt("T1"),
+      [],
+    );
+    // The input changes before any refresh: the rows on screen still come from the old one.
+    // `all` changes the traversal without filtering it, so a later rewrite can still follow.
+    runtime.input.all = true;
+    controller.toggleMark(0);
+    expect(await refreshTo([change("another"), "T1"], boundedAt("T1"))).toEqual(["incomplete:old"]);
+    // A mark made on the refreshed rows records them, so a rewrite there follows.
+    controller.toggleMark(0);
+    expect(await refreshTo([change("later"), "T1"], boundedAt("T1"))).toEqual([
+      "incomplete:old",
+      "resolved:later",
+    ]);
+    await controller.close();
+  });
+});
+
+describe("revision marks under a revision or first-parent filter", () => {
+  const change = (revisionId: string, logicalId = "k") => ({ revisionId, logicalId });
+
+  /** Mount a history under the given input, load every row, and mark the named revision. */
+  async function createTestFilteredMark(
+    input: Partial<HistoryRuntime["input"]>,
+    history: TestHistoryEntry[],
+    marked: string,
+  ) {
+    const { runtime, setHistory } = createTestRuntime(history);
+    Object.assign(runtime.input, input);
+    const controller = new LogController(runtime);
+    await controller.last(20);
+    expect(
+      controller.toggleMark(
+        controller.getSnapshot().rows.findIndex((row) => row.commit.revisionId === marked),
+      ),
+    ).toBe(true);
+    /** Replace the provider's history, refresh once, and report the mark as `state:revision`. */
+    const refreshTo = async (next: TestHistoryEntry[]) => {
+      setHistory(next);
+      expect(await controller.refresh()).toBe(true);
+      expect(controller.getSnapshot().markStatus).toBe("ready");
+      return controller
+        .getSnapshot()
+        .marks.map((entry) =>
+          entry.kind === "resolved"
+            ? `resolved:${entry.revisionId}`
+            : `${entry.reason}:${entry.mark.revisionId}`,
+        );
+    };
+    return { controller, refreshTo };
+  }
+
+  for (const [name, input] of [
+    ["a revision", { revision: "@" }],
+    ["first-parent", { firstParent: true }],
+    ["a revision and first-parent", { revision: "@", firstParent: true }],
+  ] as const) {
+    test(`never re-targets a mark to a divergent copy that enters the rows under ${name}`, async () => {
+      // `jj edit <other copy>` moves `@` only: the marked copy is still visible, outside the rows.
+      const { controller, refreshTo } = await createTestFilteredMark(
+        input,
+        [change("c1"), "base"],
+        "c1",
+      );
+      for (let refresh = 0; refresh < 3; refresh += 1) {
+        expect(await refreshTo([change("c2"), "base"])).toEqual(["incomplete:c1"]);
+        expect(controller.getOperationTargets()).toMatchObject({
+          kind: "blocked",
+          reason: "unresolved",
+          unresolved: [{ revisionId: "c1" }],
+        });
+      }
+      await controller.close();
+    });
+
+    test(`never calls an unchanged revision missing when it leaves the rows under ${name}`, async () => {
+      // `jj new main` moves `@` elsewhere: the marked revision is unchanged, outside the rows.
+      const { controller, refreshTo } = await createTestFilteredMark(
+        input,
+        [change("Y", "y-change"), "base"],
+        "Y",
+      );
+      for (let refresh = 0; refresh < 3; refresh += 1)
+        expect(await refreshTo(["elsewhere", "base"])).toEqual(["incomplete:Y"]);
+      await controller.close();
+    });
+
+    test(`keeps an exact match resolved under ${name}`, async () => {
+      const { controller, refreshTo } = await createTestFilteredMark(
+        input,
+        [change("c1"), "base"],
+        "c1",
+      );
+      expect(await refreshTo(["newer", change("c1"), "base"])).toEqual(["resolved:c1"]);
+      expect(await refreshTo([change("c2"), "base"])).toEqual(["incomplete:c1"]);
+      expect(await refreshTo([change("c1"), "base"])).toEqual(["resolved:c1"]);
+      await controller.close();
+    });
+  }
+
+  for (const [name, input] of [
+    ["the default view", {}],
+    ["--all", { all: true }],
+  ] as const)
+    test(`still follows a rewrite across two refreshes in ${name}`, async () => {
+      const { controller, refreshTo } = await createTestFilteredMark(
+        input,
+        [change("c1"), "base"],
+        "c1",
+      );
+      expect(await refreshTo([change("c2"), "base"])).toEqual(["resolved:c2"]);
+      expect(await refreshTo([change("c3"), "base"])).toEqual(["resolved:c3"]);
+      expect(controller.getOperationTargets()).toMatchObject({
+        kind: "ready",
+        revisionIds: ["c3"],
+      });
+      await controller.close();
+    });
+});
+
+describe("operation source selection preparation", () => {
+  test("seeds the highlight, toggles without moving focus, and leaves explicit empty sources", async () => {
+    const { runtime } = createTestRuntime(["A", "B", "C"]);
+    const controller = new LogController(runtime);
+    await controller.last(8);
+    const selection = new RevisionSourceSelection(controller, () => ({ eligible: true }));
+    const visit = Symbol("operation");
+    expect(selection.begin(visit)).toEqual({ kind: "changed" });
+    expect(selection.targets(visit)).toMatchObject({ source: "marks", revisionIds: ["C"] });
+    expect(selection.indicator("C")).toBe("✓");
+    const { selected, top, entryScroll } = controller.getSnapshot();
+    expect(selection.toggle(visit)).toEqual({ kind: "changed" });
+    expect(selection.targets(visit)).toEqual({ kind: "empty" });
+    expect(selection.lock(visit)).toEqual({ kind: "empty" });
+    expect(selection.indicator("C")).toBe(" ");
+    expect(controller.getSnapshot()).toMatchObject({ selected, top, entryScroll });
+    // Other consumers retain their existing highlighted fallback until host wiring changes.
+    expect(controller.getOperationTargets()).toMatchObject({
+      source: "highlight",
+      revisionIds: ["C"],
+    });
+    expect(selection.toggle(visit, 0)).toEqual({ kind: "changed" });
+    expect(selection.targets(visit)).toMatchObject({ revisionIds: ["A"] });
+    expect(controller.getSnapshot().selected).toBe(selected);
+    selection.end(visit);
+    await controller.close();
+  });
+
+  test("keeps exact provider order and a frozen source indication through a locked phase", async () => {
+    const { runtime } = createTestRuntime(["A", "B", "C"]);
+    const controller = new LogController(runtime);
+    await controller.last(8);
+    const selection = new RevisionSourceSelection(controller, () => ({ eligible: true }));
+    const visit = Symbol("operation");
+    selection.begin(visit);
+    selection.toggle(visit, 0);
+    const targets = selection.lock(visit);
+    expect(targets).toMatchObject({ source: "marks", revisionIds: ["A", "C"] });
+    expect(Object.isFrozen(targets)).toBeTrue();
+    if (targets.kind === "ready") expect(Object.isFrozen(targets.revisionIds)).toBeTrue();
+    await controller.select(1, 8);
+    expect(selection.toggle(visit)).toEqual({ kind: "inactive" });
+    expect(selection.targets(visit)).toBe(targets);
+    expect(selection.indicator("A")).toBe("✓");
+    expect(selection.indicator("B")).toBe(" ");
+    expect(selection.indicator("C")).toBe("✓");
+    selection.end(visit);
+    expect(controller.getSnapshot().selected).toBe(1);
+    expect(selection.indicator("A")).toBe(" ");
+    await controller.close();
+  });
+
+  test("leaves eligibility and its refusal wording with the host", async () => {
+    const { runtime } = createTestRuntime(["A", "B"]);
+    const controller = new LogController(runtime);
+    await controller.loadMore();
+    let allowed = false;
+    const selection = new RevisionSourceSelection(controller, () =>
+      allowed ? { eligible: true } : { eligible: false, reason: "Host source refusal" },
+    );
+    const visit = Symbol("operation");
+    expect(selection.begin(visit)).toEqual({ kind: "refused", reason: "Host source refusal" });
+    expect(controller.getSnapshot().marks).toEqual([]);
+    allowed = true;
+    expect(selection.begin(visit)).toEqual({ kind: "changed" });
+    allowed = false;
+    expect(selection.toggle(visit, 1)).toEqual({ kind: "refused", reason: "Host source refusal" });
+    expect(selection.targets(visit)).toMatchObject({ revisionIds: ["A"] });
+    expect(selection.toggle(visit)).toEqual({ kind: "changed" });
+    expect(selection.targets(visit)).toEqual({ kind: "empty" });
+    selection.end(visit);
+    await controller.close();
+  });
+
+  test("rejects overlapping visits and ignores stale callbacks after a new visit starts", async () => {
+    const { runtime } = createTestRuntime(["A", "B"]);
+    const controller = new LogController(runtime);
+    await controller.loadMore();
+    const selection = new RevisionSourceSelection(controller, () => ({ eligible: true }));
+    const first = Symbol("first");
+    const second = Symbol("second");
+    selection.begin(first);
+    expect(selection.begin(second).kind).toBe("refused");
+    expect(selection.end(first)).toBeTrue();
+    await controller.select(1, 8);
+    selection.begin(second);
+    expect(selection.end(first)).toBeFalse();
+    expect(selection.toggle(first)).toEqual({ kind: "inactive" });
+    expect(selection.lock(first)).toEqual({ kind: "empty" });
+    expect(selection.targets(second)).toMatchObject({ revisionIds: ["B"] });
+    selection.end(second);
+    await controller.close();
+  });
+
+  test("mark-only cleanup preserves review range and waits for queued navigation", async () => {
+    const { runtime } = createTestRuntime(["A", "B", "C"]);
+    const read = runtime.source.read.bind(runtime.source);
+    let reads = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    runtime.source.read = async (options) => {
+      if (++reads === 2) await gate;
+      return read(options);
+    };
+    const controller = new LogController(runtime);
+    await controller.loadMore();
+    await controller.select(1, 1);
+    controller.beginVisualSelection();
+    controller.seedSourceSelection("B");
+    const moving = controller.move(1, 1, { extend: true });
+    let settled = false;
+    const settlement = controller.settleNavigation().then(() => {
+      settled = true;
+    });
+    expect(controller.clearRevisionMarks()).toBeTrue();
+    await Promise.resolve();
+    expect(settled).toBeFalse();
+    expect(controller.getSnapshot()).toMatchObject({
+      selected: 1,
+      selectionAnchor: 1,
+      visualSelectionActive: true,
+    });
+    release();
+    await Promise.all([moving, settlement]);
+    expect(controller.getSnapshot()).toMatchObject({
+      selected: 2,
+      selectionAnchor: 1,
+      visualSelectionActive: true,
+      marks: [],
+    });
+    await controller.close();
+  });
+
+  test("mark-only cleanup during refresh cannot resurrect source intent", async () => {
+    const { runtime } = createTestRuntime(["A", "B"]);
+    const controller = new LogController(runtime);
+    await controller.loadMore();
+    controller.seedSourceSelection("A");
+    const reopen = runtime.reopenSource.bind(runtime);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    runtime.reopenSource = async (signal) => {
+      await gate;
+      return reopen(signal);
+    };
+    const refreshing = controller.refresh();
+    expect(controller.seedSourceSelection("A")).toBeFalse();
+    expect(controller.clearRevisionMarks()).toBeTrue();
+    release();
+    expect(await refreshing).toBeTrue();
+    expect(controller.getOperationTargets({ allowHighlightedFallback: false })).toEqual({
+      kind: "empty",
+    });
+    expect(controller.getSnapshot().marks).toEqual([]);
+    expect(controller.clearRevisionMarks()).toBeFalse();
+    await controller.close();
+  });
+
+  test("refuses to lock unresolved sources and keeps them available for recovery", async () => {
+    const { runtime, setHistory } = createTestRuntime(["A", "B"]);
+    const controller = new LogController(runtime);
+    await controller.loadMore();
+    const selection = new RevisionSourceSelection(controller, () => ({ eligible: true }));
+    const visit = Symbol("operation");
+    selection.begin(visit);
+    setHistory(["B"]);
+    await controller.refresh();
+    expect(selection.lock(visit)).toMatchObject({ kind: "blocked", reason: "unresolved" });
+    expect(selection.targets(visit)).not.toHaveProperty("revisionIds");
+    controller.removeUnresolvedMarks();
+    expect(selection.targets(visit)).toEqual({ kind: "empty" });
+    expect(selection.toggle(visit)).toEqual({ kind: "changed" });
+    expect(selection.targets(visit)).toMatchObject({ revisionIds: ["B"] });
+    selection.end(visit);
+    await controller.close();
+  });
+});
+
+test("source entry publishes its checkmark immediately and cannot seed an unchecked replacement highlight", async () => {
+  const { runtime } = createTestRuntime(["A", "B"]);
+  const controller = new LogController(runtime);
+  await controller.loadMore();
+  const selection = new RevisionSourceSelection(controller, () => ({ eligible: true }));
+  const indications: string[] = [];
+  const unsubscribe = controller.subscribe(() => {
+    indications.push(selection.indicator("A"));
+  });
+  const visit = Symbol("operation");
+  expect(selection.begin(visit)).toEqual({ kind: "changed" });
+  expect(indications[0]).toBe("✓");
+  selection.end(visit);
+  unsubscribe();
+  await controller.select(1, 8);
+  expect(controller.seedSourceSelection("A")).toBeFalse();
+  expect(controller.getSnapshot().marks).toEqual([]);
+  await controller.close();
+});
+
+test("a host callback cannot replace a visit during begin and have it overwritten", async () => {
+  const { runtime } = createTestRuntime(["A", "B"]);
+  const controller = new LogController(runtime);
+  await controller.loadMore();
+  const first = Symbol("first");
+  const second = Symbol("second");
+  let replace = true;
+  const selection = new RevisionSourceSelection(controller, () => {
+    if (replace) {
+      replace = false;
+      expect(selection.end(first)).toBeTrue();
+      void controller.select(1, 8);
+      expect(selection.begin(second)).toEqual({ kind: "changed" });
+    }
+    return { eligible: true };
+  });
+  expect(selection.begin(first)).toEqual({ kind: "inactive" });
+  expect(selection.targets(second)).toMatchObject({ revisionIds: ["B"] });
+  expect(selection.end(first)).toBeFalse();
+  selection.end(second);
+  await controller.close();
+});
+
+test("an obsolete toggle cannot remove a replacement visit's source after host eligibility", async () => {
+  const { runtime } = createTestRuntime(["A", "B"]);
+  const controller = new LogController(runtime);
+  await controller.loadMore();
+  const first = Symbol("first");
+  const second = Symbol("second");
+  let replace = false;
+  const selection = new RevisionSourceSelection(controller, () => {
+    if (replace) {
+      replace = false;
+      selection.end(first);
+      void controller.select(1, 8);
+      selection.begin(second);
+    }
+    return { eligible: true };
+  });
+  selection.begin(first);
+  replace = true;
+  expect(selection.toggle(first, 1)).toEqual({ kind: "inactive" });
+  expect(selection.targets(second)).toMatchObject({ revisionIds: ["B"] });
+  expect(selection.indicator("B")).toBe("✓");
+  selection.end(second);
+  await controller.close();
+});
+
+test("a closed controller cannot report a successful source toggle", async () => {
+  const { runtime } = createTestRuntime(["A", "B"]);
+  const controller = new LogController(runtime);
+  await controller.loadMore();
+  const selection = new RevisionSourceSelection(controller, () => ({ eligible: true }));
+  const visit = Symbol("operation");
+  selection.begin(visit);
+  await controller.close();
+  expect(selection.toggle(visit, 1)).toMatchObject({ kind: "refused" });
+  expect(selection.targets(visit)).toMatchObject({ revisionIds: ["A"] });
+  expect(controller.toggleMark(1)).toBeFalse();
+  selection.end(visit);
+});
+
+test("source entry cannot lock generic marks before seeding its checked highlight", async () => {
+  const { runtime } = createTestRuntime(["A", "B"]);
+  const controller = new LogController(runtime);
+  await controller.loadMore();
+  controller.toggleMark(1);
+  const visit = Symbol("operation");
+  const selection = new RevisionSourceSelection(controller, () => {
+    expect(selection.lock(visit)).toEqual({ kind: "empty" });
+    expect(selection.toggle(visit, 1)).toEqual({ kind: "inactive" });
+    expect(selection.indicator("B")).toBe(" ");
+    return { eligible: true };
+  });
+  expect(selection.begin(visit)).toEqual({ kind: "changed" });
+  expect(selection.targets(visit)).toMatchObject({ revisionIds: ["A"] });
+  expect(controller.getOperationTargets()).toMatchObject({ revisionIds: ["A"] });
+  expect(selection.indicator("A")).toBe("✓");
+  expect(selection.indicator("B")).toBe(" ");
+  selection.end(visit);
+  await controller.close();
+});
+
+test("operation endpoint highlighting retains range and current geometry without logical retargeting", async () => {
+  const { runtime } = createTestRuntime([
+    { revisionId: "A", logicalId: "same" },
+    { revisionId: "B", logicalId: "same" },
+    { revisionId: "C", logicalId: "other" },
+  ]);
+  const controller = new LogController(runtime);
+  try {
+    await controller.loadMore();
+    await controller.loadMore();
+    await controller.select(2, 10);
+    await controller.select(1, 10, { extend: true });
+    const anchor = controller.getSnapshot().selectionAnchor;
+    expect(controller.highlightLoadedRevision("A")).toBe(true);
+    expect(controller.getSnapshot().selected).toBe(0);
+    expect(controller.getSnapshot().selectionAnchor).toBe(anchor);
+    expect(controller.highlightLoadedRevision("absent")).toBe(false);
+    expect(controller.getSnapshot().selected).toBe(0);
+  } finally {
+    await controller.close();
+  }
+});
+
+test("actual removed pre-refresh identities cannot survive as logical replacements", async () => {
+  const { runtime, setHistory } = createTestRuntime([
+    { revisionId: "A", logicalId: "a" },
+    { revisionId: "B", logicalId: "b" },
+  ]);
+  const controller = new LogController(runtime);
+  try {
+    await controller.loadMore();
+    controller.toggleMark(0);
+    controller.toggleMark(1);
+    setHistory([
+      { revisionId: "A2", logicalId: "a" },
+      { revisionId: "B2", logicalId: "b" },
+    ]);
+    expect(await controller.refreshAfterMutation(() => true, ["A"])).toBe(true);
+    expect(controller.getSnapshot().marks.map((m) => m.mark.revisionId)).toEqual(["B2"]);
+  } finally {
+    await controller.close();
+  }
 });

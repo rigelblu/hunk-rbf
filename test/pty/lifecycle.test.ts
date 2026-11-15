@@ -111,17 +111,46 @@ function stopDaemonsUnder(runtimeDir: string) {
   }
 }
 
-function revokeTerminal(path: string) {
-  const libc = dlopen("/usr/lib/libSystem.B.dylib", {
-    revoke: {
-      args: [FFIType.cstring],
-      returns: FFIType.i32,
-    },
+/** Revoke the owned terminal without blocking the event loop that drains its output. */
+async function revokeTerminalTest(path: string) {
+  const script = `
+    import { dlopen, FFIType, ptr } from "bun:ffi";
+    const libc = dlopen("/usr/lib/libSystem.B.dylib", {
+      revoke: { args: [FFIType.cstring], returns: FFIType.i32 },
+    });
+    const tty = Buffer.from(${JSON.stringify(`${path}\0`)});
+    try {
+      console.log(JSON.stringify(libc.symbols.revoke(ptr(tty))));
+    } finally {
+      libc.close();
+    }
+  `;
+  const child = Bun.spawn([process.execPath, "--eval", script], {
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
   });
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return libc.symbols.revoke(ptr(Buffer.from(`${path}\0`)));
+    const [exitCode, stdout, stderr] = await Promise.race([
+      Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Terminal revocation timed out")), 5_000);
+      }),
+    ]);
+    if (exitCode !== 0) throw new Error(`Terminal revoker failed: ${stderr}`);
+    const result: unknown = JSON.parse(stdout);
+    if (typeof result !== "number" || !Number.isInteger(result)) {
+      throw new Error("Terminal revoker returned an invalid result");
+    }
+    return result;
   } finally {
-    libc.close();
+    clearTimeout(timer);
+    if (child.exitCode === null) child.kill("SIGKILL");
   }
 }
 
@@ -416,7 +445,7 @@ describe("PTY lifecycle", () => {
         expect(pid).toBeGreaterThan(0);
         expect(ttyPath).toStartWith("/dev/tty");
 
-        expect(revokeTerminal(ttyPath)).toBe(0);
+        expect(await revokeTerminalTest(ttyPath)).toBe(0);
         expect(await waitForExitCode(exitFile)).toBe(0);
       } finally {
         session.close();

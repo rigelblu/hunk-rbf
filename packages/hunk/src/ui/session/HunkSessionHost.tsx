@@ -26,11 +26,19 @@ import type { InteractiveHistoryRuntime } from "../history/types";
 import type { ViewPreferenceQuitScheduler } from "../hooks/useViewPreferenceQuitController";
 import { interactiveLogUsesColor } from "../log/colorPolicy";
 import { LogApp, type LogAppOutcome } from "../log/LogApp";
+import { runHandedOverMutationProcess } from "../../app/mutationTerminalProcess";
+import { runHistoryMutationInTerminal } from "../lib/runHistoryMutationInTerminal";
+import {
+  HistoryMutationFlowController,
+  type HistoryInspectionToken,
+} from "../log/HistoryMutationFlowController";
 import type { LogController } from "../log/controller";
 import { resolveHistoryAuthorLabel } from "../log/formatting";
 import { ThemeController } from "../theme/controller";
 import { trackLiveAppearance } from "../theme/liveAppearance";
 import { watchTerminalColors } from "../theme/terminalColorWatcher";
+import { PreviousInputs } from "./previousInputs";
+import type { HunkSessionRenderContext } from "./runHunkSession";
 import { applySessionViewPreferences } from "./viewPreferences";
 
 export interface HistorySurfaceRoute {
@@ -54,6 +62,7 @@ interface ActiveReviewSurfaceRoute extends StandaloneReviewSurfaceRoute {
   quitBehavior: "return-to-history" | "quit-session";
   mountMode: "initial" | "dynamic";
   returnRoute?: HistorySurfaceRoute;
+  inspectionToken?: HistoryInspectionToken;
 }
 
 type ActiveSurfaceRoute = HistorySurfaceRoute | ActiveReviewSurfaceRoute;
@@ -62,6 +71,8 @@ export interface HunkSessionHostDeps {
   prepareReview?: typeof prepareEmbeddedHistoryReview;
   createReviewRuntime?: typeof createReviewSessionRuntime;
   viewPreferenceQuitScheduler?: ViewPreferenceQuitScheduler;
+  /** Create the session's previous-input list; tests count calls to prove it is made once. */
+  createPreviousInputs?: () => PreviousInputs;
 }
 
 /** Truncate one display field without splitting Unicode code points or exceeding transport bytes. */
@@ -136,6 +147,7 @@ export function HunkSessionHost({
   initialRoute,
   initialization,
   externalQuitSignal,
+  claimInterrupt,
   onQuit,
   startupNoticeResolver,
   systemAppearanceResolver,
@@ -145,6 +157,8 @@ export function HunkSessionHost({
   initialRoute: HunkSurfaceRoute;
   initialization: InteractiveSessionInitialization;
   externalQuitSignal: AbortSignal;
+  /** Lets the history surface keep raw-mode Ctrl-C for an open overlay instead of quitting. */
+  claimInterrupt?: HunkSessionRenderContext["claimInterrupt"];
   onQuit: (exitCode?: number) => void;
   startupNoticeResolver?: () => Promise<StartupNotice | null>;
   /** Read macOS appearance; production passes the macOS resolver and tests leave it unset. */
@@ -154,8 +168,32 @@ export function HunkSessionHost({
   deps?: HunkSessionHostDeps;
 }) {
   const renderer = useRenderer();
+  const [mutationFlow] = useState(() =>
+    initialRoute.kind === "history"
+      ? new HistoryMutationFlowController(
+          initialRoute.controller,
+          initialRoute.runtime.mutations && {
+            ...initialRoute.runtime.mutations,
+            apply: (handleId, signal) =>
+              initialRoute.runtime.mutations!.apply(handleId, signal, (invocation, abort) =>
+                runHistoryMutationInTerminal(invocation, abort, {
+                  renderer,
+                  run: runHandedOverMutationProcess,
+                  claimInterrupt,
+                  onRestoreFailure: () => requestQuit(1),
+                }),
+              ),
+          },
+        )
+      : null,
+  );
   const prepareReview = deps.prepareReview ?? prepareEmbeddedHistoryReview;
   const createReviewRuntime = deps.createReviewRuntime ?? createReviewSessionRuntime;
+  // Session lifetime: this list outlives every routed surface, so opening a diff from history and
+  // returning keeps it, and quitting drops it.
+  const [previousInputs] = useState(() =>
+    (deps.createPreviousInputs ?? (() => new PreviousInputs()))(),
+  );
   const [themeController] = useState(() => {
     // A review launch shows macOS appearance from its first frame. History startup keeps its own
     // theme resolution, and the tracking below still records the live mode for reviews it opens.
@@ -232,8 +270,8 @@ export function HunkSessionHost({
   const completeQuit = useCallback(() => {
     if (quitRequestedRef.current) return;
     quitRequestedRef.current = true;
-    onQuit(pendingExitCodeRef.current);
-  }, [onQuit]);
+    void Promise.resolve(mutationFlow?.shutdown()).then(() => onQuit(pendingExitCodeRef.current));
+  }, [onQuit, mutationFlow]);
 
   const requestQuit = useCallback(
     (exitCode?: number) => {
@@ -261,10 +299,11 @@ export function HunkSessionHost({
       completeQuit();
       return;
     }
+    if (current.inspectionToken) mutationFlow?.finishInspection(current.inspectionToken);
     routeRef.current = returnRoute;
     setHistoryReturnGeneration((generation) => generation + 1);
     setRoute(returnRoute);
-  }, [completeQuit, externalQuitSignal, stopReviewRuntime]);
+  }, [completeQuit, externalQuitSignal, stopReviewRuntime, mutationFlow]);
 
   const handleHistoryOutcome = async (
     historyRoute: HistorySurfaceRoute,
@@ -377,6 +416,7 @@ export function HunkSessionHost({
         quitBehavior: "return-to-history",
         mountMode: "dynamic",
         returnRoute: historyRoute,
+        ...(outcome.inspectionToken ? { inspectionToken: outcome.inspectionToken } : {}),
       };
       routeRef.current = reviewRoute;
       setRoute(reviewRoute);
@@ -397,6 +437,8 @@ export function HunkSessionHost({
         preparationControllerRef.current = null;
       }
       preparingRef.current = false;
+      if (outcome.inspectionToken && routeRef.current.kind === "history")
+        mutationFlow?.finishInspection(outcome.inspectionToken);
       if (preparationSettlementRef.current === preparationSettlement) {
         preparationSettlementRef.current = null;
       }
@@ -424,11 +466,12 @@ export function HunkSessionHost({
       preparationControllerRef.current?.abort(
         new Error("Hunk session host unmounted during surface preparation."),
       );
+      void mutationFlow?.shutdown();
       const current = routeRef.current;
       if (current.kind === "review") stopReviewRuntime(current.runtime);
       for (const runtime of failedReviewStopsRef.current) stopReviewRuntime(runtime);
     },
-    [stopReviewRuntime],
+    [stopReviewRuntime, mutationFlow],
   );
 
   if (route.kind === "review") {
@@ -461,6 +504,7 @@ export function HunkSessionHost({
   return (
     <LogApp
       controller={route.controller}
+      {...(mutationFlow ? { mutationFlow } : {})}
       runtime={route.runtime}
       useColor={interactiveLogUsesColor(route.runtime.input.color, process.env)}
       onOutcome={(outcome) => handleHistoryOutcome(route, outcome)}
@@ -471,6 +515,8 @@ export function HunkSessionHost({
       onAutoRefreshEnabledChange={setAutoRefreshEnabled}
       refreshOnMountGeneration={historyReturnGeneration}
       themeController={themeController}
+      previousInputs={previousInputs}
+      {...(claimInterrupt ? { claimInterrupt } : {})}
     />
   );
 }

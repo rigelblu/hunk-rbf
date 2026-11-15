@@ -94,6 +94,72 @@ describe("static history projection", () => {
     }
   });
 
+  test("drops a ref list that cannot show part of a name and gives its cells to the subject", () => {
+    const theme = resolveHistoryTheme("github-dark-default");
+    const decorations = [
+      { kind: "head" as const, label: "@" },
+      { kind: "ref" as const, label: "@default" },
+      { kind: "ref" as const, label: "@feature" },
+    ];
+    const titleAt = (input: HistoryCommit, budget: number, color = false) => {
+      const inputRow = planHistoryPage([{ ...input, parentRevisionIds: [] }]).rows[0]!;
+      const prefix = `${renderHistoryGraph(inputRow, true)}  ${commit.displayId}  `;
+      const width = measureTextWidth(prefix) + budget;
+      const text = projectHistoryRow(inputRow, { ascii: true, color, theme, width });
+      expect(measureTextWidth(text.replace(/\x1b\[[0-9;]*m/g, ""))).toBeLessThanOrEqual(width);
+      return color ? text : text.slice(prefix.length);
+    };
+
+    const described = { ...commit, subject: "Described", decorations };
+    for (const [budget, expected] of [
+      [2, "D…"],
+      [3, "De…"],
+      [7, "Descri…"],
+      [8, "De… (@…)"],
+    ] as const) {
+      expect(titleAt(described, budget)).toBe(expected);
+    }
+
+    const empty = { ...described, isEmpty: true };
+    for (const [budget, expected] of [
+      [10, "(empty) D…"],
+      [11, "(empty) De…"],
+      [12, "(empty) (@…)"],
+    ] as const) {
+      expect(titleAt(empty, budget)).toBe(expected);
+    }
+
+    // A dropped list leaves the row a revision without refs gets, and yellow stays off refs.
+    const yellow = foreground(resolveHistoryTitlePalette(theme).empty);
+    for (const subject of ["Described", "(no description set)"]) {
+      for (const isEmpty of [true, false]) {
+        const input = { ...commit, subject, isEmpty, decorations };
+        for (let budget = 1; budget <= 47; budget += 1) {
+          const text = titleAt(input, budget);
+          expect(text).not.toContain("(…)");
+          if (!text.includes("(@"))
+            expect(text).toBe(titleAt({ ...input, decorations: [] }, budget));
+          for (const piece of titleAt(input, budget, true).split(yellow).slice(1)) {
+            expect(piece.slice(0, piece.indexOf("\x1b[0m"))).not.toContain("@");
+          }
+        }
+      }
+    }
+  });
+
+  test("keeps the colored bytes of a clipped known-empty row that has no refs", () => {
+    const theme = resolveHistoryTheme("github-dark-default");
+    const emptyRow = planHistoryPage([
+      { ...commit, parentRevisionIds: [], isEmpty: true, decorations: [] },
+    ]).rows[0]!;
+    const emptyTitle = `${foreground(resolveHistoryTitlePalette(theme).empty)}\x1b[0m`;
+
+    // The row is clipped inside its id, so the title's empty-marker span has no text left.
+    expect(projectHistoryRow(emptyRow, { ascii: true, color: true, theme, width: 5 })).toEndWith(
+      emptyTitle,
+    );
+  });
+
   test("renders portable graph palettes", () => {
     expect(renderHistoryGraph(row, false)).toBe("●─┬");
     expect(renderHistoryGraph(row, true)).toBe("*-+");

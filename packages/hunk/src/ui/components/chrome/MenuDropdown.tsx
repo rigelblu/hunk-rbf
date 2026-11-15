@@ -1,5 +1,5 @@
 import type { AppTheme } from "../../themes";
-import { measureTextWidth, padText } from "../../lib/text";
+import { measureTextWidth, padText, wrapText } from "../../lib/text";
 import type { MenuEntry, MenuId, MenuSpec } from "./menu";
 
 /** Render one actionable menu line with an optional keyboard hint. */
@@ -63,14 +63,38 @@ export function MenuDropdown({
   const clampedWidth = Math.max(1, Math.min(activeMenuWidth, terminalWidth - 2));
   const clampedLeft = Math.max(0, Math.min(activeMenuSpec.left, terminalWidth - clampedWidth));
   const visibleRowCount = Math.max(1, terminalHeight - top - 2);
+  const bodyWidth = Math.max(1, clampedWidth - 4);
+  const rows = activeMenuEntries.flatMap<{
+    entry: MenuEntry;
+    index: number;
+    line: string;
+    wrapped: boolean;
+  }>((entry, index) => {
+    if (entry.kind === "separator") return [{ entry, index, line: "", wrapped: false }];
+    const label =
+      entry.checked === undefined ? entry.label : `${entry.checked ? "[x]" : "[ ]"} ${entry.label}`;
+    const complete = `${label}${entry.hint ? `  ${entry.hint}` : ""}`;
+    const wrapped = measureTextWidth(`  ${complete}`) > bodyWidth;
+    return (wrapped ? wrapText(complete, bodyWidth) : [complete]).map((line) => ({
+      entry,
+      index,
+      line,
+      wrapped,
+    }));
+  });
+  const focusedTop = Math.max(
+    0,
+    rows.findIndex((row) => row.index === activeMenuItemIndex),
+  );
+  const focusedHeight = rows.filter((row) => row.index === activeMenuItemIndex).length;
   const windowStart = Math.max(
     0,
     Math.min(
-      Math.max(0, activeMenuEntries.length - visibleRowCount),
-      activeMenuItemIndex - Math.floor(visibleRowCount / 2),
+      Math.max(0, rows.length - visibleRowCount),
+      focusedTop - Math.max(0, Math.floor((visibleRowCount - focusedHeight) / 2)),
     ),
   );
-  const visibleEntries = activeMenuEntries.slice(windowStart, windowStart + visibleRowCount);
+  const visibleRows = rows.slice(windowStart, windowStart + visibleRowCount);
 
   return (
     <box
@@ -79,7 +103,7 @@ export function MenuDropdown({
         top,
         left: clampedLeft,
         width: clampedWidth,
-        height: visibleEntries.length + 2,
+        height: visibleRows.length + 2,
         zIndex: 40,
         border: true,
         borderColor: theme.border,
@@ -87,11 +111,10 @@ export function MenuDropdown({
         flexDirection: "column",
       }}
     >
-      {visibleEntries.map((entry, offset) => {
-        const index = windowStart + offset;
+      {visibleRows.map(({ entry, index, line, wrapped }, offset) => {
         return entry.kind === "separator" ? (
           <box
-            key={`${activeMenuId}:separator:${index}`}
+            key={`${activeMenuId}:separator:${index}:${offset}`}
             style={{ height: 1, paddingLeft: 1, paddingRight: 1 }}
           >
             <text fg={theme.border}>
@@ -102,7 +125,7 @@ export function MenuDropdown({
           <box
             // Command ids are unique where labels need not be: two extensions
             // may both title a command "Refresh".
-            key={`${activeMenuId}:${entry.commandId ?? `item-${index}`}`}
+            key={`${activeMenuId}:${entry.commandId ?? `item-${index}`}:${offset}`}
             style={{
               height: 1,
               paddingLeft: 1,
@@ -118,11 +141,15 @@ export function MenuDropdown({
               if (!entry.disabled) onSelectItem(entry);
             }}
           >
-            {renderMenuLine(
-              entry,
-              Math.max(1, clampedWidth - 2),
-              theme,
-              activeMenuItemIndex === index && !entry.disabled,
+            {wrapped ? (
+              <text fg={entry.disabled ? theme.muted : theme.text}>{line}</text>
+            ) : (
+              renderMenuLine(
+                entry,
+                bodyWidth,
+                theme,
+                activeMenuItemIndex === index && !entry.disabled,
+              )
             )}
           </box>
         );
