@@ -35,6 +35,10 @@ export interface WatchControllerOptions {
   /** Baseline captured before content loading; if absent, the first check must refresh. */
   initialSignature?: string;
   getSignature: (signal: AbortSignal) => string | Promise<string>;
+  /**
+   * Apply a verified change. Return `false` when it did not apply, so the controller keeps the
+   * previous baseline and checks again on the next event or safety check.
+   */
   refresh: () => void | boolean | Promise<void | boolean>;
   /** A source event arrived and a debounced signature check is now pending. */
   onReloadPending?: () => void;

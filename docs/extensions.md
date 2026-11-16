@@ -606,10 +606,12 @@ API version 29 adds optional
 `history.watchPlan(input, context)` and `history.watchSignature(input, context)` hooks. Extensions
 that require these hooks should declare `{ "hunk": { "apiVersion": 29 } }`; an extension that
 supports older Hunk versions can branch on `hunk.apiVersion`. The signature is required for automatic
-refresh; the event plan is optional and omitting it uses signature polling. Both hooks receive
-`context.signal`, which Hunk aborts when the log session stops observing. Providers without a
-signature remain compatible and keep manual refresh. The interactive `hunk log` opt-in refresh item
-starts off for each session.
+refresh; the event plan is optional and omitting it uses signature polling. Hunk calls `watchPlan`
+without a `context.signal`; `watchSignature` receives one, which Hunk aborts when the log session
+stops observing. Providers without a signature remain compatible and keep manual refresh.
+Interactive `hunk log` starts with automatic refresh off unless the effective config sets
+`history_auto_refresh = true` at the top level, where repository config overrides user config; the F10
+item changes it for the current session only.
 
 History is deliberately separate from patch-producing `operations`. The built-in host owns command
 routing, graph planning, themes, terminal lifecycle, and static/interactive presentation. The
@@ -1448,7 +1450,7 @@ languages, oversize input, queue pressure, cancellation, worker failure, and tok
 all retain the original symbolic FileView content. By contrast, invalid layout data or unavailable
 native text measurement fails layout preparation and falls back to the raw diff, because Hunk
 cannot safely retain a view without exact geometry. Folder extensions using `codeDocuments` or
-`syntax` must declare `"hunk": { "apiVersion": 29 }`.
+`syntax` must declare `"hunk": { "apiVersion": 28 }`.
 
 A row's optional `sourceRanges` contains inclusive, one-based exact-source
 bindings such as `{ side: "new", range: [12, 18] }`. Hunk reads only the bound
