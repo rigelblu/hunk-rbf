@@ -137,9 +137,14 @@ function resolveHistoryRepoRoot(options: GitHistoryOptions) {
   return gitDir;
 }
 
-/** Return whether a default HEAD traversal has no first commit yet. */
+/** Return whether HEAD resolves to a commit. */
 function hasHead(options: GitHistoryOptions) {
   return runGit(["rev-parse", "--verify", "--quiet", "HEAD"], options, [0, 1]).trim().length > 0;
+}
+
+/** Return whether a history query has no commits to read: a zero limit, or HEAD before its first commit. */
+function isEmptyGitHistory(input: ExtensionVcsHistoryInput, options: GitHistoryOptions) {
+  return input.maxCount === 0 || (!input.revision && !input.all && !hasHead(options));
 }
 
 /** Refuse a positional revision that Git could reinterpret as an option. */
@@ -244,7 +249,10 @@ export function buildGitHistoryArgs(input: ExtensionVcsHistoryInput) {
   return args;
 }
 
-/** Fingerprint visible commits and decorations selected by the bounded history query. */
+/**
+ * Fingerprint the commits a history query shows by hash and decorations. A commit's hash fixes
+ * its author, date and message, so reading them would only add cost.
+ */
 export async function getGitHistoryWatchSignature(
   input: ExtensionVcsHistoryInput,
   options: GitHistoryOptions,
@@ -253,9 +261,16 @@ export async function getGitHistoryWatchSignature(
   const formatIndex = args.findIndex((argument) => argument.startsWith("--format="));
   if (formatIndex < 0) throw new Error("Git history query has no machine format.");
   args.splice(formatIndex, 0, "--decorate=short");
-  args[formatIndex + 1] = "--format=%H%x00%D%x00%an%x00%ae%x00%aI%x00%s%x00%b";
-  const history = await runGitPlanningQuery(args, options);
-  return history.stdout;
+  args[formatIndex + 1] = "--format=%H%x00%D";
+  try {
+    const history = await runGitPlanningQuery(args, options);
+    return history.stdout;
+  } catch (error) {
+    // Return the empty fingerprint where `openGitHistory` opens an empty history: before the
+    // first commit, `git log` fails, and watching must still start so the first commit appears.
+    if (!options.signal?.aborted && isEmptyGitHistory(input, options)) return "";
+    throw error;
+  }
 }
 
 /** Parse fixed NUL-delimited machine fields into immutable commit summaries. */
@@ -354,7 +369,7 @@ export function openGitHistory(
 ): ExtensionVcsHistorySource & { repoRoot: string } {
   const repoRoot = resolveHistoryRepoRoot({ cwd, gitExecutable });
   const queryOptions = { cwd: repoRoot, gitExecutable };
-  const empty = input.maxCount === 0 || (!input.revision && !input.all && !hasHead(queryOptions));
+  const empty = isEmptyGitHistory(input, queryOptions);
   if (empty) {
     return {
       repoRoot,

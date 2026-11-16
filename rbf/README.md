@@ -61,7 +61,7 @@ Sapling history are unchanged. HK-93 is recorded in the local Hunk RBF 0.11.0 re
 
 # 🔵⋯ Start history auto-refresh from config
 
-Put `history_auto_refresh = true` at the top level of `~/.config/hunk/config.toml` or a repository's `.hunk/config.toml` to start interactive `hunk log` with automatic refresh on. The built-in default is off. Repository config takes precedence over user config.
+Put `history_auto_refresh = true` at the top level of `~/.config/hunk/config.toml` or a repository's `.hunk/config.toml` to start interactive `hunk log` with automatic refresh on. The built-in default is off. Repository config takes precedence over user config. Write the key above the first `[table]` header in the file: below a header, TOML assigns it to that table, where Hunk ignores it or rejects it.
 
 F10 can turn automatic refresh on or off for the current log session without changing either config file. This setting applies only to interactive history; review `watch` is separate. If a history provider cannot report changes, manual Refresh remains available.
 

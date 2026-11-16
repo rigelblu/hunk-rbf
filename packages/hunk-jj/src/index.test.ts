@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { JjVcsAdapter } from ".";
@@ -94,6 +102,28 @@ describe("JjVcsAdapter", () => {
       expect(plan.targets[0]?.directory).toBe(join(repo, ".jj", "repo", "op_heads"));
       expect(afterRefOnlyChange).not.toBe(before);
       expect(after).not.toBe(before);
+    },
+    JjAdapterIntegrationTestTimeoutMs,
+  );
+
+  jjTest(
+    "watches the shared operation log from a secondary workspace",
+    () => {
+      const repo = createTempJjRepo("hunk-jj-history-watch-main-");
+      const secondary = join(createTempDir("hunk-jj-history-watch-secondary-"), "secondary");
+      jj(repo, "workspace", "add", secondary);
+
+      // `jj workspace add` leaves a pointer file where the initial workspace keeps the store.
+      expect(statSync(join(secondary, ".jj", "repo")).isFile()).toBe(true);
+
+      const plan = JjVcsAdapter.history!.watchPlan!({}, { cwd: secondary });
+      const directory = plan.targets[0]?.directory ?? "";
+
+      expect(plan.coverage).toBe("hybrid");
+      expect(normalizeComparablePath(directory)).toBe(
+        normalizeComparablePath(join(repo, ".jj", "repo", "op_heads")),
+      );
+      expect(statSync(directory).isDirectory()).toBe(true);
     },
     JjAdapterIntegrationTestTimeoutMs,
   );
