@@ -13,6 +13,7 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 ## 🟠⋯ Fixed for End Users
 
 - 2026-10-12 - fix (ux) | refresh history automatically without a delay or an error notice when Hunk runs in a secondary JJ workspace (#hk-85)
+- 2026-11-16 - fix (ux) | keep automatic history refresh on in a new Git repository, so my first commit appears without a manual refresh (#hk-85.4)
 
 # 🔵⋯ v0.12.0 (2026-10-14)
 
