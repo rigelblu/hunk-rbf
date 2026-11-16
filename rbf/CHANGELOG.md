@@ -19,6 +19,10 @@ Fork releases use the version in `rbf/RBF_VERSION`; upstream release history rem
 - 2026-10-12 - fix (ux) | refresh history automatically without a delay or an error notice when Hunk runs in a secondary JJ workspace (#hk-85)
 - 2026-11-16 - fix (ux) | keep automatic history refresh on in a new Git repository, so my first commit appears without a manual refresh (#hk-85.4)
 
+## 🟠⋯ Fixed for Technical Users
+
+- 2026-11-16 - fix (doc technical) | declare the API version my extension really needs for syntax paint (28), and know that only `watchSignature` receives a cancellation signal (#hk-85.4)
+
 # 🔵⋯ v0.12.0 (2026-10-14)
 
 Local HK-92 release records; installation and publication remain pending.
