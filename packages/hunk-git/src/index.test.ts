@@ -90,6 +90,20 @@ describe("GitVcsAdapter published surface", () => {
       GitVcsAdapter.history!.watchSignature!({ revision: "no-such-revision" }, { cwd: repo }),
     ).rejects.toThrow();
   });
+
+  test("fingerprints commits by hash and decorations, not their messages", async () => {
+    const repo = createTempRepo("hunk-git-history-watch-trimmed-");
+    writeFileSync(join(repo, "file.txt"), "first\n");
+    git(repo, "add", "file.txt");
+    git(repo, "commit", "-m", "A subject the signature leaves out");
+    const head = git(repo, "rev-parse", "HEAD").trim();
+
+    const signature = await GitVcsAdapter.history!.watchSignature!({}, { cwd: repo });
+
+    expect(signature).toContain(head);
+    expect(signature).toContain("HEAD -> master");
+    expect(signature).not.toContain("A subject the signature leaves out");
+  });
 });
 
 const tempDirs: string[] = [];
