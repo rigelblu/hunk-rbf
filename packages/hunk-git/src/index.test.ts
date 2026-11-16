@@ -66,6 +66,30 @@ describe("GitVcsAdapter published surface", () => {
     expect(afterRefOnlyChange).not.toBe(before);
     expect(after).not.toBe(before);
   });
+
+  test("fingerprints a repository before its first commit so watching can start", async () => {
+    const repo = createTempRepo("hunk-git-history-watch-unborn-");
+    const before = await GitVcsAdapter.history!.watchSignature!({}, { cwd: repo });
+
+    writeFileSync(join(repo, "file.txt"), "first\n");
+    git(repo, "add", "file.txt");
+    git(repo, "commit", "-m", "first");
+    const after = await GitVcsAdapter.history!.watchSignature!({}, { cwd: repo });
+
+    expect(before).toBe("");
+    expect(after).not.toBe(before);
+  });
+
+  test("still reports a failed history query once the repository has commits", async () => {
+    const repo = createTempRepo("hunk-git-history-watch-bad-revision-");
+    writeFileSync(join(repo, "file.txt"), "first\n");
+    git(repo, "add", "file.txt");
+    git(repo, "commit", "-m", "first");
+
+    await expect(
+      GitVcsAdapter.history!.watchSignature!({ revision: "no-such-revision" }, { cwd: repo }),
+    ).rejects.toThrow();
+  });
 });
 
 const tempDirs: string[] = [];
